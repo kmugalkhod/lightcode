@@ -1,0 +1,11 @@
+{
+  "name": "@lightcode/shared",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "bunx tsc --noEmit --project tsconfig.json"
+  }
+}

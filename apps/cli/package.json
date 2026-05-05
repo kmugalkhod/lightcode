@@ -1,0 +1,19 @@
+{
+  "name": "@lightcode/cli",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "lightcode": "./src/index.tsx"
+  },
+  "scripts": {
+    "dev": "bun src/index.tsx",
+    "start": "bun src/index.tsx",
+    "typecheck": "bunx tsc --noEmit --project tsconfig.json"
+  },
+  "dependencies": {
+    "@lightcode/shared": "workspace:*",
+    "@opentui/core": "latest",
+    "@opentui/react": "latest",
+    "react": "^19.0.0"
+  }
+}
