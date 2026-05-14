@@ -2,13 +2,21 @@
   "name": "@lightcode/server",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./rpc": "./src/rpc.ts"
+  },
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "typecheck": "bunx tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.77",
+    "@hono/zod-validator": "^0.8.0",
     "@lightcode/shared": "workspace:*",
-    "hono": "latest"
+    "ai": "^6.0.182",
+    "hono": "latest",
+    "zod": "^4.4.3"
   }
 }

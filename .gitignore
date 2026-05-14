@@ -1,6 +1,15 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+coverage/
+
+# Environment files
 .env
 .env.*
 !.env.example
+
+# Logs
 *.log
+bun-debug.log*
