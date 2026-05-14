@@ -1,8 +1,9 @@
 import { HomeAsciiArt } from "../components/home-ascii-art";
 import { HomeTextArea } from "../components/home-text-area";
 import { ServerStatus } from "../components/server-status";
+import type { ScreenProps } from "../navigation/route-registry";
 
-export function HomeScreen() {
+export function HomeScreen(_props: ScreenProps<"home">) {
   return (
     <box
       width="100%"

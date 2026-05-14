@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { client } from "../lib/client";
-
 type ServerStatus = "checking" | "online" | "unhealthy" | "offline";
+const apiBaseUrl = Bun.env.LIGHTCODE_API_URL ?? "http://localhost:3000";
 
 export function ServerStatus() {
   const [status, setStatus] = useState<ServerStatus>("checking");
@@ -11,11 +10,9 @@ export function ServerStatus() {
 
     async function checkServer() {
       try {
-        const response = await client.health.$get();
-        const data = await response.json();
-
         if (!cancelled) {
-          setStatus(response.ok && data.ok ? "online" : "unhealthy");
+          const response = await fetch(apiBaseUrl);
+          setStatus(response.ok ? "online" : "unhealthy");
         }
       } catch {
         if (!cancelled) {

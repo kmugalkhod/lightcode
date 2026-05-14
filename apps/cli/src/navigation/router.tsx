@@ -1,5 +1,5 @@
 import { getRoute } from "./route-registry";
-import type { RouteState, ViewId } from "../state/app-state";
+import { coerceRouteState, type RouteState, type ViewId } from "./route-state";
 
 interface RouterProps {
   currentView: ViewId;
@@ -13,6 +13,15 @@ export function Router({ currentView, routeState }: RouterProps) {
     return null;
   }
 
-  const Component = route.component;
-  return <Component routeState={routeState} />;
+  if (route.id === "home") {
+    const Component = route.component;
+    return <Component routeState={coerceRouteState("home", routeState)} />;
+  }
+
+  if (route.id === "chat") {
+    const Component = route.component;
+    return <Component routeState={coerceRouteState("chat", routeState)} />;
+  }
+
+  return null;
 }

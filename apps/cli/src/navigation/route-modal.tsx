@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core";
 import { getRoute } from "./route-registry";
-import type { ViewId } from "../state/app-state";
+import { getDefaultRouteState, type ViewId } from "./route-state";
 
 interface RouteModalProps {
   viewId: ViewId;
@@ -12,8 +12,6 @@ export function RouteModal({ viewId }: RouteModalProps) {
   if (!route) {
     return null;
   }
-
-  const Component = route.component;
 
   return (
     <box
@@ -41,7 +39,11 @@ export function RouteModal({ viewId }: RouteModalProps) {
       </box>
 
       <box flexGrow={1} padding={2}>
-        <Component routeState={null} />
+        {route.id === "home" ? (
+          <route.component routeState={getDefaultRouteState("home")} />
+        ) : (
+          <route.component routeState={getDefaultRouteState("chat")} />
+        )}
       </box>
     </box>
   );

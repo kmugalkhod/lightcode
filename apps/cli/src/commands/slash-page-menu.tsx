@@ -1,11 +1,11 @@
 import { TextAttributes } from "@opentui/core";
-import type { RouteDefinition } from "../navigation/route-registry";
+import type { AnyRouteDefinition } from "../navigation/route-registry";
 
 interface SlashPageMenuProps {
   query: string;
   setQuery: (query: string) => void;
   selectedIndex: number;
-  routes: RouteDefinition[];
+  routes: AnyRouteDefinition[];
 }
 
 export function SlashPageMenu({

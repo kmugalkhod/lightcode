@@ -1,17 +1,19 @@
 import { createContext, useContext, useState, useCallback, useMemo, type ReactNode } from "react";
-
-export type ViewId = "home" | "chat";
-
-export type RouteState = unknown;
+import {
+  getDefaultRouteState,
+  type RouteState,
+  type RouteStateByView,
+  type ViewId,
+} from "../navigation/route-state";
 
 export interface ViewHistoryEntry {
   view: ViewId;
   routeState: RouteState;
 }
 
-export interface NavigateOptions {
+export interface NavigateOptions<K extends ViewId> {
   addToHistory?: boolean;
-  state?: RouteState;
+  state?: RouteStateByView[K];
 }
 
 export interface GenericLayer {
@@ -60,7 +62,7 @@ export interface AppStateValue {
   openRouteModal: (view: ViewId) => void;
   lastSubmittedPrompt: string | null;
   submitPrompt: (text: string) => void;
-  navigate: (view: ViewId, options?: NavigateOptions) => void;
+  navigate: <K extends ViewId>(view: K, options?: NavigateOptions<K>) => void;
   goBack: () => void;
   viewHistory: ViewHistoryEntry[];
   leaderState: LeaderKeyState;
@@ -77,7 +79,7 @@ const AppStateContext = createContext<AppStateValue | null>(null);
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [currentView, setCurrentView] = useState<ViewId>("home");
-  const [currentRouteState, setCurrentRouteState] = useState<RouteState>(null);
+  const [currentRouteState, setCurrentRouteState] = useState<RouteState>(getDefaultRouteState("home"));
   const [viewHistory, setViewHistory] = useState<ViewHistoryEntry[]>([]);
   const [layers, setLayers] = useState<Layer[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -95,14 +97,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     timeoutId: null,
   });
 
-  const navigate = useCallback((view: ViewId, options: NavigateOptions = {}) => {
+  const navigate = useCallback(<K extends ViewId>(view: K, options: NavigateOptions<K> = {}) => {
     const addToHistory = options.addToHistory ?? true;
 
     if (addToHistory && currentView !== view) {
       setViewHistory((prev) => [...prev, { view: currentView, routeState: currentRouteState }]);
     }
     setCurrentView(view);
-    setCurrentRouteState(options.state ?? null);
+    setCurrentRouteState(options.state ?? getDefaultRouteState(view));
     setLayers([]);
     setPaletteOpen(false);
     setSlashMenuOpen(false);
