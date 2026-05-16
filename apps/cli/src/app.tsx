@@ -1,19 +1,32 @@
-import { useKeyboard, useRenderer } from "@opentui/react";
 import { TextAttributes } from "@opentui/core";
-import { useAppState, AppStateProvider } from "./state/app-state";
-import { Router } from "./navigation/router";
-import { getSlashPageRoutes, getViewIdFromAction } from "./navigation/route-registry";
-import { RouteModal } from "./navigation/route-modal";
+import { useKeyboard, useRenderer } from "@opentui/react";
+import { MemoryRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import { CommandPalette } from "./commands/command-palette";
-import { WhichKey } from "./commands/which-key";
-import { keymap, getBinding, isLeaderKey, normalizeKeyName } from "./commands/keymap";
 import { searchCommands } from "./commands/command-registry";
+import { keymap, getBinding, isLeaderKey, normalizeKeyName } from "./commands/keymap";
+import { WhichKey } from "./commands/which-key";
+import { getPathFromAction, getSlashPageRoutes } from "./navigation/route-registry";
+import { ChatScreen } from "./screens/chat-screen";
+import { HomeScreen } from "./screens/home-screen";
+import { AppStateProvider, useAppState } from "./state/app-state";
+
+function getCurrentViewLabel(pathname: string): string {
+  if (pathname === "/" || pathname === "/home") {
+    return "home";
+  }
+
+  if (pathname.startsWith("/sessions/")) {
+    return "session";
+  }
+
+  return pathname;
+}
 
 function AppContent() {
   const renderer = useRenderer();
+  const navigate = useNavigate();
+  const location = useLocation();
   const {
-    currentView,
-    currentRouteState,
     paletteOpen,
     paletteQuery,
     setPaletteQuery,
@@ -28,10 +41,6 @@ function AppContent() {
     setSlashMenuSelected,
     openSlashMenu,
     closeSlashMenu,
-    openRouteModal,
-    navigate,
-    goBack,
-    viewHistory,
     layers,
     popLayer,
     leaderState,
@@ -43,10 +52,13 @@ function AppContent() {
     closeWhichKey,
   } = useAppState();
 
+  const canGoBack = location.pathname !== "/" && location.pathname !== "/home";
+  const currentView = getCurrentViewLabel(location.pathname);
+
   const handleAction = (action: string) => {
-    const viewId = getViewIdFromAction(action);
-    if (viewId) {
-      navigate(viewId);
+    const path = getPathFromAction(action);
+    if (path) {
+      navigate(path);
       return;
     }
 
@@ -61,7 +73,9 @@ function AppContent() {
         openSlashMenu();
         break;
       case "system:back":
-        goBack();
+        if (canGoBack) {
+          navigate(-1);
+        }
         break;
       case "system:popLayer":
         if (layers.length > 0) {
@@ -75,8 +89,8 @@ function AppContent() {
           closePalette();
         } else if (layers.length > 0) {
           popLayer();
-        } else if (viewHistory.length > 0) {
-          goBack();
+        } else if (canGoBack) {
+          navigate(-1);
         }
         break;
     }
@@ -131,7 +145,8 @@ function AppContent() {
     } else if (isEnterKey(keyEvent)) {
       const route = filteredSlashRoutes[slashMenuSelected];
       if (route) {
-        openRouteModal(route.id);
+        navigate(route.path);
+        closeSlashMenu();
       }
     } else if (isEscapeKey(keyEvent)) {
       closeSlashMenu();
@@ -150,7 +165,6 @@ function AppContent() {
     }
 
     const normalizedKey = normalizeKeyName(keyEvent.name, keyEvent.ctrl, false, false);
-    const topLayer = layers[layers.length - 1];
 
     if (leaderState.active) {
       clearLeaderTimeout();
@@ -175,7 +189,7 @@ function AppContent() {
       return;
     }
 
-    if (isEscapeKey(keyEvent) && topLayer?.type === "route-modal") {
+    if (isEscapeKey(keyEvent) && layers.length > 0) {
       popLayer();
       return;
     }
@@ -215,7 +229,8 @@ function AppContent() {
     if (leaderState.active) {
       return "Waiting for key...";
     }
-    const backHint = viewHistory.length > 0 ? " | Ctrl+H Back" : "";
+
+    const backHint = canGoBack ? " | Ctrl+H Back" : "";
     return "/ Pages | Ctrl+P Cmd | Esc/q Quit" + backHint;
   };
 
@@ -236,18 +251,20 @@ function AppContent() {
       </box>
 
       <box flexGrow={1} padding={1} position="relative">
-        <Router currentView={currentView} routeState={currentRouteState} />
-        {layers.map((layer) =>
-          layer.type === "route-modal" ? (
-            <RouteModal key={layer.id} viewId={layer.viewId} />
-          ) : null
-        )}
-        {paletteOpen && <CommandPalette
-          query={paletteQuery}
-          setQuery={setPaletteQuery}
-          selectedIndex={paletteSelected}
-        />}
-        {whichKeyOpen && <WhichKey />}
+        <Routes>
+          <Route path="/" element={<HomeScreen />} />
+          <Route path="/home" element={<Navigate to="/" replace />} />
+          <Route path="/sessions/:id" element={<ChatScreen />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+        {paletteOpen ? (
+          <CommandPalette
+            query={paletteQuery}
+            setQuery={setPaletteQuery}
+            selectedIndex={paletteSelected}
+          />
+        ) : null}
+        {whichKeyOpen ? <WhichKey /> : null}
       </box>
 
       <box
@@ -269,8 +286,10 @@ function AppContent() {
 
 export function App() {
   return (
-    <AppStateProvider>
-      <AppContent />
-    </AppStateProvider>
+    <MemoryRouter initialEntries={["/"]}>
+      <AppStateProvider>
+        <AppContent />
+      </AppStateProvider>
+    </MemoryRouter>
   );
 }

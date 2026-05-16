@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-export const chatSessionHistoryResponseSchema = z.object({
-  sessionId: z.string().min(1),
+export const sessionCreateResponseSchema = z.object({
+  id: z.string().min(1),
+});
+
+export const sessionMessagesResponseSchema = z.object({
   messages: z.unknown(),
 });

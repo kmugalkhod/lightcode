@@ -1,15 +1,19 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, safeValidateUIMessages, type UIMessage } from "ai";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useParams } from "react-router";
+import { z } from "zod";
 import { ChatMessage } from "../components/chat/chat-message";
 import { ChatShell } from "../components/chat/chat-shell";
 import { ChatTextArea } from "../components/chat/chat-text-area";
-import { chatSessionHistoryResponseSchema } from "../lib/chat-schema-types";
-import type { ScreenProps } from "../navigation/route-registry";
-import { chatRouteStateSchema } from "../navigation/route-state";
+import { sessionMessagesResponseSchema } from "../lib/chat-schema-types";
+import { coerceSessionRouteLocationState } from "../navigation/route-state";
 
 const apiBaseUrl = Bun.env.LIGHTCODE_API_URL ?? "http://localhost:3000";
-const chatApiUrl = `${apiBaseUrl}/chat`;
+const sessionRouteParamsSchema = z.object({
+  id: z.string().min(1),
+});
+
 type ChatUIMessage = UIMessage;
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -42,31 +46,32 @@ async function validatePersistedMessages(messages: unknown): Promise<UIMessage[]
   return validated;
 }
 
-export function ChatScreen({ routeState }: ScreenProps<"chat">) {
-  const parsedRouteState = useMemo(
-    () => chatRouteStateSchema.safeParse(routeState),
-    [routeState],
+export function ChatScreen() {
+  const routeParams = useParams();
+  const location = useLocation();
+  const parsedRouteParams = useMemo(
+    () => sessionRouteParamsSchema.safeParse(routeParams),
+    [routeParams]
   );
-  const initialPrompt = parsedRouteState.success ? parsedRouteState.data.input.trim() : "";
-  const skipHistoryLoad = parsedRouteState.success
-    ? parsedRouteState.data.skipHistoryLoad ?? false
-    : false;
-  const fallbackSessionIdRef = useRef(crypto.randomUUID());
-  const sessionId = parsedRouteState.success
-    ? parsedRouteState.data.sessionId
-    : fallbackSessionIdRef.current;
+  const locationState = useMemo(
+    () => coerceSessionRouteLocationState(location.state),
+    [location.state]
+  );
+  const initialPrompt = (locationState.input ?? "").trim();
+  const skipHistoryLoad = locationState.skipHistoryLoad ?? false;
+  const sessionId = parsedRouteParams.success ? parsedRouteParams.data.id : "";
+  const isSessionIdValid = parsedRouteParams.success;
   const submittedInitialPromptRef = useRef<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(true);
 
-  const transport = useMemo(
-    () =>
-      new DefaultChatTransport({
-        api: chatApiUrl,
-        body: { sessionId },
-      }),
-    [sessionId],
-  );
+  const transport = useMemo(() => {
+    const encodedSessionId = encodeURIComponent(sessionId);
+
+    return new DefaultChatTransport({
+      api: `${apiBaseUrl}/sessions/${encodedSessionId}/chat`,
+    });
+  }, [sessionId]);
 
   const { messages, setMessages, sendMessage, error, status } = useChat<ChatUIMessage>({
     id: sessionId,
@@ -80,6 +85,13 @@ export function ChatScreen({ routeState }: ScreenProps<"chat">) {
     setIsHistoryLoading(true);
 
     async function loadPersistedMessages() {
+      if (!isSessionIdValid) {
+        setMessages([]);
+        setHistoryError("Invalid session route.");
+        setIsHistoryLoading(false);
+        return;
+      }
+
       if (skipHistoryLoad) {
         setMessages([]);
         setIsHistoryLoading(false);
@@ -87,14 +99,14 @@ export function ChatScreen({ routeState }: ScreenProps<"chat">) {
       }
 
       try {
-        const response = await fetch(`${chatApiUrl}/${encodeURIComponent(sessionId)}`);
+        const response = await fetch(`${apiBaseUrl}/sessions/${encodeURIComponent(sessionId)}/messages`);
 
         if (!response.ok) {
           throw new Error(`Unable to load chat history (HTTP ${response.status}).`);
         }
 
         const rawPayload = await response.json();
-        const parsedPayload = chatSessionHistoryResponseSchema.safeParse(rawPayload);
+        const parsedPayload = sessionMessagesResponseSchema.safeParse(rawPayload);
 
         if (!parsedPayload.success) {
           throw new Error("Server returned an invalid chat history response.");
@@ -126,9 +138,13 @@ export function ChatScreen({ routeState }: ScreenProps<"chat">) {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, setMessages, skipHistoryLoad]);
+  }, [isSessionIdValid, sessionId, setMessages, skipHistoryLoad]);
 
   useEffect(() => {
+    if (!isSessionIdValid) {
+      return;
+    }
+
     if (isHistoryLoading) {
       return;
     }
@@ -143,7 +159,7 @@ export function ChatScreen({ routeState }: ScreenProps<"chat">) {
 
     submittedInitialPromptRef.current = initialPrompt;
     void sendMessage({ text: initialPrompt });
-  }, [initialPrompt, isHistoryLoading, messages.length, sendMessage]);
+  }, [initialPrompt, isHistoryLoading, isSessionIdValid, messages.length, sendMessage]);
 
   const isStreaming = status === "submitted" || status === "streaming";
   const isLoading = isHistoryLoading || isStreaming;
@@ -158,8 +174,8 @@ export function ChatScreen({ routeState }: ScreenProps<"chat">) {
       inputArea={(
         <ChatTextArea
           placeholder={isLoading ? "Waiting for response..." : "Reply..."}
-          focused={!isLoading}
-          disabled={isLoading}
+          focused={!isLoading && isSessionIdValid}
+          disabled={isLoading || !isSessionIdValid}
           onSubmit={(text) => {
             void sendMessage({ text });
           }}

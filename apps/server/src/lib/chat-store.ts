@@ -26,7 +26,63 @@ function normalizeMessageForStorage(message: UIMessage, sequence: number): UIMes
   };
 }
 
-function toStoredMessage(sessionId: string, sequence: number, message: UIMessage) {
+function normalizeSessionTitle(input: string): string {
+  const normalized = input.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= 80) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, 77).trimEnd()}...`;
+}
+
+function extractTextFromMessage(message: UIMessage): string {
+  const parts = Array.isArray((message as { parts?: unknown }).parts)
+    ? (message as { parts: unknown[] }).parts
+    : [];
+  const textParts = parts
+    .map((part) => {
+      if (!part || typeof part !== "object") {
+        return "";
+      }
+
+      const candidate = part as { type?: unknown; text?: unknown };
+      if (candidate.type === "text" && typeof candidate.text === "string") {
+        return candidate.text;
+      }
+
+      return "";
+    })
+    .filter((value) => value.length > 0);
+
+  if (textParts.length > 0) {
+    return textParts.join(" ");
+  }
+
+  const contentCandidate = (message as { content?: unknown }).content;
+  return typeof contentCandidate === "string" ? contentCandidate : "";
+}
+
+function deriveSessionTitle(messages: UIMessage[]): string | null {
+  const firstUserMessage = messages.find((message) => message.role === "user");
+  if (!firstUserMessage) {
+    return null;
+  }
+
+  const text = extractTextFromMessage(firstUserMessage).trim();
+  if (!text) {
+    return null;
+  }
+
+  return normalizeSessionTitle(text);
+}
+
+function toStoredMessage(
+  sessionId: string,
+  sequence: number,
+  message: UIMessage,
+  assistantModel: string | null
+) {
   const normalizedMessage = normalizeMessageForStorage(message, sequence);
   const persistedMessageId = `${sequence}:${normalizedMessage.id}`;
 
@@ -35,7 +91,7 @@ function toStoredMessage(sessionId: string, sequence: number, message: UIMessage
     messageId: persistedMessageId,
     role: roleByUiMessageRole[normalizedMessage.role],
     sequence,
-    model: null,
+    model: normalizedMessage.role === "assistant" ? assistantModel : null,
     payload: toPrismaJsonValue(normalizedMessage),
   } satisfies Prisma.ChatMessageUncheckedCreateInput;
 }
@@ -55,16 +111,28 @@ async function normalizeAndValidateMessages(messages: UIMessage[]): Promise<UIMe
   return validationResult.data;
 }
 
+export async function createChatSession(): Promise<{ id: string }> {
+  const createdSession = await prisma.chatSession.create({
+    data: { id: crypto.randomUUID() },
+    select: { id: true },
+  });
+
+  return { id: createdSession.id };
+}
+
 export async function persistChatMessages({
   sessionId,
   messages,
+  assistantModel = null,
 }: {
   sessionId: string;
   messages: UIMessage[];
+  assistantModel?: string | null;
 }) {
   const normalizedMessages = await normalizeAndValidateMessages(messages);
+  const sessionTitle = deriveSessionTitle(normalizedMessages);
   const storedMessages = normalizedMessages.map((message, sequence) =>
-    toStoredMessage(sessionId, sequence, message)
+    toStoredMessage(sessionId, sequence, message, assistantModel)
   );
 
   // Avoid transaction startup contention with pooled/serverless Postgres.
@@ -72,8 +140,20 @@ export async function persistChatMessages({
   await prisma.chatSession.upsert({
     where: { id: sessionId },
     update: {},
-    create: { id: sessionId },
+    create: { id: sessionId, title: sessionTitle },
   });
+
+  if (sessionTitle) {
+    await prisma.chatSession.updateMany({
+      where: {
+        id: sessionId,
+        title: null,
+      },
+      data: {
+        title: sessionTitle,
+      },
+    });
+  }
 
   await prisma.chatMessage.deleteMany({
     where: { sessionId },
@@ -97,6 +177,11 @@ export async function loadChatMessages(sessionId: string): Promise<UIMessage[]> 
       payload: true,
     },
   });
+
+  if (persistedMessages.length === 0) {
+    return [];
+  }
+
   const normalizedCandidates = persistedMessages.map((persistedMessage) => {
     const payload =
       persistedMessage.payload && typeof persistedMessage.payload === "object" && !Array.isArray(persistedMessage.payload)
