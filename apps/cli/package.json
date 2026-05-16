@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.184",
+    "@lightcode/db": "workspace:*",
     "@lightcode/shared": "workspace:*",
     "@opentui/core": "latest",
     "@opentui/react": "latest",

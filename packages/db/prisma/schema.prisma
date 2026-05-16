@@ -1,0 +1,46 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum MessageRole {
+  system
+  user
+  assistant
+
+  @@map("message_role")
+}
+
+model ChatSession {
+  id        String        @id
+  title     String?
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+  messages  ChatMessage[]
+
+  @@map("sessions")
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  sessionId String      @map("session_id")
+  messageId String      @map("message_id")
+  role      MessageRole
+  model     String?
+  sequence  Int
+  payload   Json
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, messageId], map: "messages_session_id_message_id_key")
+  @@unique([sessionId, sequence], map: "messages_session_id_sequence_key")
+  @@index([sessionId, sequence], map: "messages_session_id_sequence_idx")
+  @@index([sessionId, role], map: "messages_session_id_role_idx")
+  @@map("messages")
+}

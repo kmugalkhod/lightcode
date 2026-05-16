@@ -3,6 +3,8 @@ import { z } from "zod";
 export const homeRouteStateSchema = z.null();
 export const chatRouteStateSchema = z.object({
   input: z.string(),
+  sessionId: z.string().min(1),
+  skipHistoryLoad: z.boolean().optional(),
 });
 
 export const routeStateSchemas = {
@@ -19,26 +21,24 @@ export type RouteStateByView = {
 export type RouteState = RouteStateByView[ViewId];
 export type ChatRouteState = RouteStateByView["chat"];
 
-export function getDefaultRouteState(view: "home"): RouteStateByView["home"];
-export function getDefaultRouteState(view: "chat"): RouteStateByView["chat"];
-export function getDefaultRouteState(view: ViewId): RouteState;
-export function getDefaultRouteState(view: ViewId) {
+export function getDefaultRouteState<K extends ViewId>(view: K): RouteStateByView[K] {
   if (view === "home") {
-    return null;
+    return null as RouteStateByView[K];
   }
 
-  return { input: "" };
+  return {
+    input: "",
+    sessionId: crypto.randomUUID(),
+    skipHistoryLoad: false,
+  } as RouteStateByView[K];
 }
 
-export function coerceRouteState(view: "home", value: unknown): RouteStateByView["home"];
-export function coerceRouteState(view: "chat", value: unknown): RouteStateByView["chat"];
-export function coerceRouteState(view: ViewId, value: unknown): RouteState;
-export function coerceRouteState(view: ViewId, value: unknown) {
+export function coerceRouteState<K extends ViewId>(view: K, value: unknown): RouteStateByView[K] {
   if (view === "home") {
     const parsed = homeRouteStateSchema.safeParse(value);
-    return parsed.success ? parsed.data : getDefaultRouteState("home");
+    return (parsed.success ? parsed.data : getDefaultRouteState("home")) as RouteStateByView[K];
   }
 
   const parsed = chatRouteStateSchema.safeParse(value);
-  return parsed.success ? parsed.data : getDefaultRouteState("chat");
+  return (parsed.success ? parsed.data : getDefaultRouteState("chat")) as RouteStateByView[K];
 }

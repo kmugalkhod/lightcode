@@ -38,7 +38,13 @@ export function HomeTextArea() {
         ) : null}
         onSubmit={(text) => {
           submitPrompt(text);
-          navigate("chat", { state: { input: text } });
+          navigate("chat", {
+            state: {
+              input: text,
+              sessionId: crypto.randomUUID(),
+              skipHistoryLoad: true,
+            },
+          });
         }}
         footer={(
           <text>

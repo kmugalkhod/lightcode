@@ -4,6 +4,7 @@ node_modules/
 # Build output
 dist/
 coverage/
+packages/db/generated/
 
 # Environment files
 .env
@@ -13,3 +14,6 @@ coverage/
 # Logs
 *.log
 bun-debug.log*
+
+# Local agent/skill artifacts (not part of app source)
+.agents/skills/prisma-database-setup/

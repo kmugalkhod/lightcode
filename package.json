@@ -8,15 +8,20 @@
     "packages/*"
   ],
   "scripts": {
-    "server:dev": "bun run --cwd apps/server dev",
-    "server:start": "bun run --cwd apps/server start",
+    "server:dev": "bun --watch --env-file=.env apps/server/src/index.ts",
+    "server:start": "bun --env-file=.env apps/server/src/index.ts",
     "cli:dev": "bun run --cwd apps/cli dev",
     "cli:start": "bun run --cwd apps/cli start",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "db:push": "bunx --bun prisma db push --config packages/db/prisma.config.ts",
+    "db:push:accept-data-loss": "bunx --bun prisma db push --config packages/db/prisma.config.ts --accept-data-loss",
+    "db:generate": "bunx --bun prisma generate --config packages/db/prisma.config.ts",
+    "db:validate": "bunx --bun prisma validate --config packages/db/prisma.config.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/react": "^19.0.0",
+    "prisma": "^7.8.0",
     "typescript": "^5.9.3"
   }
 }

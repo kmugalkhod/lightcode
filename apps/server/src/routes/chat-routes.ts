@@ -1,7 +1,9 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { zValidator } from "@hono/zod-validator";
 import {
+  consumeStream,
   convertToModelMessages,
+  generateId,
   safeValidateUIMessages,
   stepCountIs,
   streamText,
@@ -9,10 +11,24 @@ import {
 } from "ai";
 import { Hono } from "hono";
 import { z } from "zod";
+import { loadChatMessages, persistChatMessages } from "../lib/chat-store";
 
 const chatRequestSchema = z.object({
+  sessionId: z.string().min(1),
   messages: z.unknown(),
 });
+
+const chatSessionParamsSchema = z.object({
+  sessionId: z.string().min(1),
+});
+
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "Unknown error";
+}
 
 const chatTools = {
   getWeather: tool({
@@ -40,11 +56,27 @@ const chatTools = {
   }),
 };
 
-export const chatRoutes = new Hono().post(
-  "/",
-  zValidator("json", chatRequestSchema),
-  async (c) => {
+export const chatRoutes = new Hono()
+  .get("/:sessionId", zValidator("param", chatSessionParamsSchema), async (c) => {
+    const { sessionId } = c.req.valid("param");
+
+    try {
+      const messages = await loadChatMessages(sessionId);
+      return c.json({ sessionId, messages });
+    } catch (error) {
+      console.error("Failed to load persisted chat messages.", error);
+      return c.json(
+        {
+          error: "Unable to load persisted chat messages.",
+          details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
+        },
+        500
+      );
+    }
+  })
+  .post("/", zValidator("json", chatRequestSchema), async (c) => {
     const body = c.req.valid("json");
+    const { sessionId } = body;
     const validatedMessagesResult = await safeValidateUIMessages({
       messages: body.messages,
     });
@@ -54,6 +86,23 @@ export const chatRoutes = new Hono().post(
     }
 
     const validatedMessages = validatedMessagesResult.data;
+
+    try {
+      await persistChatMessages({
+        sessionId,
+        messages: validatedMessages,
+      });
+    } catch (error) {
+      console.error("Failed to persist incoming chat messages.", error);
+      return c.json(
+        {
+          error: "Unable to persist incoming chat messages.",
+          details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
+        },
+        500
+      );
+    }
+
     const modelMessages = await convertToModelMessages(validatedMessages);
 
     const result = streamText({
@@ -70,11 +119,29 @@ export const chatRoutes = new Hono().post(
           thinking: { type: "adaptive", display: "summarized" },
         },
       },
-      maxOutputTokens: 180,
+      maxOutputTokens: 10000,
     });
 
     return result.toUIMessageStreamResponse({
+      originalMessages: validatedMessages,
+      generateMessageId: generateId,
+      consumeSseStream: async ({ stream }) => {
+        await consumeStream({ stream });
+      },
       sendReasoning: true,
+      onFinish: async ({ isAborted, messages }) => {
+        if (isAborted) {
+          return;
+        }
+
+        try {
+          await persistChatMessages({
+            sessionId,
+            messages,
+          });
+        } catch (error) {
+          console.error("Failed to persist assistant response message.", error);
+        }
+      },
     });
-  }
-);
+  });

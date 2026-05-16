@@ -25,7 +25,8 @@ export function ChatShell({
   return (
     <box width="100%" height="100%" flexDirection="column" gap={1}>
       <text fg="#8A8A8A">{title}</text>
-      <box
+      <scrollbox
+        width="100%"
         flexGrow={1}
         flexDirection="column"
         gap={1}
@@ -33,10 +34,19 @@ export function ChatShell({
         borderColor="#303030"
         paddingX={1}
         paddingY={1}
+        scrollY
+        stickyScroll
+        stickyStart="bottom"
+        scrollbarOptions={{
+          trackOptions: {
+            foregroundColor: "#6B6B6B",
+            backgroundColor: "#1F1F1F",
+          },
+        }}
       >
         {hasMessages ? children : <text fg="#8A8A8A">{emptyStateLabel}</text>}
         {isLoading ? <text fg="#8A8A8A">{loadingLabel}</text> : null}
-      </box>
+      </scrollbox>
       {errorMessage ? <ChatMessageErrorPart label="Chat error" text={errorMessage} /> : null}
       {inputArea}
     </box>

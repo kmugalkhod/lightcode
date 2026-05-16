@@ -7,13 +7,14 @@
     "./rpc": "./src/rpc.ts"
   },
   "scripts": {
-    "dev": "bun --watch src/index.ts",
-    "start": "bun src/index.ts",
+    "dev": "bun --watch --env-file=../../.env src/index.ts",
+    "start": "bun --env-file=../../.env src/index.ts",
     "typecheck": "bunx tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.77",
     "@hono/zod-validator": "^0.8.0",
+    "@lightcode/db": "workspace:*",
     "@lightcode/shared": "workspace:*",
     "ai": "^6.0.182",
     "hono": "latest",
