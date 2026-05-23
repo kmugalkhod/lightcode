@@ -1,13 +1,11 @@
 import { SlashPageMenu } from "../commands/slash-page-menu";
+import { client } from "../lib/client";
 import { sessionCreateResponseSchema } from "../lib/chat-schema-types";
 import { ChatTextArea } from "./chat/chat-text-area";
 import { getSlashPageRoutes } from "../navigation/route-registry";
 import { useAppState } from "../state/app-state";
 import { useState } from "react";
 import { useNavigate } from "react-router";
-
-const apiBaseUrl = Bun.env.LIGHTCODE_API_URL ?? "http://localhost:3000";
-const sessionsApiUrl = `${apiBaseUrl}/sessions`;
 
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) {
@@ -42,9 +40,7 @@ export function HomeTextArea() {
     setIsCreatingSession(true);
 
     try {
-      const response = await fetch(sessionsApiUrl, {
-        method: "POST",
-      });
+      const response = await client.sessions.$post();
 
       if (!response.ok) {
         throw new Error(`Unable to create a new session (HTTP ${response.status}).`);

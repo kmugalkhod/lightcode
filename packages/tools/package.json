@@ -1,14 +1,15 @@
 {
-  "name": "@lightcode/shared",
+  "name": "@lightcode/tools",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./runtime": "./src/runtime.ts"
   },
   "scripts": {
     "typecheck": "bunx tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
-    "@lightcode/tools": "workspace:*"
+    "zod": "^4.4.3"
   }
 }

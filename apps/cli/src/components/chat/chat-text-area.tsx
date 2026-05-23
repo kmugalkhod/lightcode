@@ -47,6 +47,7 @@ export function ChatTextArea({
   const textareaRef = useRef<TextareaRenderable>(null);
   const lastManualNewlineAt = useRef(0);
   const isFocused = focused && !disabled;
+  const inputHint = "Enter to send | Ctrl+Enter for newline";
 
   return (
     <box width="100%" flexDirection="column" gap={1}>
@@ -54,10 +55,12 @@ export function ChatTextArea({
       <box
         flexDirection="column"
         borderStyle="single"
-        borderColor="#2D2D2D"
-        paddingX={2}
+        borderColor={isFocused ? "#2F6FED" : "#2D2D2D"}
+        backgroundColor="#090D14"
+        paddingX={1}
         paddingY={1}
         height={containerHeight}
+        gap={1}
       >
         <textarea
           ref={textareaRef}
@@ -92,16 +95,17 @@ export function ChatTextArea({
           keyBindings={textareaKeyBindings}
           placeholder={placeholder}
           width="100%"
-          height={2}
+          height={3}
           wrapMode="word"
-          backgroundColor="#171717"
-          focusedBackgroundColor="#171717"
+          backgroundColor="#111827"
+          focusedBackgroundColor="#111827"
           textColor="#F5F5F5"
           cursorColor="#F5F5F5"
           placeholderColor="#8A8A8A"
           focused={isFocused}
         />
-        {footer ? <box paddingTop={1}>{footer}</box> : null}
+        <text fg="#6B7280">{inputHint}</text>
+        {footer}
       </box>
     </box>
   );

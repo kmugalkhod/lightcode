@@ -1,5 +1,6 @@
 import type { MessageRole, Prisma } from "@lightcode/db/types";
 import { safeValidateUIMessages, type UIMessage } from "ai";
+import { incrementChatFailureCounter } from "./chat-observability";
 import { prisma } from "./prisma-client";
 
 const roleByUiMessageRole = {
@@ -111,6 +112,24 @@ async function normalizeAndValidateMessages(messages: UIMessage[]): Promise<UIMe
   return validationResult.data;
 }
 
+function isPrismaUniqueConstraintError(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
+
+function isPrismaTransactionStartTimeoutError(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2028"
+  );
+}
+
 export async function createChatSession(): Promise<{ id: string }> {
   const createdSession = await prisma.chatSession.create({
     data: { id: crypto.randomUUID() },
@@ -120,50 +139,111 @@ export async function createChatSession(): Promise<{ id: string }> {
   return { id: createdSession.id };
 }
 
+export interface PersistChatMessagesResult {
+  revision: number;
+  staleSkip: boolean;
+}
+
 export async function persistChatMessages({
   sessionId,
   messages,
   assistantModel = null,
+  expectedRevision,
 }: {
   sessionId: string;
   messages: UIMessage[];
   assistantModel?: string | null;
-}) {
+  expectedRevision?: number;
+}): Promise<PersistChatMessagesResult> {
   const normalizedMessages = await normalizeAndValidateMessages(messages);
   const sessionTitle = deriveSessionTitle(normalizedMessages);
   const storedMessages = normalizedMessages.map((message, sequence) =>
     toStoredMessage(sessionId, sequence, message, assistantModel)
   );
 
-  // Avoid transaction startup contention with pooled/serverless Postgres.
-  // The final state is deterministic because we replace the full session history.
-  await prisma.chatSession.upsert({
-    where: { id: sessionId },
-    update: {},
-    create: { id: sessionId, title: sessionTitle },
-  });
+  const maxTransactionAttempts = 3;
 
-  if (sessionTitle) {
-    await prisma.chatSession.updateMany({
-      where: {
-        id: sessionId,
-        title: null,
-      },
-      data: {
-        title: sessionTitle,
-      },
-    });
+  for (let attempt = 1; attempt <= maxTransactionAttempts; attempt += 1) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sessionId}), hashtext(${`${sessionId}:chat`}))`;
+
+          const session = await tx.chatSession.upsert({
+            where: { id: sessionId },
+            update: {},
+            create: { id: sessionId, title: sessionTitle },
+            select: {
+              id: true,
+              title: true,
+              revision: true,
+            },
+          });
+
+          if (expectedRevision !== undefined && session.revision !== expectedRevision) {
+            return {
+              revision: session.revision,
+              staleSkip: true,
+            };
+          }
+
+          await tx.chatMessage.deleteMany({
+            where: { sessionId },
+          });
+
+          if (storedMessages.length > 0) {
+            await tx.chatMessage.createMany({
+              data: storedMessages,
+            });
+          }
+
+          const updatedSession = await tx.chatSession.update({
+            where: { id: sessionId },
+            data: {
+              revision: {
+                increment: 1,
+              },
+              ...(sessionTitle && !session.title
+                ? {
+                    title: sessionTitle,
+                  }
+                : {}),
+            },
+            select: {
+              revision: true,
+            },
+          });
+
+          return {
+            revision: updatedSession.revision,
+            staleSkip: false,
+          };
+        },
+        {
+          maxWait: 10_000,
+          timeout: 20_000,
+        }
+      );
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) {
+        incrementChatFailureCounter("db_unique_conflict", {
+          sessionId,
+        });
+      }
+
+      if (
+        isPrismaTransactionStartTimeoutError(error) &&
+        attempt < maxTransactionAttempts
+      ) {
+        await Bun.sleep(50 * attempt);
+        continue;
+      }
+
+      throw error;
+    }
   }
 
-  await prisma.chatMessage.deleteMany({
-    where: { sessionId },
-  });
-
-  if (storedMessages.length > 0) {
-    await prisma.chatMessage.createMany({
-      data: storedMessages,
-    });
-  }
+  throw new Error("Unreachable");
 }
 
 export async function loadChatMessages(sessionId: string): Promise<UIMessage[]> {

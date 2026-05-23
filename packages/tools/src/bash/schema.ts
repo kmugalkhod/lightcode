@@ -1,0 +1,29 @@
+import { z } from "zod";
+import { MAX_TOOL_TEXT_OUTPUT_CHARS } from "../constants";
+import { integerRangeSchema } from "../common/base-schemas";
+
+export const bashDescription =
+  "Run a shell command from workspace root with a timeout. This is an intentional escape hatch and is not sandboxed beyond workspace cwd and timeout controls.";
+
+export const bashInputSchema = z.object({
+  command: z.string().min(1).max(4000),
+  timeoutMs: integerRangeSchema(1_000, 120_000, "timeoutMs").optional().default(30_000),
+  maxOutputChars: integerRangeSchema(200, MAX_TOOL_TEXT_OUTPUT_CHARS, "maxOutputChars")
+    .optional()
+    .default(MAX_TOOL_TEXT_OUTPUT_CHARS),
+});
+
+// Provider-facing schema remains small and omits output truncation controls.
+export const bashProviderInputSchema = z.object({
+  command: z.string().min(1).max(4000),
+  timeoutMs: integerRangeSchema(1_000, 120_000, "timeoutMs").optional(),
+});
+
+export const bashOutputSchema = z.object({
+  command: z.string(),
+  cwd: z.string(),
+  stdout: z.string(),
+  stderr: z.string(),
+  exitCode: z.number().int(),
+  truncated: z.boolean(),
+});

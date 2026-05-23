@@ -16,6 +16,7 @@
     "@hono/zod-validator": "^0.8.0",
     "@lightcode/db": "workspace:*",
     "@lightcode/shared": "workspace:*",
+    "@lightcode/tools": "workspace:*",
     "ai": "^6.0.182",
     "hono": "latest",
     "zod": "^4.4.3"

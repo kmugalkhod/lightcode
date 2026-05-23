@@ -5,48 +5,72 @@ interface ChatShellProps {
   title?: string;
   children?: ReactNode;
   hasMessages: boolean;
-  isLoading?: boolean;
-  loadingLabel?: string;
+  messageCount?: number;
   emptyStateLabel?: string;
   errorMessage?: string | null;
   inputArea: ReactNode;
 }
 
+const chatScrollbarTheme = {
+  rail: "#0B0F16",
+  thumb: "#1E3A5F",
+  thumbActive: "#22D3EE",
+} as const;
+
 export function ChatShell({
   title = "Conversation",
   children,
   hasMessages,
-  isLoading = false,
-  loadingLabel = "Thinking...",
-  emptyStateLabel = "No messages yet.",
+  messageCount = 0,
+  emptyStateLabel = "Send a prompt to start chatting.",
   errorMessage,
   inputArea,
 }: ChatShellProps) {
+  const statusLabel = `${messageCount} message${messageCount === 1 ? "" : "s"}`;
+
   return (
     <box width="100%" height="100%" flexDirection="column" gap={1}>
-      <text fg="#8A8A8A">{title}</text>
-      <scrollbox
+      <box width="100%" flexDirection="row" justifyContent="space-between" paddingX={1}>
+        <text fg="#A3A3A3">{title}</text>
+        <text fg="#6B7280">{statusLabel}</text>
+      </box>
+      <box
         width="100%"
         flexGrow={1}
-        flexDirection="column"
-        gap={1}
         borderStyle="single"
-        borderColor="#303030"
-        paddingX={1}
-        paddingY={1}
-        scrollY
-        stickyScroll
-        stickyStart="bottom"
-        scrollbarOptions={{
-          trackOptions: {
-            foregroundColor: "#6B6B6B",
-            backgroundColor: "#1F1F1F",
-          },
-        }}
+        borderColor="#223142"
+        backgroundColor="#06080D"
       >
-        {hasMessages ? children : <text fg="#8A8A8A">{emptyStateLabel}</text>}
-        {isLoading ? <text fg="#8A8A8A">{loadingLabel}</text> : null}
-      </scrollbox>
+        <scrollbox
+          width="100%"
+          height="100%"
+          flexGrow={1}
+          paddingX={1}
+          paddingY={1}
+          scrollY
+          stickyScroll
+          stickyStart="bottom"
+          contentOptions={{
+            width: "100%",
+            flexDirection: "column",
+            gap: 1,
+          }}
+          scrollbarOptions={{
+            trackOptions: {
+              foregroundColor: chatScrollbarTheme.thumb,
+              backgroundColor: chatScrollbarTheme.rail,
+            },
+          }}
+          verticalScrollbarOptions={{
+            trackOptions: {
+              foregroundColor: chatScrollbarTheme.thumbActive,
+              backgroundColor: chatScrollbarTheme.rail,
+            },
+          }}
+        >
+          {hasMessages ? children : <text fg="#8A8A8A">{emptyStateLabel}</text>}
+        </scrollbox>
+      </box>
       {errorMessage ? <ChatMessageErrorPart label="Chat error" text={errorMessage} /> : null}
       {inputArea}
     </box>

@@ -8,6 +8,7 @@
     "apps/server/src/**/*.ts",
     "apps/cli/src/**/*.ts",
     "apps/cli/src/**/*.tsx",
-    "packages/shared/src/**/*.ts"
+    "packages/shared/src/**/*.ts",
+    "packages/tools/src/**/*.ts"
   ]
 }

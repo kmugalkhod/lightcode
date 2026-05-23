@@ -10,9 +10,9 @@ export function ChatMessageReasoningPart({ part }: ChatMessageReasoningPartProps
   }
 
   return (
-    <box flexDirection="column">
-      <text fg="#8A8A8A">Reasoning</text>
-      <text fg="#9CA3AF">{part.text}</text>
+    <box flexDirection="column" gap={1}>
+      <text fg="#A78BFA">Thinking:</text>
+      <text fg="#94A3B8">{part.text}</text>
     </box>
   );
 }

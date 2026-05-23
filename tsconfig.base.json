@@ -13,6 +13,8 @@
     "baseUrl": ".",
     "paths": {
       "@lightcode/shared": ["packages/shared/src/index.ts"],
+      "@lightcode/tools": ["packages/tools/src/index.ts"],
+      "@lightcode/tools/runtime": ["packages/tools/src/runtime.ts"],
       "@lightcode/db": ["packages/db/src/index.ts"],
       "@lightcode/db/server": ["packages/db/src/server.ts"],
       "@lightcode/db/types": ["packages/db/src/types.ts"]
