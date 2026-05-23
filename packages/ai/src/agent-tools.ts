@@ -50,7 +50,7 @@ export {
 };
 
 export const codingChatRequestSchema = z.object({
-  messages: z.unknown(),
+  messages: z.array(z.json()),
   cwd: z.string().min(1).max(4096),
 });
 
@@ -113,6 +113,15 @@ function topLevelOptionalPropertyCount(schema: z.ZodObject) {
   }, 0);
 }
 
+function getJsonSchemaType(jsonSchema: unknown): string | undefined {
+  if (typeof jsonSchema !== "object" || jsonSchema === null) {
+    return undefined;
+  }
+
+  const typeValue = Reflect.get(jsonSchema, "type");
+  return typeof typeValue === "string" ? typeValue : undefined;
+}
+
 export function collectToolSchemaPreflight() {
   const entries = Object.entries(codingToolProviderInputSchemas).map(([toolName, schema]) => {
     if (!(schema instanceof z.ZodObject)) {
@@ -122,17 +131,13 @@ export function collectToolSchemaPreflight() {
     const jsonSchema = z.toJSONSchema(schema, {
       target: "draft-7",
       io: "input",
-    }) as {
-      type?: unknown;
-      properties?: Record<string, unknown>;
-      required?: unknown;
-    };
+    });
 
     const optionalPropertyCount = topLevelOptionalPropertyCount(schema);
 
     return {
       toolName,
-      inputSchemaType: typeof jsonSchema.type === "string" ? jsonSchema.type : undefined,
+      inputSchemaType: getJsonSchemaType(jsonSchema),
       optionalPropertyCount,
     };
   });

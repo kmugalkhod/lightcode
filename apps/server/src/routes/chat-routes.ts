@@ -5,20 +5,17 @@ import {
   consumeStream,
   generateId,
   safeValidateUIMessages,
-  stepCountIs,
-  ToolLoopAgent,
-  tool,
+  type UIMessage,
 } from "ai";
 import {
   assertProviderToolSchemaBudget,
-  codingAgentCallOptionsSchema,
   codingChatRequestSchema,
-  codingToolDescriptions,
-  codingToolProviderInputSchemas,
-} from "@lightcode/tools";
+  createCodingAgent,
+  type SessionMessagesResponse,
+  sessionPathParamsSchema,
+} from "@lightcode/ai";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { z } from "zod";
 import { createChatSession, loadChatMessages, persistChatMessages } from "../lib/chat-store";
 import {
   getErrorMessage,
@@ -30,10 +27,6 @@ import {
   logChatWriteEvent,
 } from "../lib/chat-observability";
 
-const sessionPathParamsSchema = z.object({
-  id: z.string().min(1),
-});
-
 const sessionChatRequestSchema = codingChatRequestSchema;
 
 const recoverableDisconnectMessage = "Connection interrupted. Please retry or regenerate your last message.";
@@ -42,16 +35,11 @@ const providerBillingOrQuotaMessage =
   "The configured model provider rejected this request due to billing or quota limits. " +
   "Update provider credits/quota and retry.";
 
-function isEmptyAssistantMessage(message: unknown) {
-  if (!message || typeof message !== "object") {
-    return false;
-  }
-
-  const value = message as Record<string, unknown>;
-  return value.role === "assistant" && Array.isArray(value.parts) && value.parts.length === 0;
+function isEmptyAssistantMessage(message: UIMessage) {
+  return message.role === "assistant" && message.parts.length === 0;
 }
 
-function removeTrailingEmptyAssistantMessages(messages: unknown[]) {
+function removeTrailingEmptyAssistantMessages(messages: UIMessage[]) {
   let endIndex = messages.length;
 
   while (endIndex > 0 && isEmptyAssistantMessage(messages[endIndex - 1])) {
@@ -63,67 +51,35 @@ function removeTrailingEmptyAssistantMessages(messages: unknown[]) {
 
 assertProviderToolSchemaBudget();
 
-const chatTools = {
-  list_files: tool({
-    description: codingToolDescriptions.list_files,
-    inputSchema: codingToolProviderInputSchemas.list_files,
-    strict: true,
-  }),
-  read_file: tool({
-    description: codingToolDescriptions.read_file,
-    inputSchema: codingToolProviderInputSchemas.read_file,
-    strict: true,
-  }),
-  grep: tool({
-    description: codingToolDescriptions.grep,
-    inputSchema: codingToolProviderInputSchemas.grep,
-    strict: true,
-  }),
-  write_file: tool({
-    description: codingToolDescriptions.write_file,
-    inputSchema: codingToolProviderInputSchemas.write_file,
-    strict: true,
-  }),
-  edit_file: tool({
-    description: codingToolDescriptions.edit_file,
-    inputSchema: codingToolProviderInputSchemas.edit_file,
-    strict: true,
-  }),
-  bash: tool({
-    description: codingToolDescriptions.bash,
-    inputSchema: codingToolProviderInputSchemas.bash,
-    strict: true,
-  }),
-};
+const chatModelId = Bun.env.LIGHTCODE_CHAT_MODEL ?? "claude-haiku-4-5";
+const codingAgentPromptOverride = Bun.env.LIGHTCODE_CODING_AGENT_SYSTEM_PROMPT;
+const codingAgentProviderOptions =
+  chatModelId === "claude-opus-4-7"
+    ? {
+        anthropic: {
+          thinking: {
+            type: "adaptive",
+            display: "summarized",
+          },
+          effort: "medium",
+        },
+      }
+    : undefined;
 
-const chatModelId = "claude-opus-4-7";
-
-const codingAgent = new ToolLoopAgent<{ cwd: string }, typeof chatTools>({
+const codingAgent = createCodingAgent({
   model: anthropic(chatModelId),
-  tools: chatTools,
-  stopWhen: stepCountIs(10),
+  promptOverride: codingAgentPromptOverride,
+  providerOptions: codingAgentProviderOptions,
+  maxSteps: 10,
   maxOutputTokens: 10000,
-  callOptionsSchema: codingAgentCallOptionsSchema,
-  prepareCall: ({ options, prompt, messages, ...settings }) => {
-    return {
-      ...settings,
-      prompt,
-      messages,
-      instructions:
-        "You are a basic coding agent. Use tools for filesystem and codebase tasks instead of guessing. " +
-        "Respect the user's intent, explain changes clearly, and prefer incremental, auditable actions. " +
-        "You can only interact with files under this working directory: " +
-        options.cwd +
-        ". " +
-        "Use grep for text search and bash for shell commands when file tools are not enough. " +
-        "For risky or uncertain operations, inspect context first and be explicit about assumptions. " +
-        "While working, emit brief progress notes in natural language before major tool actions and after important findings. " +
-        "Keep them short, human, and concrete. Vary wording naturally and avoid repetitive templates or rigid labels.",
-    };
-  },
 });
 
-async function streamSessionChat(c: Context, sessionId: string, messagesPayload: unknown, cwd: string) {
+async function streamSessionChat(
+  c: Context,
+  sessionId: string,
+  messagesPayload: SessionMessagesResponse["messages"],
+  cwd: string,
+) {
   const validatedMessagesResult = await safeValidateUIMessages({
     messages: messagesPayload,
   });

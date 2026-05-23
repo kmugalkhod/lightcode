@@ -13,7 +13,7 @@
     "cli:dev": "bun run --cwd apps/cli dev",
     "cli:start": "bun run --cwd apps/cli start",
     "typecheck": "bunx tsc --noEmit && bun run tool-schema:check",
-    "tool-schema:check": "bun test packages/shared/src/agent-tools-schema-preflight.test.ts",
+    "tool-schema:check": "bun test packages/ai/src/agent-tools-schema-preflight.test.ts",
     "db:push": "bunx --bun prisma db push --config packages/db/prisma.config.ts",
     "db:push:accept-data-loss": "bunx --bun prisma db push --config packages/db/prisma.config.ts --accept-data-loss",
     "db:generate": "bunx --bun prisma generate --config packages/db/prisma.config.ts",

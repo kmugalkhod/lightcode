@@ -7,8 +7,5 @@
   },
   "scripts": {
     "typecheck": "bunx tsc --noEmit --project tsconfig.json"
-  },
-  "dependencies": {
-    "@lightcode/tools": "workspace:*"
   }
 }

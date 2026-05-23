@@ -10,6 +10,6 @@
     "typecheck": "bunx tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
-    "zod": "^4.4.3"
+    "@lightcode/ai": "workspace:*"
   }
 }

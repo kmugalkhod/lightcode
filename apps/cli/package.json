@@ -11,10 +11,9 @@
     "typecheck": "bunx tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
-    "@ai-sdk/react": "^3.0.184",
+    "@lightcode/ai": "workspace:*",
     "@lightcode/db": "workspace:*",
     "@lightcode/shared": "workspace:*",
-    "@lightcode/tools": "workspace:*",
     "@opentui/core": "latest",
     "@opentui/react": "latest",
     "ai": "^6.0.182",

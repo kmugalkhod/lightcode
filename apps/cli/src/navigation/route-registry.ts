@@ -53,7 +53,7 @@ export function getPathFromAction(action: string): string | undefined {
     return undefined;
   }
 
-  const id = action.slice("nav:".length) as RouteDefinition["id"];
-  const route = getRoute(id);
+  const id = action.slice("nav:".length);
+  const route = routeRegistry.find((candidate) => candidate.id === id);
   return route?.path;
 }

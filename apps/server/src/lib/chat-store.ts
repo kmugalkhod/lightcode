@@ -9,8 +9,71 @@ const roleByUiMessageRole = {
   user: "user",
 } satisfies Record<UIMessage["role"], MessageRole>;
 
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+
+  if (Array.isArray(value)) {
+    return value.every((entry) => isJsonValue(entry));
+  }
+
+  if (isRecord(value)) {
+    return Object.values(value).every((entry) => isJsonValue(entry));
+  }
+
+  return false;
+}
+
+function isPrismaInputJsonValue(value: unknown): value is Prisma.InputJsonValue {
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+
+  if (Array.isArray(value)) {
+    return value.every((entry) => isJsonValue(entry));
+  }
+
+  if (isRecord(value)) {
+    return Object.values(value).every((entry) => isJsonValue(entry));
+  }
+
+  return false;
+}
+
+function getErrorCode(error: unknown): string | number | undefined {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+
+  const code = error.code;
+  return typeof code === "string" || typeof code === "number" ? code : undefined;
+}
+
 function toPrismaJsonValue(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  const serialized = JSON.parse(JSON.stringify(value));
+
+  if (!isPrismaInputJsonValue(serialized)) {
+    throw new Error("Unable to serialize message payload to JSON.");
+  }
+
+  return serialized;
 }
 
 function toMessageId(value: string | undefined, fallback: string) {
@@ -37,31 +100,23 @@ function normalizeSessionTitle(input: string): string {
   return `${normalized.slice(0, 77).trimEnd()}...`;
 }
 
+function isTextMessagePart(
+  part: UIMessage["parts"][number],
+): part is Extract<UIMessage["parts"][number], { type: "text"; text: string }> {
+  return part.type === "text" && "text" in part && typeof part.text === "string";
+}
+
 function extractTextFromMessage(message: UIMessage): string {
-  const parts = Array.isArray((message as { parts?: unknown }).parts)
-    ? (message as { parts: unknown[] }).parts
-    : [];
-  const textParts = parts
-    .map((part) => {
-      if (!part || typeof part !== "object") {
-        return "";
-      }
-
-      const candidate = part as { type?: unknown; text?: unknown };
-      if (candidate.type === "text" && typeof candidate.text === "string") {
-        return candidate.text;
-      }
-
-      return "";
-    })
-    .filter((value) => value.length > 0);
+  const textParts = message.parts
+    .filter(isTextMessagePart)
+    .map((part) => part.text)
+    .filter((text) => text.length > 0);
 
   if (textParts.length > 0) {
     return textParts.join(" ");
   }
 
-  const contentCandidate = (message as { content?: unknown }).content;
-  return typeof contentCandidate === "string" ? contentCandidate : "";
+  return "";
 }
 
 function deriveSessionTitle(messages: UIMessage[]): string | null {
@@ -113,21 +168,11 @@ async function normalizeAndValidateMessages(messages: UIMessage[]): Promise<UIMe
 }
 
 function isPrismaUniqueConstraintError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "P2002"
-  );
+  return getErrorCode(error) === "P2002";
 }
 
 function isPrismaTransactionStartTimeoutError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "P2028"
-  );
+  return getErrorCode(error) === "P2028";
 }
 
 export async function createChatSession(): Promise<{ id: string }> {
@@ -267,7 +312,7 @@ export async function loadChatMessages(sessionId: string): Promise<UIMessage[]> 
       persistedMessage.payload && typeof persistedMessage.payload === "object" && !Array.isArray(persistedMessage.payload)
         ? persistedMessage.payload
         : {};
-    const payloadRecord = payload as Record<string, unknown>;
+    const payloadRecord = isRecord(payload) ? payload : {};
 
     return {
       ...payloadRecord,

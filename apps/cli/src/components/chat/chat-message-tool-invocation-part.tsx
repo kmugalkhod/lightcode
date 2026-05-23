@@ -31,8 +31,11 @@ function getToolTarget(input: unknown) {
     return null;
   }
 
-  const value = input as Record<string, unknown>;
-  const candidates = [value.path, value.command, value.query];
+  const candidates = [
+    Reflect.get(input, "path"),
+    Reflect.get(input, "command"),
+    Reflect.get(input, "query"),
+  ];
 
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim().length > 0) {

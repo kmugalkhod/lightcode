@@ -15,7 +15,7 @@ const chatScrollbarTheme = {
   rail: "#0B0F16",
   thumb: "#1E3A5F",
   thumbActive: "#22D3EE",
-} as const;
+};
 
 export function ChatShell({
   title = "Conversation",

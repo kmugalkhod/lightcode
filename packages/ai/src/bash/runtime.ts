@@ -1,12 +1,33 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import { z } from "zod";
 import { WORKSPACE } from "../common/resolve-within-workspace";
 import { truncateText } from "../common/output-utils";
 import { bashInputSchema, bashOutputSchema } from "./schema";
 
 const execAsync = promisify(exec);
+type BashInput = z.input<typeof bashInputSchema>;
+type BashOutput = z.infer<typeof bashOutputSchema>;
 
-export async function executeBash(input: unknown) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function getStringProperty(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function getNumericExitCode(record: Record<string, unknown>): number {
+  const value = record.code;
+  return typeof value === "number" ? value : 1;
+}
+
+export async function executeBash(input: BashInput): Promise<BashOutput> {
   const parsedInput = bashInputSchema.parse(input);
 
   try {
@@ -29,15 +50,12 @@ export async function executeBash(input: unknown) {
       truncated: stdoutTruncated.truncated || stderrTruncated.truncated,
     });
   } catch (error) {
-    const maybeError = error as {
-      stdout?: string;
-      stderr?: string;
-      message?: string;
-      code?: string | number;
-    };
-
-    const stdout = maybeError.stdout ?? "";
-    const stderr = maybeError.stderr ?? maybeError.message ?? "Command failed.";
+    const errorRecord = toRecord(error);
+    const stdout = getStringProperty(errorRecord, "stdout") ?? "";
+    const stderr =
+      getStringProperty(errorRecord, "stderr") ??
+      getStringProperty(errorRecord, "message") ??
+      "Command failed.";
     const stdoutTruncated = truncateText(stdout, parsedInput.maxOutputChars);
     const stderrTruncated = truncateText(stderr, Math.max(2000, Math.floor(parsedInput.maxOutputChars / 4)));
 
@@ -46,7 +64,7 @@ export async function executeBash(input: unknown) {
       cwd: WORKSPACE,
       stdout: stdoutTruncated.text,
       stderr: stderrTruncated.text,
-      exitCode: typeof maybeError.code === "number" ? maybeError.code : 1,
+      exitCode: getNumericExitCode(errorRecord),
       truncated: stdoutTruncated.truncated || stderrTruncated.truncated,
     });
   }

@@ -1,25 +1,36 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import { listFilesInputSchema, listFilesOutputSchema } from "./schema";
 import { resolveWithinWorkspace, toWorkspaceRelativePath } from "../common/resolve-within-workspace";
 
-function entryTypeFromStats(stats: { isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) {
+type ListFilesInput = z.input<typeof listFilesInputSchema>;
+type ListFilesOutput = z.infer<typeof listFilesOutputSchema>;
+type ListFilesEntryType = ListFilesOutput["entries"][number]["type"];
+
+function entryTypeFromStats(
+  stats: {
+    isFile: () => boolean;
+    isDirectory: () => boolean;
+    isSymbolicLink: () => boolean;
+  },
+): ListFilesEntryType {
   if (stats.isFile()) {
-    return "file" as const;
+    return "file";
   }
 
   if (stats.isDirectory()) {
-    return "directory" as const;
+    return "directory";
   }
 
   if (stats.isSymbolicLink()) {
-    return "symlink" as const;
+    return "symlink";
   }
 
-  return "other" as const;
+  return "other";
 }
 
-export async function executeListFiles(input: unknown) {
+export async function executeListFiles(input: ListFilesInput): Promise<ListFilesOutput> {
   const parsedInput = listFilesInputSchema.parse(input);
   const resolvedRoot = resolveWithinWorkspace(parsedInput.path);
   const relativeRootPath = toWorkspaceRelativePath(resolvedRoot);

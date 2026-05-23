@@ -1,0 +1,19 @@
+{
+  "name": "@lightcode/ai",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./runtime": "./src/runtime.ts",
+    "./react": "./src/react/index.ts"
+  },
+  "scripts": {
+    "typecheck": "bunx tsc --noEmit --project tsconfig.json"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "^3.0.184",
+    "ai": "^6.0.182",
+    "react": "^19.0.0",
+    "zod": "^4.4.3"
+  }
+}

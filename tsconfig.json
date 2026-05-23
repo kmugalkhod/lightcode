@@ -9,6 +9,9 @@
     "apps/cli/src/**/*.ts",
     "apps/cli/src/**/*.tsx",
     "packages/shared/src/**/*.ts",
-    "packages/tools/src/**/*.ts"
+    "packages/ai/src/**/*.ts",
+    "packages/ai/src/**/*.tsx",
+    "packages/tools/src/index.ts",
+    "packages/tools/src/runtime.ts"
   ]
 }

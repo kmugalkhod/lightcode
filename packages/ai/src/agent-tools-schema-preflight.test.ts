@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET,
   collectToolSchemaPreflight,
-} from "./agent-tools";
+} from "@lightcode/ai";
 
 describe("provider-facing tool schema preflight", () => {
   test("all tool input schemas compile to top-level JSON object input_schema", () => {
@@ -18,7 +18,7 @@ describe("provider-facing tool schema preflight", () => {
 
     for (const entry of entries) {
       expect(entry.optionalPropertyCount).toBeLessThanOrEqual(
-        ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET
+        ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET,
       );
     }
   });

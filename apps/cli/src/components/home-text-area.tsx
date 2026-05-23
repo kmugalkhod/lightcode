@@ -1,6 +1,6 @@
+import { sessionCreateResponseSchema } from "@lightcode/ai";
 import { SlashPageMenu } from "../commands/slash-page-menu";
 import { client } from "../lib/client";
-import { sessionCreateResponseSchema } from "../lib/chat-schema-types";
 import { ChatTextArea } from "./chat/chat-text-area";
 import { getSlashPageRoutes } from "../navigation/route-registry";
 import { useAppState } from "../state/app-state";
