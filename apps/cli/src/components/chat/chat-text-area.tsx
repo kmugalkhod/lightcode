@@ -1,6 +1,7 @@
 import type { TextareaRenderable } from "@opentui/core";
 import type { ReactNode } from "react";
 import { useRef } from "react";
+import { cliTheme } from "../../ui/cli-theme";
 
 interface TextareaKeyEvent {
   name: string;
@@ -18,6 +19,7 @@ interface ChatTextAreaProps {
   containerHeight?: number;
   beforeInput?: ReactNode;
   footer?: ReactNode;
+  modeToggleHint?: boolean;
 }
 
 const textareaKeyBindings: Array<{
@@ -43,11 +45,14 @@ export function ChatTextArea({
   containerHeight,
   beforeInput,
   footer,
+  modeToggleHint = false,
 }: ChatTextAreaProps) {
   const textareaRef = useRef<TextareaRenderable>(null);
   const lastManualNewlineAt = useRef(0);
   const isFocused = focused && !disabled;
-  const inputHint = "Enter to send | Ctrl+Enter for newline";
+  const inputHint = modeToggleHint
+    ? "Enter to send | Ctrl+Enter for newline | Tab/Ctrl+T to switch mode"
+    : "Enter to send | Ctrl+Enter for newline";
 
   return (
     <box width="100%" flexDirection="column" gap={1}>
@@ -55,8 +60,8 @@ export function ChatTextArea({
       <box
         flexDirection="column"
         borderStyle="single"
-        borderColor={isFocused ? "#2F6FED" : "#2D2D2D"}
-        backgroundColor="#090D14"
+        borderColor={isFocused ? cliTheme.input.focusedBorder : cliTheme.input.blurredBorder}
+        backgroundColor={cliTheme.input.container}
         paddingX={1}
         paddingY={1}
         height={containerHeight}
@@ -97,14 +102,14 @@ export function ChatTextArea({
           width="100%"
           height={3}
           wrapMode="word"
-          backgroundColor="#111827"
-          focusedBackgroundColor="#111827"
-          textColor="#F5F5F5"
-          cursorColor="#F5F5F5"
-          placeholderColor="#8A8A8A"
+          backgroundColor={cliTheme.input.field}
+          focusedBackgroundColor={cliTheme.input.field}
+          textColor={cliTheme.input.text}
+          cursorColor={cliTheme.input.cursor}
+          placeholderColor={cliTheme.input.placeholder}
           focused={isFocused}
         />
-        <text fg="#6B7280">{inputHint}</text>
+        <text fg={cliTheme.input.hint}>{inputHint}</text>
         {footer}
       </box>
     </box>

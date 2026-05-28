@@ -9,6 +9,7 @@ import { getPathFromAction, getSlashPageRoutes } from "./navigation/route-regist
 import { ChatScreen } from "./screens/chat-screen";
 import { HomeScreen } from "./screens/home-screen";
 import { AppStateProvider, useAppState } from "./state/app-state";
+import { cliTheme } from "./ui/cli-theme";
 
 function getCurrentViewLabel(pathname: string): string {
   if (pathname === "/" || pathname === "/home") {
@@ -235,7 +236,7 @@ function AppContent() {
   };
 
   return (
-    <box flexDirection="column" flexGrow={1}>
+    <box flexDirection="column" flexGrow={1} backgroundColor={cliTheme.surfaces.base}>
       <box
         flexDirection="row"
         justifyContent="space-between"
@@ -243,9 +244,10 @@ function AppContent() {
         paddingRight={1}
         borderStyle="single"
         border={["bottom"]}
+        borderColor={cliTheme.borders.default}
       >
-        <text attributes={TextAttributes.BOLD}>Lightcode</text>
-        <text attributes={TextAttributes.DIM}>
+        <text fg={cliTheme.text.primary} attributes={TextAttributes.BOLD}>Nightcode</text>
+        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
           {currentView}
         </text>
       </box>
@@ -275,8 +277,9 @@ function AppContent() {
         paddingBottom={1}
         borderStyle="single"
         border={["top"]}
+        borderColor={cliTheme.borders.default}
       >
-        <text attributes={TextAttributes.DIM}>
+        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
           {getFooterStatus()}
         </text>
       </box>

@@ -1,3 +1,9 @@
+import {
+  defaultCodingAgentMode,
+  getCodingAgentModeDefinition,
+  type CodingAgentMode,
+} from "./coding-agent-modes";
+
 export const cwdPromptPlaceholder = "{cwd}";
 
 export const defaultCodingAgentSystemPrompt =
@@ -20,10 +26,20 @@ function normalizePromptTemplate(template: string, cwd: string) {
 export function buildCodingAgentSystemPrompt({
   cwd,
   override,
+  mode = defaultCodingAgentMode,
 }: {
   cwd: string;
   override?: string | null;
+  mode?: CodingAgentMode;
 }) {
   const promptTemplate = override?.trim() ? override : defaultCodingAgentSystemPrompt;
-  return normalizePromptTemplate(promptTemplate, cwd);
+  const normalizedPrompt = normalizePromptTemplate(promptTemplate, cwd);
+  const modeDefinition = getCodingAgentModeDefinition(mode);
+
+  return (
+    `${normalizedPrompt}\n\n` +
+    `Current mode: ${modeDefinition.label}.\n` +
+    `Mode purpose: ${modeDefinition.purpose}\n` +
+    `${modeDefinition.instructions}`
+  );
 }

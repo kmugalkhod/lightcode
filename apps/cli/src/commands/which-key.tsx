@@ -1,5 +1,6 @@
 import { TextAttributes } from "@opentui/core";
-import { getLeaderBindings, type KeyBinding } from "./keymap";
+import { getLeaderBindings } from "./keymap";
+import { cliTheme } from "../ui/cli-theme";
 
 export function WhichKey() {
   const bindings = getLeaderBindings();
@@ -11,30 +12,42 @@ export function WhichKey() {
       top="40%"
       width="20%"
       flexDirection="column"
-      backgroundColor="#1E1E1E"
+      backgroundColor={cliTheme.overlay.surface}
       borderStyle="single"
       border={["top", "bottom", "left", "right"]}
-      borderColor="#67E8F9"
+      borderColor={cliTheme.overlay.border}
     >
-      <box paddingX={1} paddingY={1} borderStyle="single" border={["bottom"]}>
-        <text fg="#67E8F9" attributes={TextAttributes.BOLD}>
+      <box
+        paddingX={1}
+        paddingY={1}
+        borderStyle="single"
+        border={["bottom"]}
+        borderColor={cliTheme.overlay.border}
+      >
+        <text fg={cliTheme.overlay.title} attributes={TextAttributes.BOLD}>
           Leader Key Menu
         </text>
       </box>
       <box flexDirection="column" flexGrow={1} padding={1}>
         {bindings.map((binding) => (
           <box key={binding.sequence} flexDirection="row" justifyContent="space-between" paddingX={1}>
-            <text fg="#FFFFFF">
+            <text fg={cliTheme.text.primary}>
               {binding.label}
             </text>
-            <text fg="#8D8D8D" attributes={TextAttributes.DIM}>
+            <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
               {binding.sequence}
             </text>
           </box>
         ))}
       </box>
-      <box paddingX={1} paddingY={1} borderStyle="single" border={["top"]}>
-        <text attributes={TextAttributes.DIM}>
+      <box
+        paddingX={1}
+        paddingY={1}
+        borderStyle="single"
+        border={["top"]}
+        borderColor={cliTheme.overlay.border}
+      >
+        <text fg={cliTheme.overlay.footerText} attributes={TextAttributes.DIM}>
           Press key or Esc to cancel
         </text>
       </box>

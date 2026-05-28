@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -8,6 +9,20 @@ import { grepInputSchema, grepOutputSchema } from "./schema";
 const execFileAsync = promisify(execFile);
 type GrepInput = z.input<typeof grepInputSchema>;
 type GrepOutput = z.infer<typeof grepOutputSchema>;
+type GrepMatch = GrepOutput["matches"][number];
+
+const fallbackIgnoredDirectories = new Set([
+  ".git",
+  ".next",
+  ".turbo",
+  ".vercel",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+]);
+const maxFallbackFileBytes = 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -108,6 +123,141 @@ function parseRgMatches(stdout: string, maxResults: number): GrepOutput["matches
   return matches;
 }
 
+function getFirstMatchColumn(
+  line: string,
+  query: string,
+  isRegex: boolean,
+  caseSensitive: boolean,
+): number | null {
+  if (isRegex) {
+    let matcher: RegExp;
+    try {
+      matcher = new RegExp(query, caseSensitive ? "" : "i");
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : "Invalid regular expression.");
+    }
+
+    const match = matcher.exec(line);
+    return match ? match.index + 1 : null;
+  }
+
+  const haystack = caseSensitive ? line : line.toLowerCase();
+  const needle = caseSensitive ? query : query.toLowerCase();
+  const index = haystack.indexOf(needle);
+  return index >= 0 ? index + 1 : null;
+}
+
+async function collectSearchFiles(searchRootPath: string): Promise<string[]> {
+  let searchRootStat;
+  try {
+    searchRootStat = await stat(searchRootPath);
+  } catch {
+    return [];
+  }
+
+  if (searchRootStat.isFile()) {
+    return [searchRootPath];
+  }
+
+  if (!searchRootStat.isDirectory()) {
+    return [];
+  }
+
+  const files: string[] = [];
+  let entries;
+  try {
+    entries = await readdir(searchRootPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (entry.isDirectory() && fallbackIgnoredDirectories.has(entry.name)) {
+      continue;
+    }
+
+    const entryPath = path.join(searchRootPath, entry.name);
+
+    if (entry.isDirectory()) {
+      files.push(...(await collectSearchFiles(entryPath)));
+      continue;
+    }
+
+    if (entry.isFile()) {
+      files.push(entryPath);
+    }
+  }
+
+  return files;
+}
+
+async function searchFileWithFallback(
+  filePath: string,
+  parsedInput: z.infer<typeof grepInputSchema>,
+  matches: GrepMatch[],
+): Promise<boolean> {
+  const fileStat = await stat(filePath);
+  if (fileStat.size > maxFallbackFileBytes) {
+    return false;
+  }
+
+  let content: string;
+  try {
+    content = await readFile(filePath, "utf8");
+  } catch {
+    return false;
+  }
+
+  if (content.includes("\0")) {
+    return false;
+  }
+
+  const lines = content.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const column = getFirstMatchColumn(
+      line,
+      parsedInput.query,
+      parsedInput.isRegex,
+      parsedInput.caseSensitive,
+    );
+
+    if (column === null) {
+      continue;
+    }
+
+    matches.push({
+      path: toWorkspaceRelativePath(filePath),
+      lineNumber: index + 1,
+      column,
+      line,
+    });
+
+    if (matches.length >= parsedInput.maxResults) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function grepWithFallback(
+  searchRootPath: string,
+  parsedInput: z.infer<typeof grepInputSchema>,
+): Promise<GrepOutput["matches"]> {
+  const matches: GrepMatch[] = [];
+  const files = await collectSearchFiles(searchRootPath);
+
+  for (const filePath of files) {
+    const reachedLimit = await searchFileWithFallback(filePath, parsedInput, matches);
+    if (reachedLimit) {
+      break;
+    }
+  }
+
+  return matches;
+}
+
 export async function executeGrep(input: GrepInput): Promise<GrepOutput> {
   const parsedInput = grepInputSchema.parse(input);
   const searchRootPath = resolveWithinWorkspace(parsedInput.path);
@@ -140,7 +290,14 @@ export async function executeGrep(input: GrepInput): Promise<GrepOutput> {
       const errorStdout = getStringProperty(errorRecord, "stdout");
       stdout = errorStdout ?? "";
     } else if (errorCode === "ENOENT") {
-      throw new Error("The 'rg' command is required for grep but is not available.");
+      const matches = await grepWithFallback(searchRootPath, parsedInput);
+      return grepOutputSchema.parse({
+        query: parsedInput.query,
+        path: relativeSearchRootPath,
+        matches,
+        totalMatches: matches.length,
+        truncated: matches.length >= parsedInput.maxResults,
+      });
     } else {
       throw new Error(getStringProperty(errorRecord, "message") ?? "Failed to execute grep.");
     }

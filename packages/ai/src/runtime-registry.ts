@@ -25,6 +25,10 @@ export function parseCodingToolInput(
   rawInput: unknown,
 ): CodingToolInputByName["grep"];
 export function parseCodingToolInput(
+  toolName: "request_user_input",
+  rawInput: unknown,
+): CodingToolInputByName["request_user_input"];
+export function parseCodingToolInput(
   toolName: "write_file",
   rawInput: unknown,
 ): CodingToolInputByName["write_file"];
@@ -51,6 +55,8 @@ export function parseCodingToolInput(
       return codingToolInputSchemas.read_file.parse(rawInput);
     case "grep":
       return codingToolInputSchemas.grep.parse(rawInput);
+    case "request_user_input":
+      return codingToolInputSchemas.request_user_input.parse(rawInput);
     case "write_file":
       return codingToolInputSchemas.write_file.parse(rawInput);
     case "edit_file":
@@ -72,6 +78,10 @@ export function executeCodingTool(
   toolName: "grep",
   input: CodingToolInputByName["grep"],
 ): Promise<CodingToolOutputByName["grep"]>;
+export function executeCodingTool(
+  toolName: "request_user_input",
+  input: CodingToolInputByName["request_user_input"],
+): Promise<CodingToolOutputByName["request_user_input"]>;
 export function executeCodingTool(
   toolName: "write_file",
   input: CodingToolInputByName["write_file"],
@@ -107,6 +117,13 @@ export async function executeCodingTool(
       const validatedInput = codingToolInputSchemas.grep.parse(input);
       const rawOutput = await executeGrep(validatedInput);
       return codingToolOutputSchemas.grep.parse(rawOutput);
+    }
+    case "request_user_input": {
+      codingToolInputSchemas.request_user_input.parse(input);
+
+      throw new Error(
+        'Tool "request_user_input" requires interactive UI handling and cannot run in runtime-registry.',
+      );
     }
     case "write_file": {
       const validatedInput = codingToolInputSchemas.write_file.parse(input);

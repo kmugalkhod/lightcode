@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { TextAttributes } from "@opentui/core";
+import { cliTheme } from "./cli-theme";
 
 interface DialogProps {
   title: string;
@@ -23,20 +24,21 @@ export function Dialog({
       width={width}
       height={height}
       flexDirection="column"
-      backgroundColor="#1E1E1E"
+      backgroundColor={cliTheme.overlay.surface}
       borderStyle="single"
       border={["top", "bottom", "left", "right"]}
-      borderColor="#67E8F9"
+      borderColor={cliTheme.overlay.border}
     >
       <box
         paddingX={1}
         paddingY={1}
         borderStyle="single"
         border={["bottom"]}
+        borderColor={cliTheme.overlay.border}
         flexDirection="row"
         justifyContent="space-between"
       >
-        <text fg="#67E8F9" attributes={TextAttributes.BOLD}>
+        <text fg={cliTheme.overlay.title} attributes={TextAttributes.BOLD}>
           {title}
         </text>
       </box>

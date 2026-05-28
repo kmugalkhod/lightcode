@@ -1,6 +1,7 @@
 import { HomeAsciiArt } from "../components/home-ascii-art";
 import { HomeTextArea } from "../components/home-text-area";
 import { ServerStatus } from "../components/server-status";
+import { cliTheme } from "../ui/cli-theme";
 
 export function HomeScreen() {
   return (
@@ -13,7 +14,7 @@ export function HomeScreen() {
       gap={2}
       paddingX={2}
       paddingY={1}
-      backgroundColor="#070A12"
+      backgroundColor={cliTheme.surfaces.base}
     >
       <HomeAsciiArt />
       <ServerStatus />

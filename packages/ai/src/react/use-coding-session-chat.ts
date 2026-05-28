@@ -19,45 +19,53 @@ import {
   executeCodingTool as executeCodingToolRuntime,
   parseCodingToolInput,
 } from "../runtime-registry";
+import {
+  defaultCodingAgentMode,
+  type CodingAgentMode,
+} from "../coding-agent-modes";
+import {
+  requestUserInputToolOutputSchema,
+  type RequestUserInputToolOutput,
+} from "../request-user-input/schema";
 
-type ApprovalAction = "approve" | "deny";
+export type ToolApprovalAction = "approve" | "deny";
+
+type ApprovalCommandTarget = number | "all";
 
 const recoverableDisconnectMessage =
   "Connection interrupted. Please retry or regenerate your last message.";
-
-const approveAliases = new Set([
-  "approve",
-  "/approve",
-  "approved",
-  "yes",
-  "y",
-  "ok",
-  "okay",
-  "proceed",
-  "continue",
-]);
-
-const denyAliases = new Set([
-  "deny",
-  "/deny",
-  "denied",
-  "no",
-  "n",
-  "reject",
-  "cancel",
-  "stop",
-]);
+const buildModeAutoPromptResponse =
+  "Proceed with implementation in Build mode. Continue without additional plan questions.";
 
 const riskyToolNameSet = new Set<string>(riskyCodingTools);
 const codingToolNameSet = new Set<string>(Object.keys(codingToolInputSchemas));
 type CodingToolInput = CodingToolInputByName[CodingToolName];
 type CodingToolOutput = CodingToolOutputByName[CodingToolName];
+type RequestUserInputToolInput = CodingToolInputByName["request_user_input"];
 
 export interface PendingToolApproval {
   toolCallId: string;
   toolName: CodingToolName;
   input: CodingToolInput;
   summary: string;
+}
+
+export interface PendingUserPromptOption {
+  label: string;
+  description?: string;
+}
+
+export interface PendingUserPrompt {
+  toolCallId: string;
+  header?: string;
+  question: string;
+  options: PendingUserPromptOption[];
+  allowCustomResponse: boolean;
+  placeholder?: string;
+}
+
+export interface RespondToUserPromptInput extends RequestUserInputToolOutput {
+  toolCallId: string;
 }
 
 export interface UseCodingSessionChatOptions {
@@ -68,6 +76,7 @@ export interface UseCodingSessionChatOptions {
   sessionId: string;
   skipHistoryLoad?: boolean;
   cwd?: string;
+  mode?: CodingAgentMode;
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -86,7 +95,33 @@ function isRiskyToolName(toolName: CodingToolName): boolean {
   return riskyToolNameSet.has(toolName);
 }
 
+function isRequestUserInputToolName(
+  toolName: CodingToolName,
+): toolName is "request_user_input" {
+  return toolName === "request_user_input";
+}
+
+function getStringInputProperty(input: CodingToolInput, key: string): string | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const value = Reflect.get(input, key);
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
+
 function summarizeToolCall(toolName: CodingToolName, input: CodingToolInput): string {
+  const target =
+    getStringInputProperty(input, "path") ??
+    getStringInputProperty(input, "command") ??
+    getStringInputProperty(input, "query");
+
+  if (target) {
+    return `${toolName} ${toSingleLinePreview(target)}`.trim();
+  }
+
   return `${toolName} ${toSingleLinePreview(input)}`.trim();
 }
 
@@ -116,51 +151,28 @@ function normalizeChatErrorMessage(message: string) {
 
 function parseApprovalCommand(
   input: string,
-): { action: ApprovalAction; index: number } | null {
+): { action: ToolApprovalAction; target: ApprovalCommandTarget } | null {
   const trimmed = input.trim();
   if (!trimmed) {
     return null;
   }
 
-  const commandMatch = trimmed.match(/^\/?(approve|deny)(?:\s+(\d+))?$/i);
+  const commandMatch = trimmed.match(/^\/?(approve|deny)(?:\s+(all|\d+))?$/i);
   if (commandMatch) {
     const actionToken = commandMatch[1].toLowerCase();
-    const action: ApprovalAction =
+    const action: ToolApprovalAction =
       actionToken === "approve" ? "approve" : "deny";
-    const index = commandMatch[2] ? Math.max(0, Number(commandMatch[2]) - 1) : 0;
+    const targetToken = commandMatch[2]?.toLowerCase();
+    const target =
+      targetToken === "all"
+        ? "all"
+        : targetToken
+          ? Math.max(0, Number(targetToken) - 1)
+          : 0;
 
     return {
       action,
-      index,
-    };
-  }
-
-  const words = trimmed
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((word) => word.length > 0);
-  if (words.length === 0) {
-    return null;
-  }
-
-  const token = words[0];
-  const indexToken = words[1];
-  const parsedIndex =
-    indexToken && /^\d+$/.test(indexToken)
-      ? Math.max(0, Number(indexToken) - 1)
-      : 0;
-
-  if (approveAliases.has(token)) {
-    return {
-      action: "approve",
-      index: parsedIndex,
-    };
-  }
-
-  if (denyAliases.has(token)) {
-    return {
-      action: "deny",
-      index: parsedIndex,
+      target,
     };
   }
 
@@ -195,21 +207,29 @@ export function useCodingSessionChat({
   sessionId,
   skipHistoryLoad = false,
   cwd = process.cwd(),
+  mode = defaultCodingAgentMode,
 }: UseCodingSessionChatOptions) {
   const submittedInitialPromptRef = useRef<string | null>(null);
+  const modeRef = useRef(mode);
+  const cwdRef = useRef(cwd);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [toolExecutionError, setToolExecutionError] = useState<string | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(true);
   const [pendingApprovals, setPendingApprovals] = useState<PendingToolApproval[]>([]);
+  const [pendingUserPrompts, setPendingUserPrompts] = useState<PendingUserPrompt[]>([]);
+
+  modeRef.current = mode;
+  cwdRef.current = cwd;
 
   const transport = useMemo(() => {
     return new DefaultChatTransport({
       api: chatApi,
       body: () => ({
-        cwd,
+        cwd: cwdRef.current,
+        mode: modeRef.current,
       }),
     });
-  }, [chatApi, cwd]);
+  }, [chatApi]);
 
   const { messages, setMessages, sendMessage, addToolOutput, error, status } =
     useChat<UIMessage>({
@@ -236,7 +256,55 @@ export function useCodingSessionChat({
           return;
         }
 
+        if (isRequestUserInputToolName(toolName)) {
+          if (mode !== "plan") {
+            addToolOutput({
+              tool: "request_user_input",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                answer: buildModeAutoPromptResponse,
+                source: "custom",
+              },
+            });
+            return;
+          }
+
+          const promptInput = parsedInput as RequestUserInputToolInput;
+
+          setPendingUserPrompts((current) => {
+            if (current.some((item) => item.toolCallId === toolCall.toolCallId)) {
+              return current;
+            }
+
+            return [
+              ...current,
+              {
+                toolCallId: toolCall.toolCallId,
+                header: promptInput.header,
+                question: promptInput.question,
+                options: promptInput.options ?? [],
+                allowCustomResponse: promptInput.allowCustomResponse,
+                placeholder: promptInput.placeholder,
+              },
+            ];
+          });
+
+          return;
+        }
+
         if (isRiskyToolName(toolName)) {
+          if (mode === "plan") {
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              state: "output-error",
+              errorText:
+                `Tool "${toolName}" is blocked in Plan mode. ` +
+                "Switch to Build mode before running mutating tools.",
+            });
+            return;
+          }
+
           setPendingApprovals((previousApprovals) => {
             if (
               previousApprovals.some(
@@ -280,6 +348,18 @@ export function useCodingSessionChat({
 
   const runApprovedTool = useCallback(
     async (approval: PendingToolApproval) => {
+      if (mode === "plan") {
+        addToolOutput({
+          tool: approval.toolName,
+          toolCallId: approval.toolCallId,
+          state: "output-error",
+          errorText:
+            `Tool "${approval.toolName}" is blocked in Plan mode. ` +
+            "Switch to Build mode before running mutating tools.",
+        });
+        return;
+      }
+
       try {
         const output = await executeCodingTool(approval.toolName, approval.input);
         addToolOutput({
@@ -296,11 +376,11 @@ export function useCodingSessionChat({
         });
       }
     },
-    [addToolOutput],
+    [addToolOutput, mode],
   );
 
-  const resolveApproval = useCallback(
-    (action: ApprovalAction, index: number) => {
+  const resolveToolApproval = useCallback(
+    (action: ToolApprovalAction, index: number) => {
       if (pendingApprovals.length === 0) {
         setToolExecutionError("No pending tool approvals.");
         return;
@@ -338,17 +418,90 @@ export function useCodingSessionChat({
     [addToolOutput, pendingApprovals, runApprovedTool],
   );
 
-  const submitInput = useCallback(
-    (text: string) => {
-      const approvalCommand = parseApprovalCommand(text);
-      if (approvalCommand) {
-        resolveApproval(approvalCommand.action, approvalCommand.index);
+  const resolveAllToolApprovals = useCallback(
+    (action: ToolApprovalAction) => {
+      if (pendingApprovals.length === 0) {
+        setToolExecutionError("No pending tool approvals.");
         return;
       }
 
+      const selectedApprovals = [...pendingApprovals];
+      setPendingApprovals([]);
+      setToolExecutionError(null);
+
+      if (action === "deny") {
+        for (const approval of selectedApprovals) {
+          addToolOutput({
+            tool: approval.toolName,
+            toolCallId: approval.toolCallId,
+            state: "output-error",
+            errorText: "Tool execution denied by user.",
+          });
+        }
+        return;
+      }
+
+      void (async () => {
+        for (const approval of selectedApprovals) {
+          await runApprovedTool(approval);
+        }
+      })();
+    },
+    [addToolOutput, pendingApprovals, runApprovedTool],
+  );
+
+  const respondToUserPrompt = useCallback(
+    ({ toolCallId, ...rawResponse }: RespondToUserPromptInput) => {
+      const pendingPrompt = pendingUserPrompts.find(
+        (prompt) => prompt.toolCallId === toolCallId,
+      );
+
+      if (!pendingPrompt) {
+        setToolExecutionError("No matching user prompt is pending.");
+        return;
+      }
+
+      const parsedResponse = requestUserInputToolOutputSchema.safeParse(rawResponse);
+      if (!parsedResponse.success) {
+        setToolExecutionError("Invalid user prompt response.");
+        return;
+      }
+
+      setToolExecutionError(null);
+      setPendingUserPrompts((current) =>
+        current.filter((prompt) => prompt.toolCallId !== toolCallId),
+      );
+      addToolOutput({
+        tool: "request_user_input",
+        toolCallId,
+        output: parsedResponse.data,
+      });
+    },
+    [addToolOutput, pendingUserPrompts],
+  );
+
+  const submitInput = useCallback(
+    (text: string) => {
       if (pendingApprovals.length > 0) {
+        const approvalCommand = parseApprovalCommand(text);
+        if (approvalCommand) {
+          if (approvalCommand.target === "all") {
+            resolveAllToolApprovals(approvalCommand.action);
+          } else {
+            resolveToolApproval(approvalCommand.action, approvalCommand.target);
+          }
+          return;
+        }
+
         setToolExecutionError(
-          "Tool approval pending. Use approve/deny (or yes/no) with optional index, e.g. 'approve 1'.",
+          "Tool approval pending. Use approve/deny with optional index or all, e.g. 'approve 1' or 'approve all'.",
+        );
+        return;
+      }
+
+      if (pendingUserPrompts.length > 0) {
+        setToolExecutionError(
+          "A user prompt is waiting for response. Please answer it in the inline prompt.",
         );
         return;
       }
@@ -356,7 +509,26 @@ export function useCodingSessionChat({
       setToolExecutionError(null);
       void sendMessage({ text });
     },
-    [pendingApprovals.length, resolveApproval, sendMessage],
+    [
+      pendingApprovals.length,
+      pendingUserPrompts.length,
+      resolveAllToolApprovals,
+      resolveToolApproval,
+      sendMessage,
+    ],
+  );
+
+  const sendDirectMessage = useCallback(
+    (text: string) => {
+      const messageText = text.trim();
+      if (!messageText) {
+        return;
+      }
+
+      setToolExecutionError(null);
+      void sendMessage({ text: messageText });
+    },
+    [sendMessage],
   );
 
   useEffect(() => {
@@ -365,6 +537,7 @@ export function useCodingSessionChat({
     setHistoryError(null);
     setToolExecutionError(null);
     setPendingApprovals([]);
+    setPendingUserPrompts([]);
     setIsHistoryLoading(true);
 
     async function loadMessages() {
@@ -421,6 +594,26 @@ export function useCodingSessionChat({
   ]);
 
   useEffect(() => {
+    if (mode === "plan" || pendingUserPrompts.length === 0) {
+      return;
+    }
+
+    for (const pendingPrompt of pendingUserPrompts) {
+      addToolOutput({
+        tool: "request_user_input",
+        toolCallId: pendingPrompt.toolCallId,
+        output: {
+          answer: buildModeAutoPromptResponse,
+          source: "custom",
+        },
+      });
+    }
+
+    setPendingUserPrompts([]);
+    setToolExecutionError(null);
+  }, [addToolOutput, mode, pendingUserPrompts]);
+
+  useEffect(() => {
     if (!isSessionIdValid) {
       return;
     }
@@ -458,8 +651,13 @@ export function useCodingSessionChat({
     isStreaming,
     messages,
     pendingApprovals,
+    pendingUserPrompts,
+    resolveAllToolApprovals,
+    resolveToolApproval,
     sessionId,
     status,
+    respondToUserPrompt,
+    sendDirectMessage,
     submitInput,
     isSessionIdValid,
   };

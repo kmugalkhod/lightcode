@@ -6,6 +6,10 @@ import {
   MAX_TOOL_TEXT_OUTPUT_CHARS,
 } from "./constants";
 import {
+  codingAgentModeSchema,
+  defaultCodingAgentMode,
+} from "./coding-agent-modes";
+import {
   bashDescription,
   bashInputSchema,
   bashOutputSchema,
@@ -41,6 +45,12 @@ import {
   writeFileOutputSchema,
   writeFileProviderInputSchema,
 } from "./write-file/schema";
+import {
+  requestUserInputDescription,
+  requestUserInputToolInputSchema,
+  requestUserInputToolOutputSchema,
+  requestUserInputToolProviderInputSchema,
+} from "./request-user-input/schema";
 
 export {
   ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET,
@@ -52,12 +62,14 @@ export {
 export const codingChatRequestSchema = z.object({
   messages: z.array(z.json()),
   cwd: z.string().min(1).max(4096),
+  mode: codingAgentModeSchema.default(defaultCodingAgentMode),
 });
 
 export const codingToolDescriptions = {
   list_files: listFilesDescription,
   read_file: readFileDescription,
   grep: grepDescription,
+  request_user_input: requestUserInputDescription,
   write_file: writeFileDescription,
   edit_file: editFileDescription,
   bash: bashDescription,
@@ -67,6 +79,7 @@ export const codingToolInputSchemas = {
   list_files: listFilesInputSchema,
   read_file: readFileInputSchema,
   grep: grepInputSchema,
+  request_user_input: requestUserInputToolInputSchema,
   write_file: writeFileInputSchema,
   edit_file: editFileInputSchema,
   bash: bashInputSchema,
@@ -76,6 +89,7 @@ export const codingToolProviderInputSchemas = {
   list_files: listFilesProviderInputSchema,
   read_file: readFileProviderInputSchema,
   grep: grepProviderInputSchema,
+  request_user_input: requestUserInputToolProviderInputSchema,
   write_file: writeFileProviderInputSchema,
   edit_file: editFileProviderInputSchema,
   bash: bashProviderInputSchema,
@@ -85,6 +99,7 @@ export const codingToolOutputSchemas = {
   list_files: listFilesOutputSchema,
   read_file: readFileOutputSchema,
   grep: grepOutputSchema,
+  request_user_input: requestUserInputToolOutputSchema,
   write_file: writeFileOutputSchema,
   edit_file: editFileOutputSchema,
   bash: bashOutputSchema,
@@ -105,6 +120,7 @@ export type RiskyCodingToolName = (typeof riskyCodingTools)[number];
 
 export const codingAgentCallOptionsSchema = z.object({
   cwd: z.string().min(1).max(4096),
+  mode: codingAgentModeSchema.default(defaultCodingAgentMode),
 });
 
 function topLevelOptionalPropertyCount(schema: z.ZodObject) {

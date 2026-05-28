@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useKeyboard } from "@opentui/react";
 import { TextAttributes } from "@opentui/core";
 import { Dialog } from "./dialog";
+import { cliTheme, getOverlayRowColors } from "./cli-theme";
 
 interface SelectOption {
   value: string;
@@ -58,29 +59,31 @@ export function DialogSelect({
           onChange={(value: string) => setFilter(value || "")}
           placeholder="Search..."
           width="100%"
-          backgroundColor="#2D2D2D"
-          textColor="#FFFFFF"
+          backgroundColor={cliTheme.overlay.inputSurface}
+          textColor={cliTheme.overlay.inputText}
         />
         <box flexDirection="column" flexGrow={1} marginTop={1}>
-          {filteredOptions.map((opt, index) => (
-            <box
-              key={opt.value}
-              flexDirection="column"
-              paddingX={1}
-              backgroundColor={
-                index === selectedIndex ? "#3D3D3D" : "transparent"
-              }
-            >
-              <text fg={index === selectedIndex ? "#67E8F9" : "#FFFFFF"}>
+          {filteredOptions.map((opt, index) => {
+            const rowColors = getOverlayRowColors(index === selectedIndex);
+
+            return (
+              <box
+                key={opt.value}
+                flexDirection="column"
+                paddingX={1}
+                backgroundColor={rowColors.backgroundColor}
+              >
+                <text fg={rowColors.primaryTextColor}>
                 {opt.label}
-              </text>
-              {opt.description && (
-                <text attributes={TextAttributes.DIM} fg="#8D8D8D">
-                  {opt.description}
                 </text>
-              )}
-            </box>
-          ))}
+                {opt.description && (
+                  <text attributes={TextAttributes.DIM} fg={rowColors.secondaryTextColor}>
+                    {opt.description}
+                  </text>
+                )}
+              </box>
+            );
+          })}
         </box>
       </box>
     </Dialog>

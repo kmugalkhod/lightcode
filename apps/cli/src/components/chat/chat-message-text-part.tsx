@@ -1,5 +1,6 @@
 import { SyntaxStyle } from "@opentui/core";
 import type { TextUIPart } from "ai";
+import { cliTheme } from "../../ui/cli-theme";
 
 interface ChatMessageTextPartProps {
   part: TextUIPart;
@@ -25,7 +26,7 @@ export function ChatMessageTextPart({ part }: ChatMessageTextPartProps) {
         borders: true,
         outerBorder: true,
         borderStyle: "single",
-        borderColor: "#334155",
+        borderColor: cliTheme.markdown.tableBorder,
         selectable: true,
       }}
     />

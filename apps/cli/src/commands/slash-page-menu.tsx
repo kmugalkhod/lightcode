@@ -1,5 +1,6 @@
 import { TextAttributes } from "@opentui/core";
 import type { AnyRouteDefinition } from "../navigation/route-registry";
+import { cliTheme, getOverlayRowColors } from "../ui/cli-theme";
 
 interface SlashPageMenuProps {
   query: string;
@@ -18,36 +19,37 @@ export function SlashPageMenu({
     <box
       width="100%"
       flexDirection="column"
-      backgroundColor="#1F1F1F"
+      backgroundColor={cliTheme.overlay.surface}
       borderStyle="single"
       border={["left", "right"]}
-      borderColor="#777777"
+      borderColor={cliTheme.overlay.border}
     >
       <box flexDirection="column" paddingX={1} paddingTop={1}>
         {routes.length === 0 && (
           <box paddingX={1}>
-            <text attributes={TextAttributes.DIM}>No matching pages</text>
+            <text fg={cliTheme.overlay.mutedText} attributes={TextAttributes.DIM}>No matching pages</text>
           </box>
         )}
         {routes.map((route, index) => {
           const selected = index === selectedIndex;
+          const rowColors = getOverlayRowColors(selected);
 
           return (
             <box
               key={route.id}
               flexDirection="row"
               paddingX={1}
-              backgroundColor={selected ? "#F5B07F" : "transparent"}
+              backgroundColor={rowColors.backgroundColor}
             >
               <text
-                fg={selected ? "#000000" : "#FFFFFF"}
+                fg={rowColors.primaryTextColor}
                 attributes={TextAttributes.BOLD}
                 width={22}
               >
                 {route.path}
               </text>
               <text
-                fg={selected ? "#000000" : "#8D8D8D"}
+                fg={rowColors.secondaryTextColor}
                 attributes={selected ? TextAttributes.NONE : TextAttributes.DIM}
               >
                 {route.description}
@@ -64,8 +66,8 @@ export function SlashPageMenu({
           placeholder="/"
           focused
           width="100%"
-          backgroundColor="#1F1F1F"
-          textColor="#FFFFFF"
+          backgroundColor={cliTheme.overlay.inputSurface}
+          textColor={cliTheme.overlay.inputText}
         />
       </box>
     </box>

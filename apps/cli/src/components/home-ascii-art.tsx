@@ -1,14 +1,12 @@
 import { productName } from "@lightcode/shared";
+import { cliTheme } from "../ui/cli-theme";
 
-const codeStart = productName.toLowerCase().indexOf("code");
-const logoColors = Array.from(productName, (_, index) =>
-  codeStart >= 0 && index >= codeStart ? "#BAE6FD" : "#67E8F9",
-);
+const logoColors = Array.from(productName, () => cliTheme.accent.primary);
 
 export function HomeAsciiArt() {
   return (
     <box flexDirection="column" alignItems="center">
-      <ascii-font text={productName.toLowerCase()} font="block" color={logoColors} />
+      <ascii-font text="nightcode" font="block" color={logoColors} />
     </box>
   );
 }

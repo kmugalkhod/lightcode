@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { serverStatusColors } from "../ui/cli-theme";
+
 type ServerStatus = "checking" | "online" | "unhealthy" | "offline";
-const apiBaseUrl = Bun.env.LIGHTCODE_API_URL ?? "http://localhost:3000";
+const apiBaseUrl = Bun.env.NIGHTCODE_API_URL ?? "http://localhost:3000";
 
 export function ServerStatus() {
   const [status, setStatus] = useState<ServerStatus>("checking");
@@ -28,15 +30,8 @@ export function ServerStatus() {
     };
   }, []);
 
-  const colorByStatus: Record<ServerStatus, string> = {
-    checking: "#94A3B8",
-    online: "#22C55E",
-    unhealthy: "#F59E0B",
-    offline: "#EF4444",
-  };
-
   return (
-    <text fg={colorByStatus[status]}>
+    <text fg={serverStatusColors[status]}>
       Server: {status}
     </text>
   );

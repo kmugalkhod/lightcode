@@ -1,8 +1,10 @@
+import { codingAgentModeSchema } from "@lightcode/ai";
 import { z } from "zod";
 
 export const sessionRouteLocationStateSchema = z.object({
   input: z.string().optional(),
   skipHistoryLoad: z.boolean().optional(),
+  mode: codingAgentModeSchema.optional(),
 });
 
 export type SessionRouteLocationState = z.infer<typeof sessionRouteLocationStateSchema>;

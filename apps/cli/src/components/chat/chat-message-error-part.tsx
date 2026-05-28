@@ -1,3 +1,5 @@
+import { cliTheme } from "../../ui/cli-theme";
+
 interface ChatMessageErrorPartProps {
   text: string;
   label?: string;
@@ -8,9 +10,9 @@ export function ChatMessageErrorPart({
   label = "Error",
 }: ChatMessageErrorPartProps) {
   return (
-    <box flexDirection="column">
-      <text fg="#F87171">{label}</text>
-      <text fg="#FCA5A5">{text}</text>
-    </box>
+    <text>
+      <span fg={cliTheme.semantic.error}>{label}:</span>
+      <span fg={cliTheme.text.secondary}> {text}</span>
+    </text>
   );
 }

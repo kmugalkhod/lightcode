@@ -3,9 +3,11 @@ import { ChatMessageErrorPart } from "./chat-message-error-part";
 import { ChatMessageReasoningPart } from "./chat-message-reasoning-part";
 import { ChatMessageTextPart } from "./chat-message-text-part";
 import { ChatMessageToolInvocationPart } from "./chat-message-tool-invocation-part";
+import { getMessageRoleTheme } from "../../ui/cli-theme";
 
 interface ChatMessageProps {
   message: UIMessage;
+  pendingApprovalIds?: ReadonlySet<string>;
 }
 
 const ROLE_LABELS = {
@@ -14,30 +16,8 @@ const ROLE_LABELS = {
   system: "System",
 } satisfies Record<UIMessage["role"], string>;
 
-const ROLE_STYLES = {
-  user: {
-    labelColor: "#93C5FD",
-    borderColor: "#1E3A5F",
-    backgroundColor: "#0B1220",
-  },
-  assistant: {
-    labelColor: "#86EFAC",
-    borderColor: "#1E4D34",
-    backgroundColor: "#07140E",
-  },
-  system: {
-    labelColor: "#A3A3A3",
-    borderColor: "#3A3A3A",
-    backgroundColor: "#141414",
-  },
-} satisfies Record<UIMessage["role"], {
-  labelColor: string;
-  borderColor: string;
-  backgroundColor: string;
-}>;
-
-export function ChatMessage({ message }: ChatMessageProps) {
-  const roleStyle = ROLE_STYLES[message.role];
+export function ChatMessage({ message, pendingApprovalIds }: ChatMessageProps) {
+  const roleStyle = getMessageRoleTheme(message.role);
   const renderedParts = message.parts
     .map((part, index) => {
       const key = `${message.id}:${part.type}:${index}`;
@@ -51,7 +31,13 @@ export function ChatMessage({ message }: ChatMessageProps) {
       }
 
       if (isToolUIPart(part)) {
-        return <ChatMessageToolInvocationPart key={key} part={part} />;
+        return (
+          <ChatMessageToolInvocationPart
+            key={key}
+            part={part}
+            pendingApprovalIds={pendingApprovalIds}
+          />
+        );
       }
 
       if (part.type === "step-start") {

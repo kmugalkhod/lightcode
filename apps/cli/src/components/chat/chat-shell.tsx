@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ChatMessageErrorPart } from "./chat-message-error-part";
+import { cliTheme } from "../../ui/cli-theme";
 
 interface ChatShellProps {
   title?: string;
@@ -10,12 +11,6 @@ interface ChatShellProps {
   errorMessage?: string | null;
   inputArea: ReactNode;
 }
-
-const chatScrollbarTheme = {
-  rail: "#0B0F16",
-  thumb: "#1E3A5F",
-  thumbActive: "#22D3EE",
-};
 
 export function ChatShell({
   title = "Conversation",
@@ -31,15 +26,15 @@ export function ChatShell({
   return (
     <box width="100%" height="100%" flexDirection="column" gap={1}>
       <box width="100%" flexDirection="row" justifyContent="space-between" paddingX={1}>
-        <text fg="#A3A3A3">{title}</text>
-        <text fg="#6B7280">{statusLabel}</text>
+        <text fg={cliTheme.text.secondary}>{title}</text>
+        <text fg={cliTheme.text.muted}>{statusLabel}</text>
       </box>
       <box
         width="100%"
         flexGrow={1}
         borderStyle="single"
-        borderColor="#223142"
-        backgroundColor="#06080D"
+        borderColor={cliTheme.borders.default}
+        backgroundColor={cliTheme.surfaces.inset}
       >
         <scrollbox
           width="100%"
@@ -57,18 +52,18 @@ export function ChatShell({
           }}
           scrollbarOptions={{
             trackOptions: {
-              foregroundColor: chatScrollbarTheme.thumb,
-              backgroundColor: chatScrollbarTheme.rail,
+              foregroundColor: cliTheme.scroll.thumb,
+              backgroundColor: cliTheme.scroll.rail,
             },
           }}
           verticalScrollbarOptions={{
             trackOptions: {
-              foregroundColor: chatScrollbarTheme.thumbActive,
-              backgroundColor: chatScrollbarTheme.rail,
+              foregroundColor: cliTheme.scroll.thumbActive,
+              backgroundColor: cliTheme.scroll.rail,
             },
           }}
         >
-          {hasMessages ? children : <text fg="#8A8A8A">{emptyStateLabel}</text>}
+          {hasMessages ? children : <text fg={cliTheme.text.muted}>{emptyStateLabel}</text>}
         </scrollbox>
       </box>
       {errorMessage ? <ChatMessageErrorPart label="Chat error" text={errorMessage} /> : null}

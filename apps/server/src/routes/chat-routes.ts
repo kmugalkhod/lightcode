@@ -11,6 +11,7 @@ import {
   assertProviderToolSchemaBudget,
   codingChatRequestSchema,
   createCodingAgent,
+  type CodingAgentMode,
   type SessionMessagesResponse,
   sessionPathParamsSchema,
 } from "@lightcode/ai";
@@ -79,6 +80,7 @@ async function streamSessionChat(
   sessionId: string,
   messagesPayload: SessionMessagesResponse["messages"],
   cwd: string,
+  mode: CodingAgentMode,
 ) {
   const validatedMessagesResult = await safeValidateUIMessages({
     messages: messagesPayload,
@@ -150,7 +152,7 @@ async function streamSessionChat(
     return await createAgentUIStreamResponse({
       agent: codingAgent,
       uiMessages: validatedMessages,
-      options: { cwd },
+      options: { cwd, mode },
       generateMessageId: generateId,
       sendReasoning: true,
       consumeSseStream: async ({ stream }) => {
@@ -307,6 +309,6 @@ export const sessionRoutes = new Hono()
     async (c) => {
       const { id } = c.req.valid("param");
       const body = c.req.valid("json");
-      return streamSessionChat(c, id, body.messages, body.cwd);
+      return streamSessionChat(c, id, body.messages, body.cwd, body.mode);
     }
   );

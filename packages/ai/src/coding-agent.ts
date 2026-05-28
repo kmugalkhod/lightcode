@@ -12,6 +12,11 @@ import {
   codingToolProviderInputSchemas,
 } from "./agent-tools";
 import { buildCodingAgentSystemPrompt } from "./coding-agent-prompt";
+import {
+  defaultCodingAgentMode,
+  getCodingAgentModeDefinition,
+  type CodingAgentMode,
+} from "./coding-agent-modes";
 
 export function createCodingAgentTools() {
   return {
@@ -28,6 +33,11 @@ export function createCodingAgentTools() {
     grep: tool({
       description: codingToolDescriptions.grep,
       inputSchema: codingToolProviderInputSchemas.grep,
+      strict: true,
+    }),
+    request_user_input: tool({
+      description: codingToolDescriptions.request_user_input,
+      inputSchema: codingToolProviderInputSchemas.request_user_input,
       strict: true,
     }),
     write_file: tool({
@@ -67,7 +77,7 @@ export function createCodingAgent({
 }: CreateCodingAgentOptions) {
   const tools = createCodingAgentTools();
 
-  return new ToolLoopAgent<{ cwd: string }, typeof tools>({
+  return new ToolLoopAgent<{ cwd: string; mode?: CodingAgentMode }, typeof tools>({
     model,
     tools,
     stopWhen: stepCountIs(maxSteps),
@@ -75,13 +85,18 @@ export function createCodingAgent({
     providerOptions,
     callOptionsSchema: codingAgentCallOptionsSchema,
     prepareCall: ({ options, prompt, messages, ...settings }) => {
+      const mode = options.mode ?? defaultCodingAgentMode;
+      const modeDefinition = getCodingAgentModeDefinition(mode);
+
       return {
         ...settings,
         prompt,
         messages,
+        activeTools: [...modeDefinition.activeTools],
         instructions: buildCodingAgentSystemPrompt({
           cwd: options.cwd,
           override: promptOverride,
+          mode,
         }),
       };
     },

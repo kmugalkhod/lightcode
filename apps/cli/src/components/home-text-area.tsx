@@ -1,9 +1,16 @@
-import { sessionCreateResponseSchema } from "@lightcode/ai";
+import {
+  codingAgentModes,
+  cycleCodingAgentMode,
+  defaultCodingAgentMode,
+  sessionCreateResponseSchema,
+} from "@lightcode/ai";
+import { useKeyboard } from "@opentui/react";
 import { SlashPageMenu } from "../commands/slash-page-menu";
 import { client } from "../lib/client";
 import { ChatTextArea } from "./chat/chat-text-area";
 import { getSlashPageRoutes } from "../navigation/route-registry";
 import { useAppState } from "../state/app-state";
+import { cliTheme } from "../ui/cli-theme";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
@@ -26,9 +33,37 @@ export function HomeTextArea() {
   } = useAppState();
   const [sessionCreateError, setSessionCreateError] = useState<string | null>(null);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [mode, setMode] = useState(defaultCodingAgentMode);
 
   const slashRoutes = getSlashPageRoutes(slashMenuQuery);
   const selectedIndex = Math.min(slashMenuSelected, Math.max(slashRoutes.length - 1, 0));
+  const modeDefinition = codingAgentModes[mode];
+
+  useKeyboard((keyEvent) => {
+    const keyName = keyEvent.name.toLowerCase();
+    const isPlainTab =
+      (keyName === "tab" || keyEvent.sequence === "\t") &&
+      !keyEvent.ctrl &&
+      !keyEvent.meta &&
+      !keyEvent.super &&
+      !keyEvent.hyper &&
+      !keyEvent.shift;
+    const isCtrlT =
+      keyName === "t" &&
+      keyEvent.ctrl &&
+      !keyEvent.meta &&
+      !keyEvent.super &&
+      !keyEvent.hyper &&
+      !keyEvent.shift;
+
+    if ((!isPlainTab && !isCtrlT) || slashMenuOpen || isCreatingSession) {
+      return;
+    }
+
+    keyEvent.preventDefault();
+    keyEvent.stopPropagation();
+    setMode((currentMode) => cycleCodingAgentMode(currentMode));
+  });
 
   async function createSessionAndNavigate(text: string) {
     const prompt = text.trim();
@@ -56,6 +91,7 @@ export function HomeTextArea() {
         state: {
           input: text,
           skipHistoryLoad: true,
+          mode,
         },
       });
     } catch (sessionCreateFailure) {
@@ -74,6 +110,7 @@ export function HomeTextArea() {
         placeholder={'Ask anything... "What is the tech stack of this project?"'}
         focused={!slashMenuOpen && !isCreatingSession}
         disabled={isCreatingSession}
+        modeToggleHint
         beforeInput={slashMenuOpen ? (
           <SlashPageMenu
             query={slashMenuQuery}
@@ -89,15 +126,20 @@ export function HomeTextArea() {
           void createSessionAndNavigate(text);
         }}
         footer={(
-          <text>
-            <span fg="#22D3EE">Build</span>
-            <span fg="#8D8D8D">{isCreatingSession ? " Creating session..." : " GPT-5.5 / OpenAI / high"}</span>
-          </text>
+          <box flexDirection="row" justifyContent="space-between">
+            <text fg={cliTheme.text.muted}>
+              {isCreatingSession ? "Creating session..." : "Tab/Ctrl+T switch mode | Ctrl+P commands"}
+            </text>
+            <text>
+              <span fg={cliTheme.accent.primary}>{modeDefinition.label}</span>
+              <span fg={cliTheme.text.muted}> mode</span>
+            </text>
+          </box>
         )}
       />
       {sessionCreateError ? (
         <box paddingX={1}>
-          <text fg="#F87171">{sessionCreateError}</text>
+          <text fg={cliTheme.semantic.error}>{sessionCreateError}</text>
         </box>
       ) : null}
     </box>
