@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET,
+  assertProviderToolSchemaBudget,
   collectToolSchemaPreflight,
 } from "@lightcode/ai";
 
@@ -21,5 +22,7 @@ describe("provider-facing tool schema preflight", () => {
         ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET,
       );
     }
+
+    expect(() => assertProviderToolSchemaBudget()).not.toThrow();
   });
 });

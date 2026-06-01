@@ -16,13 +16,18 @@ enum MessageRole {
 }
 
 model ChatSession {
-  id        String        @id
-  title     String?
-  revision  Int           @default(0)
-  createdAt DateTime      @default(now()) @map("created_at")
-  updatedAt DateTime      @updatedAt @map("updated_at")
-  messages  ChatMessage[]
+  id             String        @id
+  title          String?
+  cwd            String?
+  mode           String        @default("build")
+  permissionMode String?       @map("permission_mode")
+  model          String?
+  revision       Int           @default(0)
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  messages       ChatMessage[]
 
+  @@index([updatedAt], map: "sessions_updated_at_idx")
   @@map("sessions")
 }
 

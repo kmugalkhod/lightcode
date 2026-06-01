@@ -10,7 +10,10 @@ export const writeFileInputSchema = z.object({
   overwrite: z.boolean().optional().default(true),
 });
 
-export const writeFileProviderInputSchema = writeFileInputSchema;
+export const writeFileProviderInputSchema = z.object({
+  path: boundedPathSchema,
+  content: z.string(),
+});
 
 export const writeFileOutputSchema = z.object({
   path: z.string(),

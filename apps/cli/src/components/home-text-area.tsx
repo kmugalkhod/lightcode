@@ -30,6 +30,8 @@ export function HomeTextArea() {
     setSlashMenuQuery,
     slashMenuSelected,
     setSlashMenuSelected,
+    openSlashMenu,
+    closeSlashMenu,
   } = useAppState();
   const [sessionCreateError, setSessionCreateError] = useState<string | null>(null);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
@@ -38,6 +40,24 @@ export function HomeTextArea() {
   const slashRoutes = getSlashPageRoutes(slashMenuQuery);
   const selectedIndex = Math.min(slashMenuSelected, Math.max(slashRoutes.length - 1, 0));
   const modeDefinition = codingAgentModes[mode];
+
+  const syncSlashMenuFromInput = (text: string) => {
+    const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+
+    if (!firstLine.startsWith("/")) {
+      if (slashMenuOpen) {
+        closeSlashMenu();
+      }
+      return;
+    }
+
+    if (!slashMenuOpen) {
+      openSlashMenu();
+    }
+
+    setSlashMenuQuery(firstLine);
+    setSlashMenuSelected(0);
+  };
 
   useKeyboard((keyEvent) => {
     const keyName = keyEvent.name.toLowerCase();
@@ -75,7 +95,12 @@ export function HomeTextArea() {
     setIsCreatingSession(true);
 
     try {
-      const response = await client.sessions.$post();
+      const response = await client.sessions.$post({
+        json: {
+          cwd: process.cwd(),
+          mode,
+        },
+      });
 
       if (!response.ok) {
         throw new Error(`Unable to create a new session (HTTP ${response.status}).`);
@@ -108,16 +133,14 @@ export function HomeTextArea() {
         allowEmpty
         trimOnSubmit={false}
         placeholder={'Ask anything... "What is the tech stack of this project?"'}
-        focused={!slashMenuOpen && !isCreatingSession}
+        focused={!isCreatingSession}
         disabled={isCreatingSession}
         modeToggleHint
+        slashMenuOpen={slashMenuOpen}
+        onTextChange={syncSlashMenuFromInput}
         beforeInput={slashMenuOpen ? (
           <SlashPageMenu
             query={slashMenuQuery}
-            setQuery={(query) => {
-              setSlashMenuQuery(query);
-              setSlashMenuSelected(0);
-            }}
             selectedIndex={selectedIndex}
             routes={slashRoutes}
           />
@@ -125,7 +148,7 @@ export function HomeTextArea() {
         onSubmit={(text) => {
           void createSessionAndNavigate(text);
         }}
-        footer={(
+        footer={
           <box flexDirection="row" justifyContent="space-between">
             <text fg={cliTheme.text.muted}>
               {isCreatingSession ? "Creating session..." : "Tab/Ctrl+T switch mode | Ctrl+P commands"}
@@ -135,7 +158,7 @@ export function HomeTextArea() {
               <span fg={cliTheme.text.muted}> mode</span>
             </text>
           </box>
-        )}
+        }
       />
       {sessionCreateError ? (
         <box paddingX={1}>

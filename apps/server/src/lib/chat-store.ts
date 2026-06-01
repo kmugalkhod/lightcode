@@ -1,4 +1,14 @@
 import type { MessageRole, Prisma } from "@lightcode/db/types";
+import {
+  codingAgentModeSchema,
+  defaultCodingAgentMode,
+  permissionModeSchema,
+  type CodingAgentMode,
+  type PermissionMode,
+  type SessionExportJson,
+  type SessionMetadata,
+  type SessionSummary,
+} from "@lightcode/ai";
 import { safeValidateUIMessages, type UIMessage } from "ai";
 import { incrementChatFailureCounter } from "./chat-observability";
 import { prisma } from "./prisma-client";
@@ -9,8 +19,27 @@ const roleByUiMessageRole = {
   user: "user",
 } satisfies Record<UIMessage["role"], MessageRole>;
 
+export class SessionNotFoundError extends Error {
+  constructor(sessionIdentifier: string) {
+    super(`Session not found: ${sessionIdentifier}`);
+    this.name = "SessionNotFoundError";
+  }
+}
+
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+interface ChatSessionMetadataRecord {
+  id: string;
+  title: string | null;
+  cwd: string | null;
+  mode: string;
+  permissionMode: string | null;
+  model: string | null;
+  revision: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -100,6 +129,16 @@ function normalizeSessionTitle(input: string): string {
   return `${normalized.slice(0, 77).trimEnd()}...`;
 }
 
+function normalizeSessionPreview(input: string): string {
+  const normalized = input.replace(/\s+/g, " ").trim();
+
+  if (normalized.length <= 120) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, 117).trimEnd()}...`;
+}
+
 function isTextMessagePart(
   part: UIMessage["parts"][number],
 ): part is Extract<UIMessage["parts"][number], { type: "text"; text: string }> {
@@ -131,6 +170,47 @@ function deriveSessionTitle(messages: UIMessage[]): string | null {
   }
 
   return normalizeSessionTitle(text);
+}
+
+function coerceSessionMode(value: string | null | undefined): CodingAgentMode {
+  const parsed = codingAgentModeSchema.safeParse(value);
+  return parsed.success ? parsed.data : defaultCodingAgentMode;
+}
+
+function coercePermissionMode(
+  value: string | null | undefined,
+): PermissionMode | null {
+  const parsed = permissionModeSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function toSessionMetadata(session: ChatSessionMetadataRecord): SessionMetadata {
+  return {
+    id: session.id,
+    title: session.title,
+    cwd: session.cwd,
+    mode: coerceSessionMode(session.mode),
+    permissionMode: coercePermissionMode(session.permissionMode),
+    model: session.model,
+    revision: session.revision,
+    createdAt: session.createdAt.toISOString(),
+    updatedAt: session.updatedAt.toISOString(),
+  };
+}
+
+function extractUserPromptPreviewFromPayload(payload: unknown): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  const candidate = {
+    id: "preview-message",
+    role: "user",
+    parts: Array.isArray(payload.parts) ? payload.parts : [],
+  } satisfies Pick<UIMessage, "id" | "role" | "parts">;
+  const text = extractTextFromMessage(candidate as UIMessage).trim();
+
+  return text ? normalizeSessionPreview(text) : null;
 }
 
 function toStoredMessage(
@@ -175,9 +255,28 @@ function isPrismaTransactionStartTimeoutError(error: unknown) {
   return getErrorCode(error) === "P2028";
 }
 
-export async function createChatSession(): Promise<{ id: string }> {
+export async function createChatSession({
+  cwd = process.cwd(),
+  mode = defaultCodingAgentMode,
+  permissionMode = null,
+  model = null,
+  title,
+}: {
+  cwd?: string;
+  mode?: CodingAgentMode;
+  permissionMode?: PermissionMode | null;
+  model?: string | null;
+  title?: string;
+} = {}): Promise<{ id: string }> {
   const createdSession = await prisma.chatSession.create({
-    data: { id: crypto.randomUUID() },
+    data: {
+      id: crypto.randomUUID(),
+      cwd,
+      mode,
+      permissionMode,
+      model,
+      title: title ? normalizeSessionTitle(title) : null,
+    },
     select: { id: true },
   });
 
@@ -194,11 +293,17 @@ export async function persistChatMessages({
   messages,
   assistantModel = null,
   expectedRevision,
+  cwd,
+  mode,
+  permissionMode,
 }: {
   sessionId: string;
   messages: UIMessage[];
   assistantModel?: string | null;
   expectedRevision?: number;
+  cwd?: string;
+  mode?: CodingAgentMode;
+  permissionMode?: PermissionMode | null;
 }): Promise<PersistChatMessagesResult> {
   const normalizedMessages = await normalizeAndValidateMessages(messages);
   const sessionTitle = deriveSessionTitle(normalizedMessages);
@@ -217,7 +322,14 @@ export async function persistChatMessages({
           const session = await tx.chatSession.upsert({
             where: { id: sessionId },
             update: {},
-            create: { id: sessionId, title: sessionTitle },
+            create: {
+              id: sessionId,
+              title: sessionTitle,
+              cwd: cwd ?? process.cwd(),
+              mode: mode ?? defaultCodingAgentMode,
+              permissionMode: permissionMode ?? null,
+              model: assistantModel,
+            },
             select: {
               id: true,
               title: true,
@@ -248,6 +360,26 @@ export async function persistChatMessages({
               revision: {
                 increment: 1,
               },
+              ...(cwd
+                ? {
+                    cwd,
+                  }
+                : {}),
+              ...(mode
+                ? {
+                    mode,
+                  }
+                : {}),
+              ...(permissionMode !== undefined
+                ? {
+                    permissionMode,
+                  }
+                : {}),
+              ...(assistantModel
+                ? {
+                    model: assistantModel,
+                  }
+                : {}),
               ...(sessionTitle && !session.title
                 ? {
                     title: sessionTitle,
@@ -291,22 +423,13 @@ export async function persistChatMessages({
   throw new Error("Unreachable");
 }
 
-export async function loadChatMessages(sessionId: string): Promise<UIMessage[]> {
-  const persistedMessages = await prisma.chatMessage.findMany({
-    where: { sessionId },
-    orderBy: { sequence: "asc" },
-    select: {
-      sequence: true,
-      role: true,
-      messageId: true,
-      payload: true,
-    },
-  });
-
-  if (persistedMessages.length === 0) {
-    return [];
-  }
-
+function hydratePersistedMessages(
+  persistedMessages: Array<{
+    sequence: number;
+    role: MessageRole;
+    payload: unknown;
+  }>,
+) {
   const normalizedCandidates = persistedMessages.map((persistedMessage) => {
     const payload =
       persistedMessage.payload && typeof persistedMessage.payload === "object" && !Array.isArray(persistedMessage.payload)
@@ -327,8 +450,22 @@ export async function loadChatMessages(sessionId: string): Promise<UIMessage[]> 
     };
   });
 
+  return normalizedCandidates;
+}
+
+async function validatePersistedMessages(
+  persistedMessages: Array<{
+    sequence: number;
+    role: MessageRole;
+    payload: unknown;
+  }>,
+) {
+  if (persistedMessages.length === 0) {
+    return [];
+  }
+
   const validationResult = await safeValidateUIMessages({
-    messages: normalizedCandidates,
+    messages: hydratePersistedMessages(persistedMessages),
   });
 
   if (!validationResult.success) {
@@ -336,4 +473,154 @@ export async function loadChatMessages(sessionId: string): Promise<UIMessage[]> 
   }
 
   return validationResult.data;
+}
+
+export async function resolveChatSessionIdentifier(sessionIdentifier: string) {
+  if (sessionIdentifier !== "latest") {
+    return sessionIdentifier;
+  }
+
+  const latestSession = await prisma.chatSession.findFirst({
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    select: { id: true },
+  });
+
+  if (!latestSession) {
+    throw new SessionNotFoundError(sessionIdentifier);
+  }
+
+  return latestSession.id;
+}
+
+export async function loadChatSessionWithMessages(sessionIdentifier: string): Promise<{
+  session: SessionMetadata;
+  messages: UIMessage[];
+}> {
+  const sessionId = await resolveChatSessionIdentifier(sessionIdentifier);
+  const session = await prisma.chatSession.findUnique({
+    where: { id: sessionId },
+    select: {
+      id: true,
+      title: true,
+      cwd: true,
+      mode: true,
+      permissionMode: true,
+      model: true,
+      revision: true,
+      createdAt: true,
+      updatedAt: true,
+      messages: {
+        orderBy: { sequence: "asc" },
+        select: {
+          sequence: true,
+          role: true,
+          payload: true,
+        },
+      },
+    },
+  });
+
+  if (!session) {
+    throw new SessionNotFoundError(sessionIdentifier);
+  }
+
+  const { messages, ...sessionMetadata } = session;
+
+  return {
+    session: toSessionMetadata(sessionMetadata),
+    messages: await validatePersistedMessages(messages),
+  };
+}
+
+export async function loadChatMessages(sessionIdentifier: string): Promise<UIMessage[]> {
+  return (await loadChatSessionWithMessages(sessionIdentifier)).messages;
+}
+
+export async function listChatSessions(limit = 50): Promise<SessionSummary[]> {
+  const safeLimit = Math.min(Math.max(limit, 1), 100);
+  const sessions = await prisma.chatSession.findMany({
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    take: safeLimit,
+    select: {
+      id: true,
+      title: true,
+      cwd: true,
+      mode: true,
+      permissionMode: true,
+      model: true,
+      revision: true,
+      createdAt: true,
+      updatedAt: true,
+      _count: {
+        select: {
+          messages: true,
+        },
+      },
+      messages: {
+        where: { role: "user" },
+        orderBy: { sequence: "desc" },
+        take: 1,
+        select: {
+          payload: true,
+        },
+      },
+    },
+  });
+
+  return sessions.map((session) => {
+    const { _count, messages, ...metadata } = session;
+    const latestUserPromptPreview =
+      messages[0] ? extractUserPromptPreviewFromPayload(messages[0].payload) : null;
+
+    return {
+      ...toSessionMetadata(metadata),
+      messageCount: _count.messages,
+      latestUserPromptPreview,
+    };
+  });
+}
+
+export async function deleteChatSession(sessionId: string) {
+  return prisma.$transaction(async (tx) => {
+    const existingSession = await tx.chatSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        id: true,
+        _count: {
+          select: {
+            messages: true,
+          },
+        },
+      },
+    });
+
+    if (!existingSession) {
+      throw new SessionNotFoundError(sessionId);
+    }
+
+    await tx.chatSession.delete({
+      where: { id: sessionId },
+    });
+
+    return {
+      id: existingSession.id,
+      deleted: true,
+      deletedMessages: existingSession._count.messages,
+    };
+  });
+}
+
+export async function exportChatSessionJson(
+  sessionIdentifier: string,
+): Promise<SessionExportJson> {
+  const sessionWithMessages = await loadChatSessionWithMessages(sessionIdentifier);
+  const messages = JSON.parse(
+    JSON.stringify(sessionWithMessages.messages),
+  ) as SessionExportJson["messages"];
+
+  return {
+    exportedAt: new Date().toISOString(),
+    session: sessionWithMessages.session,
+    messages,
+  };
 }

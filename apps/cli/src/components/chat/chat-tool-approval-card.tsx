@@ -40,16 +40,41 @@ function getStringInputProperty(input: unknown, key: string): string | null {
     : null;
 }
 
+function getNumberInputProperty(input: unknown, key: string): number | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const value = Reflect.get(input, key);
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function getApprovalTarget(approval: PendingToolApproval): string {
   return (
     getStringInputProperty(approval.input, "path") ??
     getStringInputProperty(approval.input, "command") ??
     getStringInputProperty(approval.input, "query") ??
+    getStringInputProperty(approval.input, "pattern") ??
+    getStringInputProperty(approval.input, "revision") ??
+    getStringInputProperty(approval.input, "url") ??
     approval.summary
   );
 }
 
 function getApprovalDescription(approval: PendingToolApproval): string {
+  if (approval.toolName === "bash") {
+    const timeoutMs = getNumberInputProperty(approval.input, "timeoutMs") ?? 30000;
+    const reason = approval.permissionDecision.reason ?? "Approval is required.";
+    return (
+      `Classification: ${approval.permissionDecision.requiredMode}; ` +
+      `cwd: ${approval.cwd}; timeout: ${timeoutMs}ms. ${reason}`
+    );
+  }
+
+  if (approval.permissionDecision.reason) {
+    return approval.permissionDecision.reason;
+  }
+
   if (approval.toolName === "edit_file") {
     const replaceAll = Reflect.get(approval.input, "replaceAll") === true;
     return replaceAll ? "Replace all matching text." : "Replace the first matching text.";
@@ -58,10 +83,6 @@ function getApprovalDescription(approval: PendingToolApproval): string {
   if (approval.toolName === "write_file") {
     const content = getStringInputProperty(approval.input, "content") ?? "";
     return `Write file content (${content.length} characters).`;
-  }
-
-  if (approval.toolName === "bash") {
-    return "Run this shell command from the workspace.";
   }
 
   return "Review before running this tool.";

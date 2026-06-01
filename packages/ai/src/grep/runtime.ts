@@ -3,7 +3,12 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { resolveWithinWorkspace, toWorkspaceRelativePath, WORKSPACE } from "../common/resolve-within-workspace";
+import {
+  getDefaultWorkspaceContext,
+  resolveWithinWorkspace,
+  toWorkspaceRelativePath,
+  type WorkspaceContext,
+} from "../common/resolve-within-workspace";
 import { grepInputSchema, grepOutputSchema } from "./schema";
 
 const execFileAsync = promisify(execFile);
@@ -84,7 +89,11 @@ function parseMatchEvent(
   };
 }
 
-function parseRgMatches(stdout: string, maxResults: number): GrepOutput["matches"] {
+function parseRgMatches(
+  stdout: string,
+  maxResults: number,
+  workspaceContext: WorkspaceContext,
+): GrepOutput["matches"] {
   const matches: Array<{ path: string; lineNumber: number; column: number; line: string }> = [];
   const lines = stdout.split(/\r?\n/);
 
@@ -99,10 +108,12 @@ function parseRgMatches(stdout: string, maxResults: number): GrepOutput["matches
       continue;
     }
 
-    const absolutePath = path.isAbsolute(event.rawPath) ? event.rawPath : path.resolve(WORKSPACE, event.rawPath);
+    const absolutePath = path.isAbsolute(event.rawPath)
+      ? event.rawPath
+      : path.resolve(workspaceContext.root, event.rawPath);
     let relativePath: string;
     try {
-      relativePath = toWorkspaceRelativePath(absolutePath);
+      relativePath = toWorkspaceRelativePath(absolutePath, workspaceContext);
     } catch {
       continue;
     }
@@ -195,6 +206,7 @@ async function searchFileWithFallback(
   filePath: string,
   parsedInput: z.infer<typeof grepInputSchema>,
   matches: GrepMatch[],
+  workspaceContext: WorkspaceContext,
 ): Promise<boolean> {
   const fileStat = await stat(filePath);
   if (fileStat.size > maxFallbackFileBytes) {
@@ -227,7 +239,7 @@ async function searchFileWithFallback(
     }
 
     matches.push({
-      path: toWorkspaceRelativePath(filePath),
+      path: toWorkspaceRelativePath(filePath, workspaceContext),
       lineNumber: index + 1,
       column,
       line,
@@ -244,12 +256,18 @@ async function searchFileWithFallback(
 async function grepWithFallback(
   searchRootPath: string,
   parsedInput: z.infer<typeof grepInputSchema>,
+  workspaceContext: WorkspaceContext,
 ): Promise<GrepOutput["matches"]> {
   const matches: GrepMatch[] = [];
   const files = await collectSearchFiles(searchRootPath);
 
   for (const filePath of files) {
-    const reachedLimit = await searchFileWithFallback(filePath, parsedInput, matches);
+    const reachedLimit = await searchFileWithFallback(
+      filePath,
+      parsedInput,
+      matches,
+      workspaceContext,
+    );
     if (reachedLimit) {
       break;
     }
@@ -258,10 +276,18 @@ async function grepWithFallback(
   return matches;
 }
 
-export async function executeGrep(input: GrepInput): Promise<GrepOutput> {
+export async function executeGrep(
+  input: GrepInput,
+  workspaceContext: WorkspaceContext = getDefaultWorkspaceContext(),
+): Promise<GrepOutput> {
   const parsedInput = grepInputSchema.parse(input);
-  const searchRootPath = resolveWithinWorkspace(parsedInput.path);
-  const relativeSearchRootPath = toWorkspaceRelativePath(searchRootPath);
+  const searchRootPath = resolveWithinWorkspace(parsedInput.path, {
+    context: workspaceContext,
+  });
+  const relativeSearchRootPath = toWorkspaceRelativePath(
+    searchRootPath,
+    workspaceContext,
+  );
 
   const args = ["--json", "--line-number", "--column", "--no-heading", "--color", "never"];
 
@@ -279,7 +305,7 @@ export async function executeGrep(input: GrepInput): Promise<GrepOutput> {
 
   try {
     const result = await execFileAsync("rg", args, {
-      cwd: WORKSPACE,
+      cwd: workspaceContext.root,
       maxBuffer: 10 * 1024 * 1024,
     });
     stdout = result.stdout;
@@ -290,7 +316,11 @@ export async function executeGrep(input: GrepInput): Promise<GrepOutput> {
       const errorStdout = getStringProperty(errorRecord, "stdout");
       stdout = errorStdout ?? "";
     } else if (errorCode === "ENOENT") {
-      const matches = await grepWithFallback(searchRootPath, parsedInput);
+      const matches = await grepWithFallback(
+        searchRootPath,
+        parsedInput,
+        workspaceContext,
+      );
       return grepOutputSchema.parse({
         query: parsedInput.query,
         path: relativeSearchRootPath,
@@ -303,7 +333,7 @@ export async function executeGrep(input: GrepInput): Promise<GrepOutput> {
     }
   }
 
-  const matches = parseRgMatches(stdout, parsedInput.maxResults);
+  const matches = parseRgMatches(stdout, parsedInput.maxResults, workspaceContext);
 
   return grepOutputSchema.parse({
     query: parsedInput.query,

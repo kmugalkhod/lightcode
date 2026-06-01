@@ -1,7 +1,10 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { WORKSPACE } from "../common/resolve-within-workspace";
+import {
+  getDefaultWorkspaceContext,
+  type WorkspaceContext,
+} from "../common/resolve-within-workspace";
 import { truncateText } from "../common/output-utils";
 import { bashInputSchema, bashOutputSchema } from "./schema";
 
@@ -27,12 +30,15 @@ function getNumericExitCode(record: Record<string, unknown>): number {
   return typeof value === "number" ? value : 1;
 }
 
-export async function executeBash(input: BashInput): Promise<BashOutput> {
+export async function executeBash(
+  input: BashInput,
+  workspaceContext: WorkspaceContext = getDefaultWorkspaceContext(),
+): Promise<BashOutput> {
   const parsedInput = bashInputSchema.parse(input);
 
   try {
     const result = await execAsync(parsedInput.command, {
-      cwd: WORKSPACE,
+      cwd: workspaceContext.root,
       timeout: parsedInput.timeoutMs,
       maxBuffer: 10 * 1024 * 1024,
       windowsHide: true,
@@ -43,7 +49,7 @@ export async function executeBash(input: BashInput): Promise<BashOutput> {
 
     return bashOutputSchema.parse({
       command: parsedInput.command,
-      cwd: WORKSPACE,
+      cwd: workspaceContext.root,
       stdout: stdoutTruncated.text,
       stderr: stderrTruncated.text,
       exitCode: 0,
@@ -61,7 +67,7 @@ export async function executeBash(input: BashInput): Promise<BashOutput> {
 
     return bashOutputSchema.parse({
       command: parsedInput.command,
-      cwd: WORKSPACE,
+      cwd: workspaceContext.root,
       stdout: stdoutTruncated.text,
       stderr: stderrTruncated.text,
       exitCode: getNumericExitCode(errorRecord),

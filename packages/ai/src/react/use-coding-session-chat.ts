@@ -8,15 +8,18 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   codingToolInputSchemas,
-  riskyCodingTools,
+  evaluateCodingToolPermission,
+  resolveCodingPermissionMode,
   type CodingToolInputByName,
   type CodingToolName,
   type CodingToolOutputByName,
 } from "../agent-tools";
 import type { SessionMessagesResponse } from "../chat-schemas";
 import { toSingleLinePreview } from "../common/output-utils";
+import { createWorkspaceContext } from "../common/resolve-within-workspace";
 import {
   executeCodingTool as executeCodingToolRuntime,
+  type CodingToolExecutionOptions,
   parseCodingToolInput,
 } from "../runtime-registry";
 import {
@@ -24,9 +27,19 @@ import {
   type CodingAgentMode,
 } from "../coding-agent-modes";
 import {
+  formatPermissionDecision,
+  isPermissionDeniedError,
+  type PermissionDecision,
+  type PermissionMode,
+  type PermissionRules,
+} from "../permissions";
+import type { SandboxConfig } from "../sandbox/config";
+import {
   requestUserInputToolOutputSchema,
   type RequestUserInputToolOutput,
 } from "../request-user-input/schema";
+import { loadSessionTodos } from "../todo-write/runtime";
+import type { TodoItem } from "../todo-write/schema";
 
 export type ToolApprovalAction = "approve" | "deny";
 
@@ -37,7 +50,6 @@ const recoverableDisconnectMessage =
 const buildModeAutoPromptResponse =
   "Proceed with implementation in Build mode. Continue without additional plan questions.";
 
-const riskyToolNameSet = new Set<string>(riskyCodingTools);
 const codingToolNameSet = new Set<string>(Object.keys(codingToolInputSchemas));
 type CodingToolInput = CodingToolInputByName[CodingToolName];
 type CodingToolOutput = CodingToolOutputByName[CodingToolName];
@@ -48,6 +60,8 @@ export interface PendingToolApproval {
   toolName: CodingToolName;
   input: CodingToolInput;
   summary: string;
+  permissionDecision: PermissionDecision;
+  cwd: string;
 }
 
 export interface PendingUserPromptOption {
@@ -77,6 +91,10 @@ export interface UseCodingSessionChatOptions {
   skipHistoryLoad?: boolean;
   cwd?: string;
   mode?: CodingAgentMode;
+  permissionMode?: PermissionMode;
+  allowedTools?: readonly CodingToolName[];
+  permissionRules?: PermissionRules;
+  sandbox?: SandboxConfig;
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -89,10 +107,6 @@ function getErrorMessage(error: unknown, fallback: string) {
 
 function isCodingToolName(toolName: string): toolName is CodingToolName {
   return codingToolNameSet.has(toolName);
-}
-
-function isRiskyToolName(toolName: CodingToolName): boolean {
-  return riskyToolNameSet.has(toolName);
 }
 
 function isRequestUserInputToolName(
@@ -116,7 +130,10 @@ function summarizeToolCall(toolName: CodingToolName, input: CodingToolInput): st
   const target =
     getStringInputProperty(input, "path") ??
     getStringInputProperty(input, "command") ??
-    getStringInputProperty(input, "query");
+    getStringInputProperty(input, "query") ??
+    getStringInputProperty(input, "pattern") ??
+    getStringInputProperty(input, "revision") ??
+    getStringInputProperty(input, "url");
 
   if (target) {
     return `${toolName} ${toSingleLinePreview(target)}`.trim();
@@ -128,8 +145,60 @@ function summarizeToolCall(toolName: CodingToolName, input: CodingToolInput): st
 async function executeCodingTool(
   toolName: CodingToolName,
   input: CodingToolInput,
+  options: CodingToolExecutionOptions,
 ): Promise<CodingToolOutput> {
-  return executeCodingToolRuntime(toolName, input);
+  return executeCodingToolRuntime(toolName, input, options);
+}
+
+function getToolErrorMessage(error: unknown, fallback: string) {
+  if (isPermissionDeniedError(error)) {
+    return formatPermissionDecision(error.decision);
+  }
+
+  return getErrorMessage(error, fallback);
+}
+
+function buildExecutionOptions({
+  mode,
+  cwd,
+  sessionId,
+  permissionMode,
+  allowedTools,
+  permissionRules,
+  approved,
+  sandbox,
+}: {
+  mode: CodingAgentMode;
+  cwd: string;
+  sessionId: string;
+  permissionMode?: PermissionMode;
+  allowedTools?: readonly CodingToolName[];
+  permissionRules?: PermissionRules;
+  approved?: boolean;
+  sandbox?: SandboxConfig;
+}): CodingToolExecutionOptions {
+  return {
+    mode,
+    permissionMode: resolveCodingPermissionMode({ mode, permissionMode }),
+    allowedTools,
+    permissionRules,
+    approved,
+    cwd,
+    sessionId,
+    sandbox,
+  };
+}
+
+function isTodoWriteOutput(
+  toolName: CodingToolName,
+  output: CodingToolOutput,
+): output is CodingToolOutputByName["todo_write"] {
+  return (
+    toolName === "todo_write" &&
+    typeof output === "object" &&
+    output !== null &&
+    Array.isArray(Reflect.get(output, "todos"))
+  );
 }
 
 function normalizeChatErrorMessage(message: string) {
@@ -208,18 +277,31 @@ export function useCodingSessionChat({
   skipHistoryLoad = false,
   cwd = process.cwd(),
   mode = defaultCodingAgentMode,
+  permissionMode,
+  allowedTools,
+  permissionRules,
+  sandbox,
 }: UseCodingSessionChatOptions) {
   const submittedInitialPromptRef = useRef<string | null>(null);
   const modeRef = useRef(mode);
   const cwdRef = useRef(cwd);
+  const permissionModeRef = useRef(permissionMode);
+  const allowedToolsRef = useRef(allowedTools);
+  const permissionRulesRef = useRef(permissionRules);
+  const sandboxRef = useRef(sandbox);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [toolExecutionError, setToolExecutionError] = useState<string | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(true);
   const [pendingApprovals, setPendingApprovals] = useState<PendingToolApproval[]>([]);
   const [pendingUserPrompts, setPendingUserPrompts] = useState<PendingUserPrompt[]>([]);
+  const [todos, setTodos] = useState<TodoItem[]>([]);
 
   modeRef.current = mode;
   cwdRef.current = cwd;
+  permissionModeRef.current = permissionMode;
+  allowedToolsRef.current = allowedTools;
+  permissionRulesRef.current = permissionRules;
+  sandboxRef.current = sandbox;
 
   const transport = useMemo(() => {
     return new DefaultChatTransport({
@@ -227,6 +309,10 @@ export function useCodingSessionChat({
       body: () => ({
         cwd: cwdRef.current,
         mode: modeRef.current,
+        permissionMode: permissionModeRef.current,
+        allowedTools: allowedToolsRef.current,
+        permissionRules: permissionRulesRef.current,
+        sandbox: sandboxRef.current,
       }),
     });
   }, [chatApi]);
@@ -292,19 +378,26 @@ export function useCodingSessionChat({
           return;
         }
 
-        if (isRiskyToolName(toolName)) {
-          if (mode === "plan") {
-            addToolOutput({
-              tool: toolName,
-              toolCallId: toolCall.toolCallId,
-              state: "output-error",
-              errorText:
-                `Tool "${toolName}" is blocked in Plan mode. ` +
-                "Switch to Build mode before running mutating tools.",
-            });
-            return;
-          }
+        const permissionDecision = evaluateCodingToolPermission({
+          toolName,
+          input: parsedInput,
+          mode,
+          permissionMode,
+          allowedTools,
+          permissionRules,
+        });
 
+        if (permissionDecision.outcome === "deny") {
+          addToolOutput({
+            tool: toolName,
+            toolCallId: toolCall.toolCallId,
+            state: "output-error",
+            errorText: formatPermissionDecision(permissionDecision),
+          });
+          return;
+        }
+
+        if (permissionDecision.outcome === "ask") {
           setPendingApprovals((previousApprovals) => {
             if (
               previousApprovals.some(
@@ -321,6 +414,8 @@ export function useCodingSessionChat({
                 toolName,
                 input: parsedInput,
                 summary: summarizeToolCall(toolName, parsedInput),
+                permissionDecision,
+                cwd,
               },
             ];
           });
@@ -329,7 +424,22 @@ export function useCodingSessionChat({
         }
 
         try {
-          const output = await executeCodingTool(toolName, parsedInput);
+          const output = await executeCodingTool(
+            toolName,
+            parsedInput,
+            buildExecutionOptions({
+              mode,
+              cwd,
+              sessionId,
+              permissionMode,
+              allowedTools,
+              permissionRules,
+              sandbox,
+            }),
+          );
+          if (isTodoWriteOutput(toolName, output)) {
+            setTodos(output.todos);
+          }
           addToolOutput({
             tool: toolName,
             toolCallId: toolCall.toolCallId,
@@ -340,7 +450,7 @@ export function useCodingSessionChat({
             tool: toolName,
             toolCallId: toolCall.toolCallId,
             state: "output-error",
-            errorText: getErrorMessage(toolError, "Tool execution failed."),
+            errorText: getToolErrorMessage(toolError, "Tool execution failed."),
           });
         }
       },
@@ -348,20 +458,24 @@ export function useCodingSessionChat({
 
   const runApprovedTool = useCallback(
     async (approval: PendingToolApproval) => {
-      if (mode === "plan") {
-        addToolOutput({
-          tool: approval.toolName,
-          toolCallId: approval.toolCallId,
-          state: "output-error",
-          errorText:
-            `Tool "${approval.toolName}" is blocked in Plan mode. ` +
-            "Switch to Build mode before running mutating tools.",
-        });
-        return;
-      }
-
       try {
-        const output = await executeCodingTool(approval.toolName, approval.input);
+        const output = await executeCodingTool(
+          approval.toolName,
+          approval.input,
+          buildExecutionOptions({
+            mode,
+            cwd,
+            sessionId,
+            permissionMode,
+            allowedTools,
+            permissionRules,
+            approved: true,
+            sandbox,
+          }),
+        );
+        if (isTodoWriteOutput(approval.toolName, output)) {
+          setTodos(output.todos);
+        }
         addToolOutput({
           tool: approval.toolName,
           toolCallId: approval.toolCallId,
@@ -372,11 +486,11 @@ export function useCodingSessionChat({
           tool: approval.toolName,
           toolCallId: approval.toolCallId,
           state: "output-error",
-          errorText: getErrorMessage(toolError, "Tool execution failed."),
+          errorText: getToolErrorMessage(toolError, "Tool execution failed."),
         });
       }
     },
-    [addToolOutput, mode],
+    [addToolOutput, allowedTools, cwd, mode, permissionMode, permissionRules, sandbox, sessionId],
   );
 
   const resolveToolApproval = useCallback(
@@ -614,6 +728,34 @@ export function useCodingSessionChat({
   }, [addToolOutput, mode, pendingUserPrompts]);
 
   useEffect(() => {
+    let active = true;
+
+    async function refreshTodos() {
+      try {
+        const workspaceContext = createWorkspaceContext(cwd);
+        const loadedTodos = await loadSessionTodos({
+          sessionId,
+          workspaceContext,
+        });
+
+        if (active) {
+          setTodos(loadedTodos);
+        }
+      } catch {
+        if (active) {
+          setTodos([]);
+        }
+      }
+    }
+
+    void refreshTodos();
+
+    return () => {
+      active = false;
+    };
+  }, [cwd, sessionId]);
+
+  useEffect(() => {
     if (!isSessionIdValid) {
       return;
     }
@@ -652,6 +794,7 @@ export function useCodingSessionChat({
     messages,
     pendingApprovals,
     pendingUserPrompts,
+    todos,
     resolveAllToolApprovals,
     resolveToolApproval,
     sessionId,

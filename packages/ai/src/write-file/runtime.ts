@@ -1,16 +1,27 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { resolveWithinWorkspace, toWorkspaceRelativePath } from "../common/resolve-within-workspace";
+import {
+  getDefaultWorkspaceContext,
+  resolveWithinWorkspace,
+  toWorkspaceRelativePath,
+  type WorkspaceContext,
+} from "../common/resolve-within-workspace";
 import { writeFileInputSchema, writeFileOutputSchema } from "./schema";
 
 type WriteFileInput = z.input<typeof writeFileInputSchema>;
 type WriteFileOutput = z.infer<typeof writeFileOutputSchema>;
 
-export async function executeWriteFile(input: WriteFileInput): Promise<WriteFileOutput> {
+export async function executeWriteFile(
+  input: WriteFileInput,
+  workspaceContext: WorkspaceContext = getDefaultWorkspaceContext(),
+): Promise<WriteFileOutput> {
   const parsedInput = writeFileInputSchema.parse(input);
-  const resolvedPath = resolveWithinWorkspace(parsedInput.path);
-  const relativePath = toWorkspaceRelativePath(resolvedPath);
+  const resolvedPath = resolveWithinWorkspace(parsedInput.path, {
+    context: workspaceContext,
+    allowMissing: true,
+  });
+  const relativePath = toWorkspaceRelativePath(resolvedPath, workspaceContext);
 
   let existingStats: Awaited<ReturnType<typeof fs.stat>> | null = null;
   try {

@@ -20,10 +20,6 @@ export const requestUserInputToolInputSchema = z.object({
 // Keep runtime validation strict, but relax provider-facing options constraints.
 export const requestUserInputToolProviderInputSchema = z.object({
   question: z.string().min(1).max(2_000),
-  header: z.string().min(1).max(80).optional(),
-  options: z.array(requestUserInputOptionSchema).optional(),
-  allowCustomResponse: z.boolean().optional(),
-  placeholder: z.string().min(1).max(200).optional(),
 });
 
 export const requestUserInputToolOutputSchema = z.object({

@@ -4,11 +4,16 @@ import { MemoryRouter, Navigate, Route, Routes, useLocation, useNavigate } from 
 import { CommandPalette } from "./commands/command-palette";
 import { searchCommands } from "./commands/command-registry";
 import { keymap, getBinding, isLeaderKey, normalizeKeyName } from "./commands/keymap";
+import { SlashPageMenu } from "./commands/slash-page-menu";
 import { WhichKey } from "./commands/which-key";
 import { getPathFromAction, getSlashPageRoutes } from "./navigation/route-registry";
 import { ChatScreen } from "./screens/chat-screen";
+import { DiagnosticsScreen } from "./screens/diagnostics-screen";
 import { HomeScreen } from "./screens/home-screen";
+import { ModelScreen } from "./screens/model-screen";
+import { SessionListScreen } from "./screens/session-list-screen";
 import { AppStateProvider, useAppState } from "./state/app-state";
+import { useConfigBadge } from "./hooks/use-config-badge";
 import { cliTheme } from "./ui/cli-theme";
 
 function getCurrentViewLabel(pathname: string): string {
@@ -18,6 +23,34 @@ function getCurrentViewLabel(pathname: string): string {
 
   if (pathname.startsWith("/sessions/")) {
     return "session";
+  }
+
+  if (pathname === "/status") {
+    return "status";
+  }
+
+  if (pathname === "/doctor") {
+    return "doctor";
+  }
+
+  if (pathname === "/permissions") {
+    return "permissions";
+  }
+
+  if (pathname === "/sessions") {
+    return "sessions";
+  }
+
+  if (pathname === "/tools") {
+    return "tools";
+  }
+
+  if (pathname === "/config") {
+    return "config";
+  }
+
+  if (pathname === "/model") {
+    return "model";
   }
 
   return pathname;
@@ -37,7 +70,6 @@ function AppContent() {
     closePalette,
     slashMenuOpen,
     slashMenuQuery,
-    setSlashMenuQuery,
     slashMenuSelected,
     setSlashMenuSelected,
     openSlashMenu,
@@ -55,6 +87,10 @@ function AppContent() {
 
   const canGoBack = location.pathname !== "/" && location.pathname !== "/home";
   const currentView = getCurrentViewLabel(location.pathname);
+  const inputHostsSlashMenu =
+    location.pathname === "/" ||
+    location.pathname === "/home" ||
+    location.pathname.startsWith("/sessions/");
 
   const handleAction = (action: string) => {
     const path = getPathFromAction(action);
@@ -99,6 +135,10 @@ function AppContent() {
 
   const filteredCommands = searchCommands(paletteQuery.trim());
   const filteredSlashRoutes = getSlashPageRoutes(slashMenuQuery);
+  const selectedSlashRouteIndex = Math.min(
+    slashMenuSelected,
+    Math.max(filteredSlashRoutes.length - 1, 0),
+  );
 
   const isDownKey = (keyEvent: any) =>
     keyEvent.name === "down" || keyEvent.name === "ArrowDown" || (keyEvent.name === "j" && !keyEvent.ctrl);
@@ -111,6 +151,16 @@ function AppContent() {
 
   const isEscapeKey = (keyEvent: any) =>
     keyEvent.name === "escape" || keyEvent.name === "Escape";
+
+  const isBackspaceKey = (keyEvent: any) =>
+    keyEvent.name === "backspace" ||
+    keyEvent.sequence === "\b" ||
+    keyEvent.sequence === "\x7f";
+
+  const captureKeyEvent = (keyEvent: any) => {
+    keyEvent.preventDefault?.();
+    keyEvent.stopPropagation?.();
+  };
 
   const handlePaletteKeyDown = (keyEvent: any) => {
     const maxIndex = filteredCommands.length - 1;
@@ -132,24 +182,37 @@ function AppContent() {
   const handleSlashMenuKeyDown = (keyEvent: any) => {
     const maxIndex = filteredSlashRoutes.length - 1;
 
+    if (isBackspaceKey(keyEvent) && !inputHostsSlashMenu && slashMenuQuery.trim().length <= 1) {
+      captureKeyEvent(keyEvent);
+      closeSlashMenu();
+      return;
+    }
+
     if (maxIndex < 0) {
       if (isEscapeKey(keyEvent)) {
+        captureKeyEvent(keyEvent);
         closeSlashMenu();
+      } else if (isEnterKey(keyEvent)) {
+        captureKeyEvent(keyEvent);
       }
       return;
     }
 
     if (isDownKey(keyEvent)) {
+      captureKeyEvent(keyEvent);
       setSlashMenuSelected(Math.min(slashMenuSelected + 1, maxIndex));
     } else if (isUpKey(keyEvent)) {
+      captureKeyEvent(keyEvent);
       setSlashMenuSelected(Math.max(slashMenuSelected - 1, 0));
     } else if (isEnterKey(keyEvent)) {
-      const route = filteredSlashRoutes[slashMenuSelected];
+      captureKeyEvent(keyEvent);
+      const route = filteredSlashRoutes[selectedSlashRouteIndex];
       if (route) {
         navigate(route.path);
         closeSlashMenu();
       }
     } else if (isEscapeKey(keyEvent)) {
+      captureKeyEvent(keyEvent);
       closeSlashMenu();
     }
   };
@@ -226,9 +289,15 @@ function AppContent() {
     }
   });
 
+  const configBadge = useConfigBadge();
+
   const getFooterStatus = () => {
     if (leaderState.active) {
       return "Waiting for key...";
+    }
+
+    if (slashMenuOpen) {
+      return "Slash pages open | Enter Open | Backspace Close | Esc Cancel";
     }
 
     const backHint = canGoBack ? " | Ctrl+H Back" : "";
@@ -246,7 +315,22 @@ function AppContent() {
         border={["bottom"]}
         borderColor={cliTheme.borders.default}
       >
-        <text fg={cliTheme.text.primary} attributes={TextAttributes.BOLD}>Nightcode</text>
+        <box flexDirection="row" gap={2} alignItems="center">
+          <text fg={cliTheme.text.primary} attributes={TextAttributes.BOLD}>Nightcode</text>
+          {configBadge.status === "available" ? (
+            <text fg={cliTheme.text.muted}>
+              · {configBadge.provider} · {configBadge.model}
+            </text>
+          ) : configBadge.status === "loading" ? (
+            <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+              · loading...
+            </text>
+          ) : (
+            <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+              · provider unavailable
+            </text>
+          )}
+        </box>
         <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
           {currentView}
         </text>
@@ -256,7 +340,14 @@ function AppContent() {
         <Routes>
           <Route path="/" element={<HomeScreen />} />
           <Route path="/home" element={<Navigate to="/" replace />} />
+          <Route path="/status" element={<DiagnosticsScreen kind="status" />} />
+          <Route path="/doctor" element={<DiagnosticsScreen kind="doctor" />} />
+          <Route path="/permissions" element={<DiagnosticsScreen kind="permissions" />} />
+          <Route path="/sessions" element={<SessionListScreen />} />
           <Route path="/sessions/:id" element={<ChatScreen />} />
+          <Route path="/tools" element={<DiagnosticsScreen kind="tools" />} />
+          <Route path="/config" element={<DiagnosticsScreen kind="config" />} />
+          <Route path="/model" element={<ModelScreen />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         {paletteOpen ? (
@@ -265,6 +356,15 @@ function AppContent() {
             setQuery={setPaletteQuery}
             selectedIndex={paletteSelected}
           />
+        ) : null}
+        {slashMenuOpen && !inputHostsSlashMenu ? (
+          <box position="absolute" top={1} left={2} right={2} zIndex={20}>
+            <SlashPageMenu
+              query={slashMenuQuery}
+              selectedIndex={selectedSlashRouteIndex}
+              routes={filteredSlashRoutes}
+            />
+          </box>
         ) : null}
         {whichKeyOpen ? <WhichKey /> : null}
       </box>

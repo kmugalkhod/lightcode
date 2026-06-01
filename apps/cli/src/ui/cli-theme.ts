@@ -58,6 +58,16 @@ export interface CliTheme {
     inputText: string;
     mutedText: string;
     footerText: string;
+    // New professional overlay tokens
+    selectedBorder: string;
+    badgeBackground: string;
+    badgeText: string;
+    description: string;
+    sectionDivider: string;
+    shortcutHint: string;
+    headerMuted: string;
+    countBadge: string;
+    hoverBackground: string;
   };
   input: {
     container: string;
@@ -91,14 +101,14 @@ export const toolStateToneMap = {
 
 export const cliTheme: CliTheme = {
   surfaces: {
-    base: "#0B0D12",
-    panel: "#12161E",
-    elevated: "#171C25",
-    inset: "#0F141C",
+    base: "#1a1a1a",
+    panel: "#252525",
+    elevated: "#2d2d2d",
+    inset: "#1f1f1f",
   },
   borders: {
-    default: "#222935",
-    subtle: "#2B3340",
+    default: "#333333",
+    subtle: "#3a3a3a",
     active: "#7DD3FC",
   },
   text: {
@@ -108,7 +118,7 @@ export const cliTheme: CliTheme = {
   },
   accent: {
     primary: "#7DD3FC",
-    softBackground: "#183142",
+    softBackground: "#3a3a3a",
     softText: "#D9F3FF",
   },
   semantic: {
@@ -120,48 +130,58 @@ export const cliTheme: CliTheme = {
   messageRoles: {
     user: {
       labelColor: "#A3C8FF",
-      borderColor: "#30455F",
-      backgroundColor: "#121B29",
+      borderColor: "#3a4a5f",
+      backgroundColor: "#242933",
     },
     assistant: {
       labelColor: "#A9D9BA",
-      borderColor: "#2B4A3C",
-      backgroundColor: "#111D19",
+      borderColor: "#3a4a3c",
+      backgroundColor: "#212927",
     },
     system: {
       labelColor: "#B1BBC8",
-      borderColor: "#343A45",
-      backgroundColor: "#181B20",
+      borderColor: "#3a3a45",
+      backgroundColor: "#242428",
     },
   },
   overlay: {
-    surface: "#12161E",
-    border: "#2B3340",
+    surface: "#252525",
+    border: "#3a3a3a",
     title: "#7DD3FC",
-    selectedRowBackground: "#183142",
+    selectedRowBackground: "#1e3a4a",
     selectedRowText: "#D9F3FF",
-    inputSurface: "#171C25",
+    inputSurface: "#2d2d2d",
     inputText: "#E6ECF3",
     mutedText: "#7E8A99",
     footerText: "#7E8A99",
+    // Professional overlay tokens
+    selectedBorder: "#7DD3FC",
+    badgeBackground: "#3a3a3a",
+    badgeText: "#A3AFBE",
+    description: "#8899A8",
+    sectionDivider: "#3a3a3a",
+    shortcutHint: "#5a6a78",
+    headerMuted: "#5a6a78",
+    countBadge: "#4a5568",
+    hoverBackground: "#2a2a2a",
   },
   input: {
-    container: "#12161E",
-    field: "#171C25",
+    container: "#252525",
+    field: "#2d2d2d",
     focusedBorder: "#7DD3FC",
-    blurredBorder: "#2B3340",
+    blurredBorder: "#3a3a3a",
     placeholder: "#7E8A99",
     text: "#E6ECF3",
     cursor: "#E6ECF3",
     hint: "#7E8A99",
   },
   scroll: {
-    rail: "#0B0D12",
-    thumb: "#2B3340",
+    rail: "#1a1a1a",
+    thumb: "#3a3a3a",
     thumbActive: "#7DD3FC",
   },
   markdown: {
-    tableBorder: "#2B3340",
+    tableBorder: "#3a3a3a",
   },
 };
 
@@ -195,19 +215,21 @@ export function getOverlayRowColors(selected: boolean): {
   backgroundColor: string;
   primaryTextColor: string;
   secondaryTextColor: string;
+  borderColor?: string;
 } {
   if (selected) {
     return {
       backgroundColor: cliTheme.overlay.selectedRowBackground,
       primaryTextColor: cliTheme.overlay.selectedRowText,
       secondaryTextColor: cliTheme.overlay.selectedRowText,
+      borderColor: cliTheme.overlay.selectedBorder,
     };
   }
 
   return {
     backgroundColor: "transparent",
     primaryTextColor: cliTheme.text.primary,
-    secondaryTextColor: cliTheme.text.muted,
+    secondaryTextColor: cliTheme.overlay.description,
   };
 }
 

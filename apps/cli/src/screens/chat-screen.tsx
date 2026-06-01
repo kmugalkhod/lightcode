@@ -2,6 +2,7 @@ import {
   codingAgentModes,
   cycleCodingAgentMode,
   defaultCodingAgentMode,
+  type PermissionMode,
   sessionMessagesResponseSchema,
   sessionPathParamsSchema,
 } from "@lightcode/ai";
@@ -9,7 +10,8 @@ import { useCodingSessionChat } from "@lightcode/ai/react";
 import { useKeyboard } from "@opentui/react";
 import type { UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation, useParams } from "react-router";
+import { useLocation, useNavigate, useParams } from "react-router";
+import { SlashPageMenu } from "../commands/slash-page-menu";
 import {
   ChatInteractionPopup,
   type ChatInteractionSubmitPayload,
@@ -17,9 +19,17 @@ import {
 import { ChatMessage } from "../components/chat/chat-message";
 import { ChatShell } from "../components/chat/chat-shell";
 import { ChatTextArea } from "../components/chat/chat-text-area";
+import { ChatTodoStatusCard } from "../components/chat/chat-todo-status-card";
 import { ChatToolApprovalCard } from "../components/chat/chat-tool-approval-card";
+import { LoadingTimer } from "../components/chat/loading-timer";
+import { useLoadingTimer } from "../hooks/use-loading-timer";
 import { client } from "../lib/client";
+import {
+  getSlashPageRoutes,
+  type AnyRouteDefinition,
+} from "../navigation/route-registry";
 import { coerceSessionRouteLocationState } from "../navigation/route-state";
+import { useAppState } from "../state/app-state";
 import { cliTheme } from "../ui/cli-theme";
 
 const autoImplementationInstruction =
@@ -108,6 +118,16 @@ function hasProposedPlanBlock(message: UIMessage): boolean {
 export function ChatScreen() {
   const routeParams = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
+  const {
+    slashMenuOpen,
+    slashMenuQuery,
+    setSlashMenuQuery,
+    slashMenuSelected,
+    setSlashMenuSelected,
+    openSlashMenu,
+    closeSlashMenu,
+  } = useAppState();
 
   const parsedRouteParams = useMemo(
     () => sessionPathParamsSchema.safeParse(routeParams),
@@ -124,13 +144,49 @@ export function ChatScreen() {
   const sessionId = parsedRouteParams.success ? parsedRouteParams.data.id : "";
   const isSessionIdValid = parsedRouteParams.success;
   const [mode, setMode] = useState(locationState.mode ?? defaultCodingAgentMode);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode | undefined>(
+    locationState.permissionMode,
+  );
   const [planConfirmationMessageId, setPlanConfirmationMessageId] = useState<string | null>(null);
   const [handledPlanMessageIds, setHandledPlanMessageIds] = useState<string[]>([]);
   const [queuedImplementationInstruction, setQueuedImplementationInstruction] = useState<string | null>(null);
+  const slashRoutes = getSlashPageRoutes(slashMenuQuery);
+  const selectedSlashRouteIndex = Math.min(
+    slashMenuSelected,
+    Math.max(slashRoutes.length - 1, 0),
+  );
+
+  const syncSlashMenuFromInput = useCallback(
+    (text: string) => {
+      const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+
+      if (!firstLine.startsWith("/")) {
+        if (slashMenuOpen) {
+          closeSlashMenu();
+        }
+        return;
+      }
+
+      if (!slashMenuOpen) {
+        openSlashMenu();
+      }
+
+      setSlashMenuQuery(firstLine);
+      setSlashMenuSelected(0);
+    },
+    [
+      closeSlashMenu,
+      openSlashMenu,
+      setSlashMenuQuery,
+      setSlashMenuSelected,
+      slashMenuOpen,
+    ],
+  );
 
   useEffect(() => {
     setMode(locationState.mode ?? defaultCodingAgentMode);
-  }, [locationState.mode, sessionId]);
+    setPermissionMode(locationState.permissionMode);
+  }, [locationState.mode, locationState.permissionMode, sessionId]);
 
   useEffect(() => {
     setPlanConfirmationMessageId(null);
@@ -161,8 +217,18 @@ export function ChatScreen() {
       throw new Error("Server returned an invalid chat history response.");
     }
 
+    if (parsedPayload.data.session) {
+      if (!locationState.mode) {
+        setMode(parsedPayload.data.session.mode);
+      }
+
+      if (!locationState.permissionMode) {
+        setPermissionMode(parsedPayload.data.session.permissionMode ?? undefined);
+      }
+    }
+
     return parsedPayload.data;
-  }, [sessionId]);
+  }, [locationState.mode, locationState.permissionMode, sessionId]);
 
   const {
     messages,
@@ -176,6 +242,7 @@ export function ChatScreen() {
     errorMessage,
     isLoading,
     isStreaming,
+    todos,
   } = useCodingSessionChat({
     chatApi,
     initialPrompt,
@@ -185,7 +252,81 @@ export function ChatScreen() {
     skipHistoryLoad,
     cwd: process.cwd(),
     mode,
+    permissionMode,
   });
+
+  const elapsedSeconds = useLoadingTimer(isLoading || isStreaming);
+
+  const getSlashRouteState = useCallback(
+    (route: AnyRouteDefinition) => {
+      if (route.id !== "status" && route.id !== "permissions") {
+        return undefined;
+      }
+
+      return {
+        sessionId,
+        cwd: process.cwd(),
+        mode,
+        permissionMode,
+        messageCount: messages.length,
+        pendingApprovalCount: pendingApprovals.length,
+      };
+    },
+    [messages.length, mode, pendingApprovals.length, permissionMode, sessionId],
+  );
+
+  const navigateIfSlashRoute = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed.startsWith("/")) {
+        return false;
+      }
+
+      const normalized = trimmed.toLowerCase();
+      const candidates = getSlashPageRoutes(trimmed);
+      const exactMatch = candidates.find(
+        (route) =>
+          route.path.toLowerCase() === normalized ||
+          route.shortcut.toLowerCase() === normalized,
+      );
+      const prefixMatches = candidates.filter(
+        (route) =>
+          route.path.toLowerCase().startsWith(normalized) ||
+          route.shortcut.toLowerCase().startsWith(normalized),
+      );
+      const route = exactMatch ?? (prefixMatches.length === 1 ? prefixMatches[0] : null);
+
+      if (!route) {
+        openSlashMenu();
+        setSlashMenuQuery(trimmed);
+        setSlashMenuSelected(0);
+        return true;
+      }
+
+      closeSlashMenu();
+      navigate(route.path, { state: getSlashRouteState(route) });
+      return true;
+    },
+    [
+      closeSlashMenu,
+      getSlashRouteState,
+      navigate,
+      openSlashMenu,
+      setSlashMenuQuery,
+      setSlashMenuSelected,
+    ],
+  );
+
+  const submitChatInput = useCallback(
+    (text: string) => {
+      if (navigateIfSlashRoute(text)) {
+        return;
+      }
+
+      submitInput(text);
+    },
+    [navigateIfSlashRoute, submitInput],
+  );
 
   const modeDefinition = codingAgentModes[mode];
   const activeUserPrompt = pendingUserPrompts[0] ?? null;
@@ -268,7 +409,7 @@ export function ChatScreen() {
       return;
     }
 
-    if (!isSessionIdValid || hasBlockingPopup) {
+    if (!isSessionIdValid || hasBlockingPopup || slashMenuOpen) {
       return;
     }
 
@@ -294,12 +435,23 @@ export function ChatScreen() {
             placeholder={isLoading ? "Waiting for response..." : "Reply..."}
             focused={canTypeInChat}
             disabled={!canTypeInChat}
+            slashMenuOpen={slashMenuOpen}
+            onTextChange={syncSlashMenuFromInput}
+            beforeInput={slashMenuOpen ? (
+              <SlashPageMenu
+                query={slashMenuQuery}
+                selectedIndex={selectedSlashRouteIndex}
+                routes={slashRoutes}
+              />
+            ) : null}
             footer={
               <box flexDirection="row" justifyContent="space-between">
                 {pendingApprovals.length > 0 ? (
                   <text fg={cliTheme.text.muted}>Use approval card or approve/deny commands</text>
                 ) : hasBlockingPopup ? (
                   <text fg={cliTheme.text.muted}>Complete the inline prompt to continue</text>
+                ) : slashMenuOpen ? (
+                  <text fg={cliTheme.text.muted}>Choose a page or press Esc</text>
                 ) : (
                   <text fg={cliTheme.text.muted}>Tab/Ctrl+T switch mode | Ctrl+P commands</text>
                 )}
@@ -310,7 +462,7 @@ export function ChatScreen() {
               </box>
             }
             modeToggleHint
-            onSubmit={submitInput}
+            onSubmit={submitChatInput}
           />
         }
       >
@@ -321,6 +473,7 @@ export function ChatScreen() {
             pendingApprovalIds={pendingApprovalIds}
           />
         ))}
+        {isLoading || isStreaming ? <LoadingTimer elapsedSeconds={elapsedSeconds} /> : null}
         {isStreaming ? (
           <box paddingX={1}>
             <text fg={cliTheme.semantic.info}>Assistant is thinking...</text>
@@ -333,6 +486,7 @@ export function ChatScreen() {
             onResolveAll={resolveAllToolApprovals}
           />
         ) : null}
+        {todos.length > 0 ? <ChatTodoStatusCard todos={todos} /> : null}
         {activeUserPrompt ? (
           <ChatInteractionPopup
             title={activeUserPrompt.header ?? "Question"}

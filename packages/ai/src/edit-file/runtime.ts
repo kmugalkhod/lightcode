@@ -1,6 +1,11 @@
 import { promises as fs } from "node:fs";
 import { z } from "zod";
-import { resolveWithinWorkspace, toWorkspaceRelativePath } from "../common/resolve-within-workspace";
+import {
+  getDefaultWorkspaceContext,
+  resolveWithinWorkspace,
+  toWorkspaceRelativePath,
+  type WorkspaceContext,
+} from "../common/resolve-within-workspace";
 import { editFileInputSchema, editFileOutputSchema } from "./schema";
 
 type EditFileInput = z.input<typeof editFileInputSchema>;
@@ -27,10 +32,15 @@ function countOccurrences(haystack: string, needle: string): number {
   return count;
 }
 
-export async function executeEditFile(input: EditFileInput): Promise<EditFileOutput> {
+export async function executeEditFile(
+  input: EditFileInput,
+  workspaceContext: WorkspaceContext = getDefaultWorkspaceContext(),
+): Promise<EditFileOutput> {
   const parsedInput = editFileInputSchema.parse(input);
-  const resolvedPath = resolveWithinWorkspace(parsedInput.path);
-  const relativePath = toWorkspaceRelativePath(resolvedPath);
+  const resolvedPath = resolveWithinWorkspace(parsedInput.path, {
+    context: workspaceContext,
+  });
+  const relativePath = toWorkspaceRelativePath(resolvedPath, workspaceContext);
   const originalContent = await fs.readFile(resolvedPath, "utf8");
 
   const replacements = parsedInput.replaceAll

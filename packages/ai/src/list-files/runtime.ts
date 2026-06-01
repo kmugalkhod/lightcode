@@ -2,7 +2,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { listFilesInputSchema, listFilesOutputSchema } from "./schema";
-import { resolveWithinWorkspace, toWorkspaceRelativePath } from "../common/resolve-within-workspace";
+import {
+  getDefaultWorkspaceContext,
+  resolveWithinWorkspace,
+  toWorkspaceRelativePath,
+  type WorkspaceContext,
+} from "../common/resolve-within-workspace";
 
 type ListFilesInput = z.input<typeof listFilesInputSchema>;
 type ListFilesOutput = z.infer<typeof listFilesOutputSchema>;
@@ -30,10 +35,15 @@ function entryTypeFromStats(
   return "other";
 }
 
-export async function executeListFiles(input: ListFilesInput): Promise<ListFilesOutput> {
+export async function executeListFiles(
+  input: ListFilesInput,
+  workspaceContext: WorkspaceContext = getDefaultWorkspaceContext(),
+): Promise<ListFilesOutput> {
   const parsedInput = listFilesInputSchema.parse(input);
-  const resolvedRoot = resolveWithinWorkspace(parsedInput.path);
-  const relativeRootPath = toWorkspaceRelativePath(resolvedRoot);
+  const resolvedRoot = resolveWithinWorkspace(parsedInput.path, {
+    context: workspaceContext,
+  });
+  const relativeRootPath = toWorkspaceRelativePath(resolvedRoot, workspaceContext);
   const rootStats = await fs.stat(resolvedRoot);
 
   const entries: Array<{ path: string; type: "file" | "directory" | "symlink" | "other"; size: number | null }> = [];
@@ -69,7 +79,10 @@ export async function executeListFiles(input: ListFilesInput): Promise<ListFiles
       }
 
       const absoluteEntryPath = path.join(currentDirectoryPath, dirEntry.name);
-      const relativeEntryPath = toWorkspaceRelativePath(absoluteEntryPath);
+      const relativeEntryPath = toWorkspaceRelativePath(
+        absoluteEntryPath,
+        workspaceContext,
+      );
 
       const entryStats = await fs.lstat(absoluteEntryPath);
       const entryType = entryTypeFromStats(entryStats);

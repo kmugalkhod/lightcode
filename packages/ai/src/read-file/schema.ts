@@ -22,7 +22,11 @@ export const readFileInputSchema = z
     }
   });
 
-export const readFileProviderInputSchema = readFileInputSchema;
+export const readFileProviderInputSchema = z.object({
+  path: boundedPathSchema,
+  startLine: positiveLineSchema.optional(),
+  endLine: positiveLineSchema.optional(),
+});
 
 export const readFileOutputSchema = z.object({
   path: z.string(),

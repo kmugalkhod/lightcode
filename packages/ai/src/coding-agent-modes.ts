@@ -2,15 +2,29 @@ import { z } from "zod";
 
 const codingAgentToolNameOrder = [
   "list_files",
+  "glob_search",
   "read_file",
   "grep",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_show",
+  "tool_search",
+  "skill",
+  "list_mcp_resources",
+  "read_mcp_resource",
+  "call_mcp_tool",
   "request_user_input",
+  "todo_write",
   "write_file",
   "edit_file",
   "bash",
+  "web_fetch",
+  "web_search",
 ] as const;
 
 export type CodingAgentToolName = (typeof codingAgentToolNameOrder)[number];
+export const codingAgentToolNameSchema = z.enum(codingAgentToolNameOrder);
 
 export const codingAgentModeOrder = ["build", "plan"] as const;
 export type CodingAgentMode = (typeof codingAgentModeOrder)[number];
@@ -32,7 +46,27 @@ export const codingAgentModes: Record<CodingAgentMode, CodingAgentModeDefinition
     instructions:
       "You are in build mode. You should plan and execute coding tasks end-to-end, " +
       "including edits and shell commands when needed. Keep progress updates concise and concrete.",
-    activeTools: ["list_files", "read_file", "grep", "write_file", "edit_file", "bash"],
+    activeTools: [
+      "list_files",
+      "glob_search",
+      "read_file",
+      "grep",
+      "git_status",
+      "git_diff",
+      "git_log",
+      "git_show",
+      "tool_search",
+      "skill",
+      "list_mcp_resources",
+      "read_mcp_resource",
+      "call_mcp_tool",
+      "todo_write",
+      "write_file",
+      "edit_file",
+      "bash",
+      "web_fetch",
+      "web_search",
+    ],
   },
   plan: {
     label: "Plan",
@@ -42,7 +76,21 @@ export const codingAgentModes: Record<CodingAgentMode, CodingAgentModeDefinition
       "Analyze context and produce a clear, decision-complete implementation plan. " +
       "If key information is missing, ask concise structured questions through the request_user_input tool. " +
       "When the plan is final, output it in a <proposed_plan>...</proposed_plan> block and wait for user confirmation before implementation.",
-    activeTools: ["list_files", "read_file", "grep", "request_user_input"],
+    activeTools: [
+      "list_files",
+      "glob_search",
+      "read_file",
+      "grep",
+      "git_status",
+      "git_diff",
+      "git_log",
+      "git_show",
+      "tool_search",
+      "skill",
+      "list_mcp_resources",
+      "read_mcp_resource",
+      "request_user_input",
+    ],
   },
 };
 

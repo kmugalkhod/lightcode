@@ -12,7 +12,11 @@ export const listFilesInputSchema = z.object({
   maxEntries: integerRangeSchema(1, MAX_TOOL_LIST_ENTRIES, "maxEntries").optional().default(100),
 });
 
-export const listFilesProviderInputSchema = listFilesInputSchema;
+export const listFilesProviderInputSchema = z.object({
+  path: boundedPathSchema,
+  recursive: z.boolean().optional(),
+  includeHidden: z.boolean().optional(),
+});
 
 export const listFilesOutputSchema = z.object({
   path: z.string(),

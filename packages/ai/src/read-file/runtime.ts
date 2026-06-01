@@ -1,7 +1,12 @@
 import { promises as fs } from "node:fs";
 import { z } from "zod";
 import { MAX_TOOL_TEXT_OUTPUT_CHARS } from "../constants";
-import { resolveWithinWorkspace, toWorkspaceRelativePath } from "../common/resolve-within-workspace";
+import {
+  getDefaultWorkspaceContext,
+  resolveWithinWorkspace,
+  toWorkspaceRelativePath,
+  type WorkspaceContext,
+} from "../common/resolve-within-workspace";
 import { truncateText } from "../common/output-utils";
 import { readFileInputSchema, readFileOutputSchema } from "./schema";
 
@@ -22,10 +27,15 @@ function clampLineRange(totalLines: number, startLine?: number, endLine?: number
   return { start, end };
 }
 
-export async function executeReadFile(input: ReadFileInput): Promise<ReadFileOutput> {
+export async function executeReadFile(
+  input: ReadFileInput,
+  workspaceContext: WorkspaceContext = getDefaultWorkspaceContext(),
+): Promise<ReadFileOutput> {
   const parsedInput = readFileInputSchema.parse(input);
-  const resolvedPath = resolveWithinWorkspace(parsedInput.path);
-  const relativePath = toWorkspaceRelativePath(resolvedPath);
+  const resolvedPath = resolveWithinWorkspace(parsedInput.path, {
+    context: workspaceContext,
+  });
+  const relativePath = toWorkspaceRelativePath(resolvedPath, workspaceContext);
   const fileStats = await fs.stat(resolvedPath);
 
   if (!fileStats.isFile()) {

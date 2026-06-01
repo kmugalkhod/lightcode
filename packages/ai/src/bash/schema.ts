@@ -3,7 +3,7 @@ import { MAX_TOOL_TEXT_OUTPUT_CHARS } from "../constants";
 import { integerRangeSchema } from "../common/base-schemas";
 
 export const bashDescription =
-  "Run a shell command from workspace root with a timeout. This is an intentional escape hatch and is not sandboxed beyond workspace cwd and timeout controls.";
+  "Run a shell command from workspace root with a timeout. Commands are classified before execution and may require approval.";
 
 export const bashInputSchema = z.object({
   command: z.string().min(1).max(4000),
@@ -13,10 +13,9 @@ export const bashInputSchema = z.object({
     .default(MAX_TOOL_TEXT_OUTPUT_CHARS),
 });
 
-// Provider-facing schema remains small and omits output truncation controls.
+// Provider-facing schema remains tiny to stay under provider grammar limits.
 export const bashProviderInputSchema = z.object({
   command: z.string().min(1).max(4000),
-  timeoutMs: integerRangeSchema(1_000, 120_000, "timeoutMs").optional(),
 });
 
 export const bashOutputSchema = z.object({

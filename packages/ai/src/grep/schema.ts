@@ -13,7 +13,12 @@ export const grepInputSchema = z.object({
   maxResults: integerRangeSchema(1, MAX_TOOL_SEARCH_RESULTS, "maxResults").optional().default(50),
 });
 
-export const grepProviderInputSchema = grepInputSchema;
+export const grepProviderInputSchema = z.object({
+  query: z.string().min(1).max(1000),
+  path: boundedPathSchema,
+  isRegex: z.boolean().optional(),
+  caseSensitive: z.boolean().optional(),
+});
 
 export const grepOutputSchema = z.object({
   query: z.string(),

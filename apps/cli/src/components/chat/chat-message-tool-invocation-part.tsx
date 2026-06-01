@@ -36,6 +36,9 @@ function getToolTarget(input: unknown) {
     Reflect.get(input, "path"),
     Reflect.get(input, "command"),
     Reflect.get(input, "query"),
+    Reflect.get(input, "pattern"),
+    Reflect.get(input, "revision"),
+    Reflect.get(input, "url"),
   ];
 
   for (const candidate of candidates) {
