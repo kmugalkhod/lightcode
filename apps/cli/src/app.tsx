@@ -316,22 +316,22 @@ function AppContent() {
         borderColor={cliTheme.borders.default}
       >
         <box flexDirection="row" gap={2} alignItems="center">
-          <text fg={cliTheme.text.primary} attributes={TextAttributes.BOLD}>Nightcode</text>
+          <text fg={cliTheme.text.primary} attributes={TextAttributes.BOLD}>Lightcode</text>
           {configBadge.status === "available" ? (
-            <text fg={cliTheme.text.muted}>
-              · {configBadge.provider} · {configBadge.model}
+            <text fg={cliTheme.text.secondary}>
+              | {configBadge.provider} | {configBadge.model}
             </text>
           ) : configBadge.status === "loading" ? (
-            <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
-              · loading...
+            <text fg={cliTheme.text.muted}>
+              | loading...
             </text>
           ) : (
-            <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
-              · provider unavailable
+            <text fg={cliTheme.text.muted}>
+              | provider unavailable
             </text>
           )}
         </box>
-        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+        <text fg={cliTheme.text.muted}>
           {currentView}
         </text>
       </box>
@@ -379,7 +379,7 @@ function AppContent() {
         border={["top"]}
         borderColor={cliTheme.borders.default}
       >
-        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+        <text fg={cliTheme.text.muted}>
           {getFooterStatus()}
         </text>
       </box>

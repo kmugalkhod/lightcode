@@ -48,15 +48,15 @@ export function SlashPageMenu({
         border={["top"]}
         borderColor={cliTheme.overlay.border}
       >
-        <text fg={cliTheme.text.muted}>
+        <text fg={cliTheme.overlay.footerText}>
           {isFiltering
             ? `Showing: "${normalizedQuery.replace(/^\//, "")}" - ${routes.length} result${routes.length !== 1 ? "s" : ""}`
             : `${routes.length} page${routes.length !== 1 ? "s" : ""}`}
         </text>
         <box flexGrow={1} />
-        <text fg={cliTheme.text.muted}>Enter open | </text>
+        <text fg={cliTheme.overlay.footerText}>Enter open | </text>
         <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>Up/Down</text>
-        <text fg={cliTheme.text.muted}> select | Esc close</text>
+        <text fg={cliTheme.overlay.footerText}> select | Esc close</text>
       </box>
     </box>
   );
@@ -103,7 +103,6 @@ function MenuItem({ route, selected }: MenuItemProps) {
       >
         <text
           fg={cliTheme.overlay.badgeText}
-          attributes={TextAttributes.DIM}
         >
           /{shortcutWithoutSlash}
         </text>
@@ -129,7 +128,6 @@ function MenuItem({ route, selected }: MenuItemProps) {
             ? cliTheme.overlay.selectedRowText
             : cliTheme.overlay.description
         }
-        attributes={selected ? TextAttributes.NONE : TextAttributes.DIM}
       >
         {route.description}
       </text>
@@ -153,16 +151,15 @@ function EmptyState({ query }: EmptyStateProps) {
       paddingY={2}
       paddingX={2}
     >
-      <text fg={cliTheme.overlay.mutedText}>
+      <text fg={cliTheme.overlay.footerText}>
         {`No matches for "${query.replace(/^\//, "")}"`}
       </text>
       <box flexDirection="row" gap={1} marginTop={1}>
-        <text fg={cliTheme.text.muted}>Try:</text>
+        <text fg={cliTheme.overlay.footerText}>Try:</text>
         {suggestions.map((suggestion) => (
           <text
             key={suggestion}
             fg={cliTheme.accent.primary}
-            attributes={TextAttributes.DIM}
           >
             {suggestion}
           </text>

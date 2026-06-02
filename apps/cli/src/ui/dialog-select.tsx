@@ -17,8 +17,7 @@ interface DialogSelectProps {
   onClose: () => void;
 }
 
-// Professional styling constants
-const INDICATOR_SELECTED = "▸";
+const INDICATOR_SELECTED = ">";
 const INDICATOR_DEFAULT = " ";
 
 export function DialogSelect({
@@ -105,13 +104,12 @@ export function DialogSelect({
           borderColor={cliTheme.overlay.border}
         >
           <box flexDirection="row" gap={2}>
-            <SelectHint text="↑↓" description="navigate" />
+            <SelectHint text="Up/Down" description="navigate" />
             <SelectHint text="Enter" description="select" />
             <SelectHint text="Esc" description="cancel" />
           </box>
           <text
             fg={cliTheme.overlay.shortcutHint}
-            attributes={TextAttributes.DIM}
           >
             {filteredOptions.length} of {options.length} options
           </text>
@@ -167,7 +165,6 @@ function SelectOptionItem({ option, index, selected }: SelectOptionItemProps) {
           >
             <text
               fg={cliTheme.accent.primary}
-              attributes={TextAttributes.DIM}
             >
               Enter
             </text>
@@ -180,7 +177,6 @@ function SelectOptionItem({ option, index, selected }: SelectOptionItemProps) {
         <box flexDirection="row" paddingLeft={2} marginTop={0}>
           <text
             fg={rowColors.description}
-            attributes={TextAttributes.DIM}
           >
             {option.description}
           </text>
@@ -207,7 +203,6 @@ function SelectHint({ text, description }: SelectHintProps) {
       </text>
       <text
         fg={cliTheme.overlay.mutedText}
-        attributes={TextAttributes.DIM}
       >
         {description}
       </text>
@@ -229,12 +224,11 @@ function NoOptionsFound({ query }: NoOptionsFoundProps) {
       flexGrow={1}
       paddingY={2}
     >
-      <text fg={cliTheme.overlay.mutedText} attributes={TextAttributes.BOLD}>
+      <text fg={cliTheme.overlay.footerText} attributes={TextAttributes.BOLD}>
         No options found
       </text>
       <text
         fg={cliTheme.overlay.shortcutHint}
-        attributes={TextAttributes.DIM}
         marginTop={1}
       >
         No results for "{query}"

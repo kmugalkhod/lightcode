@@ -16,4 +16,5 @@ export * from "./request-user-input/schema";
 export * from "./sandbox/config";
 export * from "./skills/runtime";
 export * from "./skills/schema";
+export * from "./subagent-schemas";
 export * from "./todo-write/schema";

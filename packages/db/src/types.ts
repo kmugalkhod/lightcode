@@ -1,6 +1,8 @@
+export { Prisma } from "../generated/prisma/client";
 export type {
   ChatMessage,
   ChatSession,
   MessageRole,
-  Prisma,
+  SubagentTask,
+  SubagentTaskStatus,
 } from "../generated/prisma/client";

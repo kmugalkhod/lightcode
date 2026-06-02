@@ -2,10 +2,6 @@ import { TextAttributes } from "@opentui/core";
 import { getLeaderBindings } from "./keymap";
 import { cliTheme } from "../ui/cli-theme";
 
-// Professional styling constants
-const INDICATOR_SELECTED = "▸";
-const INDICATOR_DEFAULT = " ";
-
 export function WhichKey() {
   const bindings = getLeaderBindings();
 
@@ -43,14 +39,13 @@ export function WhichKey() {
             paddingY={0}
           >
             <text
-              fg={cliTheme.overlay.mutedText}
-              attributes={TextAttributes.DIM}
+              fg={cliTheme.overlay.footerText}
             >
               {bindings.length}
             </text>
           </box>
         </box>
-        <text fg={cliTheme.overlay.headerMuted} attributes={TextAttributes.DIM}>
+        <text fg={cliTheme.overlay.headerMuted}>
           menu
         </text>
       </box>
@@ -86,7 +81,6 @@ export function WhichKey() {
           </text>
           <text
             fg={cliTheme.overlay.mutedText}
-            attributes={TextAttributes.DIM}
           >
             to cancel
           </text>
@@ -155,7 +149,6 @@ function KeyBindingItem({ binding }: KeyBindingItemProps) {
       {binding.description && (
         <text
           fg={rowColors.description}
-          attributes={TextAttributes.DIM}
           width={20}
         >
           {binding.description}

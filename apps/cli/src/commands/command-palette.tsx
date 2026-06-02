@@ -1,5 +1,4 @@
 import { TextAttributes } from "@opentui/core";
-import { useState, useEffect } from "react";
 import { searchCommands, type Command } from "./command-registry";
 import { cliTheme } from "../ui/cli-theme";
 
@@ -9,8 +8,7 @@ interface CommandPaletteProps {
   selectedIndex: number;
 }
 
-// Professional styling constants
-const INDICATOR_SELECTED = "▸";
+const INDICATOR_SELECTED = ">";
 const INDICATOR_DEFAULT = " ";
 
 export function CommandPalette({ query, setQuery, selectedIndex }: CommandPaletteProps) {
@@ -51,15 +49,14 @@ export function CommandPalette({ query, setQuery, selectedIndex }: CommandPalett
             paddingY={0}
           >
             <text
-              fg={cliTheme.overlay.mutedText}
-              attributes={TextAttributes.DIM}
+              fg={cliTheme.overlay.footerText}
             >
               {commands.length}
             </text>
           </box>
         </box>
         {query.trim() && (
-          <text fg={cliTheme.overlay.headerMuted} attributes={TextAttributes.DIM}>
+          <text fg={cliTheme.overlay.headerMuted}>
             filtered from {totalCommands}
           </text>
         )}
@@ -112,13 +109,12 @@ export function CommandPalette({ query, setQuery, selectedIndex }: CommandPalett
         borderColor={cliTheme.overlay.border}
       >
         <box flexDirection="row" gap={2}>
-          <PaletteHint text="↑↓" description="navigate" />
+          <PaletteHint text="Up/Down" description="navigate" />
           <PaletteHint text="Enter" description="run" />
           <PaletteHint text="Esc" description="close" />
         </box>
         <text
           fg={cliTheme.overlay.shortcutHint}
-          attributes={TextAttributes.DIM}
         >
           Ctrl+P to toggle
         </text>
@@ -164,7 +160,6 @@ function CommandItem({ command, index, selected }: CommandItemProps) {
       >
         <text
           fg={rowColors.badgeText}
-          attributes={TextAttributes.DIM}
         >
           {command.category}
         </text>
@@ -189,7 +184,6 @@ function CommandItem({ command, index, selected }: CommandItemProps) {
         >
           <text
             fg={rowColors.badgeText}
-            attributes={TextAttributes.DIM}
           >
             {command.shortcut}
           </text>
@@ -206,7 +200,6 @@ function CommandItem({ command, index, selected }: CommandItemProps) {
         >
           <text
             fg={cliTheme.accent.primary}
-            attributes={TextAttributes.DIM}
           >
             Enter
           </text>
@@ -233,7 +226,6 @@ function PaletteHint({ text, description }: PaletteHintProps) {
       </text>
       <text
         fg={cliTheme.overlay.mutedText}
-        attributes={TextAttributes.DIM}
       >
         {description}
       </text>
@@ -255,16 +247,15 @@ function NoCommandsFound({ query }: NoCommandsFoundProps) {
       paddingY={3}
       paddingX={2}
     >
-      <text fg={cliTheme.overlay.mutedText} attributes={TextAttributes.BOLD}>
+      <text fg={cliTheme.overlay.footerText} attributes={TextAttributes.BOLD}>
         No commands found
       </text>
       <box flexDirection="column" alignItems="center" marginTop={1}>
-        <text fg={cliTheme.overlay.shortcutHint} attributes={TextAttributes.DIM}>
+        <text fg={cliTheme.overlay.shortcutHint}>
           No results for "{query}"
         </text>
         <text
           fg={cliTheme.overlay.description}
-          attributes={TextAttributes.DIM}
           marginTop={1}
         >
           Try a different search term

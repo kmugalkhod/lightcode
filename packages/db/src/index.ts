@@ -1,6 +1,8 @@
+export { Prisma } from "./types";
 export type {
   ChatMessage,
   ChatSession,
   MessageRole,
-  Prisma,
+  SubagentTask,
+  SubagentTaskStatus,
 } from "./types";

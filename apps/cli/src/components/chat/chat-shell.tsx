@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { TextAttributes } from "@opentui/core";
 import { ChatMessageErrorPart } from "./chat-message-error-part";
 import { cliTheme } from "../../ui/cli-theme";
 
@@ -26,7 +27,9 @@ export function ChatShell({
   return (
     <box width="100%" height="100%" flexDirection="column" gap={1}>
       <box width="100%" flexDirection="row" justifyContent="space-between" paddingX={1}>
-        <text fg={cliTheme.text.secondary}>{title}</text>
+        <text fg={cliTheme.text.secondary} attributes={TextAttributes.BOLD}>
+          {title}
+        </text>
         <text fg={cliTheme.text.muted}>{statusLabel}</text>
       </box>
       <box

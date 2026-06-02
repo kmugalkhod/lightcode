@@ -19,7 +19,7 @@ export function LoadingTimer({ elapsedSeconds }: LoadingTimerProps) {
 
   return (
     <box paddingX={1}>
-      <text fg={cliTheme.semantic.info}>⏱ {formattedTime}</text>
+      <text fg={cliTheme.semantic.info}>time {formattedTime}</text>
     </box>
   );
 }

@@ -12,6 +12,7 @@
     "server:start": "bun --env-file=.env apps/server/src/index.ts",
     "cli:dev": "bun run --cwd apps/cli dev",
     "cli:start": "bun run --cwd apps/cli start",
+    "test:parity": "bun test packages/ai/src/parity",
     "typecheck": "bunx tsc --noEmit && bun run tool-schema:check",
     "tool-schema:check": "bun test packages/ai/src/agent-tools-schema-preflight.test.ts",
     "db:push": "bunx --bun prisma db push --config packages/db/prisma.config.ts",

@@ -142,7 +142,7 @@ function CredentialHints({ hints }: { hints: string[] }) {
       </text>
       {hints.map((hint, index) => (
         <text key={index} fg={cliTheme.text.secondary}>
-          • {hint}
+          - {hint}
         </text>
       ))}
     </box>

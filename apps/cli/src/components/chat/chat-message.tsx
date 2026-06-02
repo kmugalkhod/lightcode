@@ -1,4 +1,5 @@
 import { isToolUIPart, type UIMessage } from "ai";
+import { TextAttributes } from "@opentui/core";
 import { ChatMessageErrorPart } from "./chat-message-error-part";
 import { ChatMessageReasoningPart } from "./chat-message-reasoning-part";
 import { ChatMessageTextPart } from "./chat-message-text-part";
@@ -69,7 +70,9 @@ export function ChatMessage({ message, pendingApprovalIds }: ChatMessageProps) {
       paddingY={1}
       gap={1}
     >
-      <text fg={roleStyle.labelColor}>{ROLE_LABELS[message.role]}</text>
+      <text fg={roleStyle.labelColor} attributes={TextAttributes.BOLD}>
+        {ROLE_LABELS[message.role]}
+      </text>
       <box width="100%" flexDirection="column" gap={1}>
         {renderedParts}
       </box>

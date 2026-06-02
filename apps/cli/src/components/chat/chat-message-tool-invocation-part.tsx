@@ -14,13 +14,13 @@ interface ChatMessageToolInvocationPartProps {
 }
 
 const TOOL_STATE_VIEW = {
-  "input-streaming": { symbol: "\u2192", verb: "Preparing" },
-  "input-available": { symbol: "\u2192", verb: "Running" },
-  "approval-requested": { symbol: "\u26A0", verb: "Approval needed for" },
-  "approval-responded": { symbol: "\u2192", verb: "Approval received for" },
-  "output-available": { symbol: "\u2713", verb: "Completed" },
-  "output-error": { symbol: "\u2717", verb: "Failed" },
-  "output-denied": { symbol: "\u2715", verb: "Denied" },
+  "input-streaming": { symbol: ">", verb: "Preparing" },
+  "input-available": { symbol: ">", verb: "Running" },
+  "approval-requested": { symbol: "!", verb: "Approval needed for" },
+  "approval-responded": { symbol: ">", verb: "Approval received for" },
+  "output-available": { symbol: "OK", verb: "Completed" },
+  "output-error": { symbol: "ERR", verb: "Failed" },
+  "output-denied": { symbol: "NO", verb: "Denied" },
 } satisfies Record<ToolInvocationState, { symbol: string; verb: string }>;
 
 function humanizeToolName(toolName: string) {
@@ -72,7 +72,7 @@ export function ChatMessageToolInvocationPart({
   const isPendingApproval =
     part.state === "input-available" && pendingApprovalIds?.has(part.toolCallId);
   const stateView = isPendingApproval
-    ? { symbol: "\u26A0", verb: "Approval pending for" }
+    ? { symbol: "!", verb: "Approval pending for" }
     : TOOL_STATE_VIEW[part.state];
   const stateColor = isPendingApproval
     ? cliTheme.semantic.warning

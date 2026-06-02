@@ -15,6 +15,18 @@ enum MessageRole {
   @@map("message_role")
 }
 
+enum SubagentTaskStatus {
+  pending
+  running
+  completed
+  failed
+  blocked_on_approval
+  blocked_on_provider
+  cancelled
+
+  @@map("subagent_task_status")
+}
+
 model ChatSession {
   id             String        @id
   title          String?
@@ -26,6 +38,7 @@ model ChatSession {
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
   messages       ChatMessage[]
+  subagentTasks  SubagentTask[]
 
   @@index([updatedAt], map: "sessions_updated_at_idx")
   @@map("sessions")
@@ -49,4 +62,26 @@ model ChatMessage {
   @@index([sessionId, sequence], map: "messages_session_id_sequence_idx")
   @@index([sessionId, role], map: "messages_session_id_role_idx")
   @@map("messages")
+}
+
+model SubagentTask {
+  id              String             @id
+  parentSessionId String             @map("parent_session_id")
+  prompt          String
+  status          SubagentTaskStatus @default(pending)
+  mode            String             @default("plan")
+  model           String?
+  allowedTools    String[]           @default([]) @map("allowed_tools")
+  output          Json?
+  error           String?
+  startedAt       DateTime?          @map("started_at")
+  finishedAt      DateTime?          @map("finished_at")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  parentSession ChatSession @relation(fields: [parentSessionId], references: [id], onDelete: Cascade)
+
+  @@index([parentSessionId, createdAt], map: "subagent_tasks_parent_session_created_at_idx")
+  @@index([status, updatedAt], map: "subagent_tasks_status_updated_at_idx")
+  @@map("subagent_tasks")
 }
