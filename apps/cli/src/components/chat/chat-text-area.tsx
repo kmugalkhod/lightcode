@@ -1,6 +1,6 @@
 import type { TextareaRenderable } from "@opentui/core";
 import type { ReactNode } from "react";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { cliTheme } from "../../ui/cli-theme";
 
 interface TextareaKeyEvent {
@@ -32,7 +32,6 @@ const textareaKeyBindings: Array<{
   { name: "return", ctrl: true, action: "newline" },
   { name: "enter", ctrl: true, action: "newline" },
   { name: "linefeed", ctrl: true, action: "newline" },
-  { name: "linefeed", action: "newline" },
   { name: "return", action: "submit" },
   { name: "enter", action: "submit" },
 ];
@@ -58,6 +57,40 @@ export function ChatTextArea({
   const inputHint = modeToggleHint
     ? "Enter to send | Ctrl+Enter for newline | Tab/Ctrl+T to switch mode"
     : "Enter to send | Ctrl+Enter for newline";
+
+  const handleKeyDown = useCallback((event: TextareaKeyEvent) => {
+    const isEnterLike =
+      event.name === "return" ||
+      event.name === "enter" ||
+      event.name === "linefeed";
+
+    if (isEnterLike && event.ctrl) {
+      event.preventDefault();
+      lastManualNewlineAt.current = Date.now();
+      textareaRef.current?.newLine();
+    }
+  }, []);
+
+  const handleSubmit = useCallback(() => {
+    if (Date.now() - lastManualNewlineAt.current < 100 || disabled) {
+      return;
+    }
+
+    const rawText = textareaRef.current?.plainText ?? "";
+    const submittedText = trimOnSubmit ? rawText.trim() : rawText;
+
+    if (!allowEmpty && submittedText.length === 0) {
+      return;
+    }
+
+    onSubmit(submittedText);
+    textareaRef.current?.setText("");
+    onTextChange?.("");
+  }, [allowEmpty, disabled, onSubmit, onTextChange, trimOnSubmit]);
+
+  const handleContentChange = useCallback(() => {
+    onTextChange?.(textareaRef.current?.plainText ?? "");
+  }, [onTextChange]);
 
   // Slash menu close behavior: clear input only if text is still a pure slash command.
   // Do NOT clear if user added text after the slash (e.g., "/status something").
@@ -99,37 +132,9 @@ export function ChatTextArea({
         <textarea
           ref={textareaRef}
           initialValue=""
-          onKeyDown={(event: TextareaKeyEvent) => {
-            const isEnterLike =
-              event.name === "return" ||
-              event.name === "enter" ||
-              event.name === "linefeed";
-
-            if (isEnterLike && (event.ctrl || event.name === "linefeed")) {
-              event.preventDefault();
-              lastManualNewlineAt.current = Date.now();
-              textareaRef.current?.newLine();
-            }
-          }}
-          onSubmit={() => {
-            if (Date.now() - lastManualNewlineAt.current < 100 || disabled) {
-              return;
-            }
-
-            const rawText = textareaRef.current?.plainText ?? "";
-            const submittedText = trimOnSubmit ? rawText.trim() : rawText;
-
-            if (!allowEmpty && submittedText.length === 0) {
-              return;
-            }
-
-            onSubmit(submittedText);
-            textareaRef.current?.setText("");
-            onTextChange?.("");
-          }}
-          onContentChange={() => {
-            onTextChange?.(textareaRef.current?.plainText ?? "");
-          }}
+          onKeyDown={handleKeyDown}
+          onSubmit={handleSubmit}
+          onContentChange={handleContentChange}
           keyBindings={textareaKeyBindings}
           placeholder={placeholder}
           width="100%"

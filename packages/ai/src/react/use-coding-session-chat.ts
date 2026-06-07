@@ -1,6 +1,7 @@
 import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
+  isToolUIPart,
   lastAssistantMessageIsCompleteWithToolCalls,
   safeValidateUIMessages,
   type UIMessage,
@@ -15,6 +16,16 @@ import {
   type CodingToolOutputByName,
 } from "../agent-tools";
 import type { SessionMessagesResponse } from "../chat-schemas";
+import {
+  chatInteractionToolApprovalPayloadSchema,
+  chatInteractionResolveRequestSchema,
+  chatInteractionUpsertRequestSchema,
+  chatInteractionUserPromptPayloadSchema,
+  type ChatInteraction,
+  type ChatInteractionListResponse,
+  type ChatInteractionResolveRequest,
+  type ChatInteractionUpsertRequest,
+} from "../chat-interaction-schemas";
 import { toSingleLinePreview } from "../common/output-utils";
 import { createWorkspaceContext } from "../common/resolve-within-workspace";
 import {
@@ -49,6 +60,7 @@ const recoverableDisconnectMessage =
   "Connection interrupted. Please retry or regenerate your last message.";
 const buildModeAutoPromptResponse =
   "Proceed with implementation in Build mode. Continue without additional plan questions.";
+const retryCommandPattern = /^\/?(retry|regenerate)$/i;
 
 const codingToolNameSet = new Set<string>(Object.keys(codingToolInputSchemas));
 type CodingToolInput = CodingToolInputByName[CodingToolName];
@@ -87,6 +99,12 @@ export interface UseCodingSessionChatOptions {
   initialPrompt?: string;
   isSessionIdValid: boolean;
   loadPersistedMessages: () => Promise<SessionMessagesResponse>;
+  loadPersistedInteractions?: () => Promise<ChatInteractionListResponse>;
+  upsertInteraction?: (interaction: ChatInteractionUpsertRequest) => Promise<void>;
+  resolveInteraction?: (
+    toolCallId: string,
+    resolution: ChatInteractionResolveRequest,
+  ) => Promise<void>;
   sessionId: string;
   skipHistoryLoad?: boolean;
   cwd?: string;
@@ -218,6 +236,112 @@ function normalizeChatErrorMessage(message: string) {
   return message;
 }
 
+function isRecoverableChatErrorMessage(message: string) {
+  return normalizeChatErrorMessage(message) === recoverableDisconnectMessage;
+}
+
+function isRetryCommand(input: string) {
+  return retryCommandPattern.test(input.trim());
+}
+
+function queueToolOutput(outputResult: void | PromiseLike<void>) {
+  if (!outputResult) {
+    return;
+  }
+
+  void Promise.resolve(outputResult).catch((outputError) => {
+    console.warn("Failed to add tool output.", outputError);
+  });
+}
+
+function isIncompleteAssistantMessage(message: UIMessage) {
+  if (message.role !== "assistant") {
+    return false;
+  }
+
+  if (message.parts.length === 0) {
+    return true;
+  }
+
+  return message.parts.some((part) => {
+    if (
+      (part.type === "text" || part.type === "reasoning") &&
+      Reflect.get(part, "state") === "streaming"
+    ) {
+      return true;
+    }
+
+    return isToolUIPart(part) && part.state === "input-streaming";
+  });
+}
+
+function trimIncompleteTrailingAssistantMessages(messages: UIMessage[]) {
+  let endIndex = messages.length;
+
+  while (
+    endIndex > 0 &&
+    isIncompleteAssistantMessage(messages[endIndex - 1])
+  ) {
+    endIndex -= 1;
+  }
+
+  return endIndex === messages.length ? messages : messages.slice(0, endIndex);
+}
+
+function hasUnresolvedToolParts(messages: UIMessage[]) {
+  return messages.some((message) =>
+    message.parts.some((part) => {
+      if (!isToolUIPart(part)) {
+        return false;
+      }
+
+      return ![
+        "output-available",
+        "output-error",
+        "output-denied",
+      ].includes(part.state);
+    }),
+  );
+}
+
+function hasActiveClientToolWork({
+  messages,
+  pendingApprovals,
+  pendingUserPrompts,
+}: {
+  messages: UIMessage[];
+  pendingApprovals: PendingToolApproval[];
+  pendingUserPrompts: PendingUserPrompt[];
+}) {
+  const pendingApprovalIds = new Set(
+    pendingApprovals.map((approval) => approval.toolCallId),
+  );
+  const pendingPromptIds = new Set(
+    pendingUserPrompts.map((prompt) => prompt.toolCallId),
+  );
+
+  return messages.some((message) =>
+    message.parts.some((part) => {
+      if (!isToolUIPart(part)) {
+        return false;
+      }
+
+      if (part.state === "input-streaming" || part.state === "approval-responded") {
+        return true;
+      }
+
+      if (part.state !== "input-available") {
+        return false;
+      }
+
+      return (
+        !pendingApprovalIds.has(part.toolCallId) &&
+        !pendingPromptIds.has(part.toolCallId)
+      );
+    }),
+  );
+}
+
 function parseApprovalCommand(
   input: string,
 ): { action: ToolApprovalAction; target: ApprovalCommandTarget } | null {
@@ -268,11 +392,71 @@ async function validatePersistedMessages(
   return validated;
 }
 
+function restorePendingApproval(
+  interaction: ChatInteraction,
+): PendingToolApproval | null {
+  if (interaction.kind !== "tool_approval" || interaction.status !== "pending") {
+    return null;
+  }
+
+  const payloadResult = chatInteractionToolApprovalPayloadSchema.safeParse(
+    interaction.payload,
+  );
+  if (!payloadResult.success) {
+    return null;
+  }
+
+  try {
+    const input = parseCodingToolInput(
+      payloadResult.data.toolName,
+      payloadResult.data.input,
+    );
+
+    return {
+      toolCallId: interaction.toolCallId,
+      toolName: payloadResult.data.toolName,
+      input,
+      summary: payloadResult.data.summary,
+      permissionDecision: payloadResult.data.permissionDecision,
+      cwd: payloadResult.data.cwd,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function restorePendingUserPrompt(
+  interaction: ChatInteraction,
+): PendingUserPrompt | null {
+  if (interaction.kind !== "user_prompt" || interaction.status !== "pending") {
+    return null;
+  }
+
+  const payloadResult = chatInteractionUserPromptPayloadSchema.safeParse(
+    interaction.payload,
+  );
+  if (!payloadResult.success) {
+    return null;
+  }
+
+  return {
+    toolCallId: interaction.toolCallId,
+    header: payloadResult.data.header,
+    question: payloadResult.data.question,
+    options: payloadResult.data.options ?? [],
+    allowCustomResponse: payloadResult.data.allowCustomResponse,
+    placeholder: payloadResult.data.placeholder,
+  };
+}
+
 export function useCodingSessionChat({
   chatApi,
   initialPrompt = "",
   isSessionIdValid,
   loadPersistedMessages,
+  loadPersistedInteractions,
+  upsertInteraction,
+  resolveInteraction,
   sessionId,
   skipHistoryLoad = false,
   cwd = process.cwd(),
@@ -317,7 +501,45 @@ export function useCodingSessionChat({
     });
   }, [chatApi]);
 
-  const { messages, setMessages, sendMessage, addToolOutput, error, status } =
+  const checkpointInteraction = useCallback(
+    async (interaction: ChatInteractionUpsertRequest) => {
+      if (!upsertInteraction) {
+        return;
+      }
+
+      try {
+        await upsertInteraction(interaction);
+      } catch (interactionError) {
+        console.warn("Failed to checkpoint chat interaction.", interactionError);
+      }
+    },
+    [upsertInteraction],
+  );
+
+  const markInteractionResolved = useCallback(
+    async (toolCallId: string, resolution: ChatInteractionResolveRequest) => {
+      if (!resolveInteraction) {
+        return;
+      }
+
+      try {
+        await resolveInteraction(toolCallId, resolution);
+      } catch (interactionError) {
+        console.warn("Failed to resolve chat interaction.", interactionError);
+      }
+    },
+    [resolveInteraction],
+  );
+
+  const {
+    messages,
+    setMessages,
+    sendMessage,
+    addToolOutput,
+    clearError,
+    error,
+    status,
+  } =
     useChat<UIMessage>({
       id: sessionId,
       transport,
@@ -333,46 +555,56 @@ export function useCodingSessionChat({
         try {
           parsedInput = parseCodingToolInput(toolName, toolCall.input);
         } catch (toolError) {
-          addToolOutput({
-            tool: toolName,
-            toolCallId: toolCall.toolCallId,
-            state: "output-error",
-            errorText: getErrorMessage(toolError, "Invalid tool input payload."),
-          });
+          queueToolOutput(
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              state: "output-error",
+              errorText: getErrorMessage(toolError, "Invalid tool input payload."),
+            }),
+          );
           return;
         }
 
         if (isRequestUserInputToolName(toolName)) {
           if (mode !== "plan") {
-            addToolOutput({
-              tool: "request_user_input",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                answer: buildModeAutoPromptResponse,
-                source: "custom",
-              },
-            });
+            queueToolOutput(
+              addToolOutput({
+                tool: "request_user_input",
+                toolCallId: toolCall.toolCallId,
+                output: {
+                  answer: buildModeAutoPromptResponse,
+                  source: "custom",
+                },
+              }),
+            );
             return;
           }
 
           const promptInput = parsedInput as RequestUserInputToolInput;
+          const pendingPrompt: PendingUserPrompt = {
+            toolCallId: toolCall.toolCallId,
+            header: promptInput.header,
+            question: promptInput.question,
+            options: promptInput.options ?? [],
+            allowCustomResponse: promptInput.allowCustomResponse,
+            placeholder: promptInput.placeholder,
+          };
+
+          void checkpointInteraction(
+            chatInteractionUpsertRequestSchema.parse({
+              kind: "user_prompt",
+              toolCallId: toolCall.toolCallId,
+              payload: promptInput,
+            }),
+          );
 
           setPendingUserPrompts((current) => {
             if (current.some((item) => item.toolCallId === toolCall.toolCallId)) {
               return current;
             }
 
-            return [
-              ...current,
-              {
-                toolCallId: toolCall.toolCallId,
-                header: promptInput.header,
-                question: promptInput.question,
-                options: promptInput.options ?? [],
-                allowCustomResponse: promptInput.allowCustomResponse,
-                placeholder: promptInput.placeholder,
-              },
-            ];
+            return [...current, pendingPrompt];
           });
 
           return;
@@ -388,16 +620,41 @@ export function useCodingSessionChat({
         });
 
         if (permissionDecision.outcome === "deny") {
-          addToolOutput({
-            tool: toolName,
-            toolCallId: toolCall.toolCallId,
-            state: "output-error",
-            errorText: formatPermissionDecision(permissionDecision),
-          });
+          queueToolOutput(
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              state: "output-error",
+              errorText: formatPermissionDecision(permissionDecision),
+            }),
+          );
           return;
         }
 
         if (permissionDecision.outcome === "ask") {
+          const pendingApproval: PendingToolApproval = {
+            toolCallId: toolCall.toolCallId,
+            toolName,
+            input: parsedInput,
+            summary: summarizeToolCall(toolName, parsedInput),
+            permissionDecision,
+            cwd,
+          };
+
+          void checkpointInteraction(
+            chatInteractionUpsertRequestSchema.parse({
+              kind: "tool_approval",
+              toolCallId: toolCall.toolCallId,
+              payload: {
+                toolName,
+                input: parsedInput,
+                summary: pendingApproval.summary,
+                permissionDecision,
+                cwd,
+              },
+            }),
+          );
+
           setPendingApprovals((previousApprovals) => {
             if (
               previousApprovals.some(
@@ -407,17 +664,7 @@ export function useCodingSessionChat({
               return previousApprovals;
             }
 
-            return [
-              ...previousApprovals,
-              {
-                toolCallId: toolCall.toolCallId,
-                toolName,
-                input: parsedInput,
-                summary: summarizeToolCall(toolName, parsedInput),
-                permissionDecision,
-                cwd,
-              },
-            ];
+            return [...previousApprovals, pendingApproval];
           });
 
           return;
@@ -440,18 +687,22 @@ export function useCodingSessionChat({
           if (isTodoWriteOutput(toolName, output)) {
             setTodos(output.todos);
           }
-          addToolOutput({
-            tool: toolName,
-            toolCallId: toolCall.toolCallId,
-            output,
-          });
+          queueToolOutput(
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              output,
+            }),
+          );
         } catch (toolError) {
-          addToolOutput({
-            tool: toolName,
-            toolCallId: toolCall.toolCallId,
-            state: "output-error",
-            errorText: getToolErrorMessage(toolError, "Tool execution failed."),
-          });
+          queueToolOutput(
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              state: "output-error",
+              errorText: getToolErrorMessage(toolError, "Tool execution failed."),
+            }),
+          );
         }
       },
     });
@@ -476,21 +727,45 @@ export function useCodingSessionChat({
         if (isTodoWriteOutput(approval.toolName, output)) {
           setTodos(output.todos);
         }
-        addToolOutput({
+        await addToolOutput({
           tool: approval.toolName,
           toolCallId: approval.toolCallId,
           output,
         });
+        await markInteractionResolved(
+          approval.toolCallId,
+          chatInteractionResolveRequestSchema.parse({
+            status: "approved",
+            response: output,
+          }),
+        );
       } catch (toolError) {
-        addToolOutput({
+        const errorText = getToolErrorMessage(toolError, "Tool execution failed.");
+        await addToolOutput({
           tool: approval.toolName,
           toolCallId: approval.toolCallId,
           state: "output-error",
-          errorText: getToolErrorMessage(toolError, "Tool execution failed."),
+          errorText,
+        });
+        await markInteractionResolved(approval.toolCallId, {
+          status: "approved",
+          response: {
+            errorText,
+          },
         });
       }
     },
-    [addToolOutput, allowedTools, cwd, mode, permissionMode, permissionRules, sandbox, sessionId],
+    [
+      addToolOutput,
+      allowedTools,
+      cwd,
+      markInteractionResolved,
+      mode,
+      permissionMode,
+      permissionRules,
+      sandbox,
+      sessionId,
+    ],
   );
 
   const resolveToolApproval = useCallback(
@@ -518,18 +793,26 @@ export function useCodingSessionChat({
       setToolExecutionError(null);
 
       if (action === "deny") {
-        addToolOutput({
-          tool: selectedApproval.toolName,
-          toolCallId: selectedApproval.toolCallId,
-          state: "output-error",
-          errorText: "Tool execution denied by user.",
-        });
+        void (async () => {
+          await addToolOutput({
+            tool: selectedApproval.toolName,
+            toolCallId: selectedApproval.toolCallId,
+            state: "output-error",
+            errorText: "Tool execution denied by user.",
+          });
+          await markInteractionResolved(selectedApproval.toolCallId, {
+            status: "denied",
+            response: {
+              errorText: "Tool execution denied by user.",
+            },
+          });
+        })();
         return;
       }
 
       void runApprovedTool(selectedApproval);
     },
-    [addToolOutput, pendingApprovals, runApprovedTool],
+    [addToolOutput, markInteractionResolved, pendingApprovals, runApprovedTool],
   );
 
   const resolveAllToolApprovals = useCallback(
@@ -544,14 +827,22 @@ export function useCodingSessionChat({
       setToolExecutionError(null);
 
       if (action === "deny") {
-        for (const approval of selectedApprovals) {
-          addToolOutput({
-            tool: approval.toolName,
-            toolCallId: approval.toolCallId,
-            state: "output-error",
-            errorText: "Tool execution denied by user.",
-          });
-        }
+        void (async () => {
+          for (const approval of selectedApprovals) {
+            await addToolOutput({
+              tool: approval.toolName,
+              toolCallId: approval.toolCallId,
+              state: "output-error",
+              errorText: "Tool execution denied by user.",
+            });
+            await markInteractionResolved(approval.toolCallId, {
+              status: "denied",
+              response: {
+                errorText: "Tool execution denied by user.",
+              },
+            });
+          }
+        })();
         return;
       }
 
@@ -561,7 +852,7 @@ export function useCodingSessionChat({
         }
       })();
     },
-    [addToolOutput, pendingApprovals, runApprovedTool],
+    [addToolOutput, markInteractionResolved, pendingApprovals, runApprovedTool],
   );
 
   const respondToUserPrompt = useCallback(
@@ -585,17 +876,64 @@ export function useCodingSessionChat({
       setPendingUserPrompts((current) =>
         current.filter((prompt) => prompt.toolCallId !== toolCallId),
       );
-      addToolOutput({
-        tool: "request_user_input",
-        toolCallId,
-        output: parsedResponse.data,
-      });
+      void (async () => {
+        await addToolOutput({
+          tool: "request_user_input",
+          toolCallId,
+          output: parsedResponse.data,
+        });
+        await markInteractionResolved(toolCallId, {
+          status: "answered",
+          response: parsedResponse.data,
+        });
+      })();
     },
-    [addToolOutput, pendingUserPrompts],
+    [addToolOutput, markInteractionResolved, pendingUserPrompts],
   );
+
+  const canRetryRecoverableResponse = Boolean(
+    error?.message && isRecoverableChatErrorMessage(error.message),
+  );
+
+  const retryRecoverableResponse = useCallback(async () => {
+    if (!error?.message || !isRecoverableChatErrorMessage(error.message)) {
+      setToolExecutionError("No recoverable response is waiting to retry.");
+      return;
+    }
+
+    if (
+      pendingApprovals.length > 0 ||
+      pendingUserPrompts.length > 0 ||
+      hasUnresolvedToolParts(messages)
+    ) {
+      setToolExecutionError(
+        "Resolve pending tool approvals or user prompts before retrying.",
+      );
+      return;
+    }
+
+    const retryMessages = trimIncompleteTrailingAssistantMessages(messages);
+    setMessages(retryMessages);
+    clearError();
+    setToolExecutionError(null);
+    await sendMessage();
+  }, [
+    clearError,
+    error?.message,
+    messages,
+    pendingApprovals.length,
+    pendingUserPrompts.length,
+    sendMessage,
+    setMessages,
+  ]);
 
   const submitInput = useCallback(
     (text: string) => {
+      if (canRetryRecoverableResponse && isRetryCommand(text)) {
+        void retryRecoverableResponse();
+        return;
+      }
+
       if (pendingApprovals.length > 0) {
         const approvalCommand = parseApprovalCommand(text);
         if (approvalCommand) {
@@ -626,6 +964,8 @@ export function useCodingSessionChat({
     [
       pendingApprovals.length,
       pendingUserPrompts.length,
+      canRetryRecoverableResponse,
+      retryRecoverableResponse,
       resolveAllToolApprovals,
       resolveToolApproval,
       sendMessage,
@@ -669,21 +1009,37 @@ export function useCodingSessionChat({
       }
 
       try {
+        const [messagePayload, interactionPayload] = await Promise.all([
+          loadPersistedMessages(),
+          loadPersistedInteractions
+            ? loadPersistedInteractions()
+            : Promise.resolve({ interactions: [] }),
+        ]);
         const validatedMessages = await validatePersistedMessages(
-          (await loadPersistedMessages()).messages,
+          messagePayload.messages,
         );
+        const restoredApprovals = interactionPayload.interactions
+          .map(restorePendingApproval)
+          .filter((approval): approval is PendingToolApproval => approval !== null);
+        const restoredPrompts = interactionPayload.interactions
+          .map(restorePendingUserPrompt)
+          .filter((prompt): prompt is PendingUserPrompt => prompt !== null);
 
         if (cancelled) {
           return;
         }
 
         setMessages(validatedMessages);
+        setPendingApprovals(restoredApprovals);
+        setPendingUserPrompts(restoredPrompts);
       } catch (historyLoadError) {
         if (cancelled) {
           return;
         }
 
         setMessages([]);
+        setPendingApprovals([]);
+        setPendingUserPrompts([]);
         setHistoryError(
           getErrorMessage(historyLoadError, "Unable to load persisted chat history."),
         );
@@ -701,6 +1057,7 @@ export function useCodingSessionChat({
     };
   }, [
     isSessionIdValid,
+    loadPersistedInteractions,
     loadPersistedMessages,
     sessionId,
     setMessages,
@@ -713,19 +1070,26 @@ export function useCodingSessionChat({
     }
 
     for (const pendingPrompt of pendingUserPrompts) {
-      addToolOutput({
-        tool: "request_user_input",
-        toolCallId: pendingPrompt.toolCallId,
-        output: {
+      void (async () => {
+        const output = {
           answer: buildModeAutoPromptResponse,
-          source: "custom",
-        },
-      });
+          source: "custom" as const,
+        };
+        await addToolOutput({
+          tool: "request_user_input",
+          toolCallId: pendingPrompt.toolCallId,
+          output,
+        });
+        await markInteractionResolved(pendingPrompt.toolCallId, {
+          status: "answered",
+          response: output,
+        });
+      })();
     }
 
     setPendingUserPrompts([]);
     setToolExecutionError(null);
-  }, [addToolOutput, mode, pendingUserPrompts]);
+  }, [addToolOutput, markInteractionResolved, mode, pendingUserPrompts]);
 
   useEffect(() => {
     let active = true;
@@ -779,7 +1143,13 @@ export function useCodingSessionChat({
     void sendMessage({ text: initialPrompt.trim() });
   }, [initialPrompt, isHistoryLoading, isSessionIdValid, messages.length, sendMessage]);
 
-  const isStreaming = status === "submitted" || status === "streaming";
+  const hasActiveToolWork = hasActiveClientToolWork({
+    messages,
+    pendingApprovals,
+    pendingUserPrompts,
+  });
+  const isStreaming =
+    status === "submitted" || status === "streaming" || hasActiveToolWork;
   const isLoading = isHistoryLoading || isStreaming;
   const errorMessage =
     historyError ??
@@ -794,7 +1164,9 @@ export function useCodingSessionChat({
     messages,
     pendingApprovals,
     pendingUserPrompts,
+    canRetryRecoverableResponse,
     todos,
+    retryRecoverableResponse,
     resolveAllToolApprovals,
     resolveToolApproval,
     sessionId,

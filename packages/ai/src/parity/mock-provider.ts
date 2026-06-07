@@ -280,6 +280,76 @@ export const parityMockScenarios = {
       },
     ],
   },
+  writeFileToolCall: {
+    id: "write-file-tool-call",
+    steps: [
+      {
+        type: "tool-call",
+        toolName: "write_file",
+        toolCallId: "write-file-1",
+        input: {
+          path: "tmp/reliability.txt",
+          content: "reliability",
+        },
+      },
+    ],
+  },
+  bashApprovalToolCall: {
+    id: "bash-approval-tool-call",
+    steps: [
+      {
+        type: "tool-call",
+        toolName: "bash",
+        toolCallId: "bash-1",
+        input: {
+          command: "bun test",
+        },
+      },
+    ],
+  },
+  requestUserInputToolCall: {
+    id: "request-user-input-tool-call",
+    steps: [
+      {
+        type: "tool-call",
+        toolName: "request_user_input",
+        toolCallId: "question-1",
+        input: {
+          question: "Which implementation path should Lightcode take?",
+          options: [{ label: "Small patch" }],
+        },
+      },
+    ],
+  },
+  multiToolTurn: {
+    id: "multi-tool-turn",
+    steps: [
+      {
+        type: "tool-call",
+        toolName: "read_file",
+        toolCallId: "read-file-1",
+        input: { path: "README.md" },
+      },
+      {
+        type: "tool-call",
+        toolName: "grep",
+        toolCallId: "grep-1",
+        input: { pattern: "Lightcode", path: "." },
+      },
+    ],
+  },
+  disconnectAfterToolCall: {
+    id: "disconnect-after-tool-call",
+    steps: [
+      {
+        type: "tool-call",
+        toolName: "read_file",
+        toolCallId: "read-file-1",
+        input: { path: "README.md" },
+      },
+      { type: "disconnect", message: "Mock disconnect after tool call." },
+    ],
+  },
   toolCallDeltas: {
     id: "tool-call-deltas",
     steps: [

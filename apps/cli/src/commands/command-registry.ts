@@ -21,7 +21,7 @@ const systemCommands: Command[] = Object.values(keymap.bindings)
     id: binding.action,
     label: binding.label,
     category: binding.category,
-    shortcut: binding.sequence,
+    shortcut: binding.shortcutLabel ?? binding.sequence,
   }));
 
 export const commandRegistry: Command[] = [

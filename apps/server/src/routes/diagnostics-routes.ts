@@ -21,6 +21,7 @@ import {
 } from "@lightcode/ai";
 import { productName } from "@lightcode/shared";
 import { listChatSessions } from "../lib/chat-store";
+import { summarizePendingChatInteractions } from "../lib/chat-interaction-store";
 import { prisma } from "../lib/prisma-client";
 import {
   configStatus,
@@ -311,13 +312,32 @@ async function buildDoctorPayload() {
   });
 }
 
-function buildPermissionsPayload() {
+async function buildPermissionsPayload() {
   const config = lightcodeConfigResult.config;
   const rules = config.permissions ?? {
     allow: [],
     ask: [],
     deny: [],
   };
+  const notes = [
+    "Pending approvals and plan questions are checkpointed for session recovery.",
+    "Plan mode is always clamped to read-only at runtime.",
+  ];
+  let pendingInteractions = {
+    total: 0,
+    toolApprovals: 0,
+    userPrompts: 0,
+    stale: 0,
+    recoverable: 0,
+  };
+
+  try {
+    pendingInteractions = await summarizePendingChatInteractions();
+  } catch (error) {
+    notes.unshift(
+      `Pending interaction summary is unavailable: ${getErrorMessage(error)}`,
+    );
+  }
 
   return diagnosticsPermissionsResponseSchema.parse({
     generatedAt: new Date().toISOString(),
@@ -328,11 +348,9 @@ function buildPermissionsPayload() {
     allowedTools: config.allowedTools ?? null,
     rules,
     sandbox: getSandboxRuntimeStatus(config.sandbox),
-    pendingApprovalsPersisted: false,
-    notes: [
-      "Pending approvals live in the active CLI chat session and are not persisted on the server.",
-      "Plan mode is always clamped to read-only at runtime.",
-    ],
+    pendingApprovalsPersisted: true,
+    pendingInteractions,
+    notes,
   });
 }
 
@@ -350,4 +368,4 @@ export const diagnosticsRoutes = new Hono()
       }),
     );
   })
-  .get("/permissions", (c) => c.json(buildPermissionsPayload()));
+  .get("/permissions", async (c) => c.json(await buildPermissionsPayload()));

@@ -9,8 +9,13 @@ import {
 } from "ai";
 import {
   codingChatRequestSchema,
+  chatInteractionListQuerySchema,
+  chatInteractionResolveRequestSchema,
+  chatInteractionUpsertRequestSchema,
+  concreteSessionInteractionPathParamsSchema,
   concreteSessionPathParamsSchema,
   selectCodingAgentIntentTools,
+  sessionInteractionPathParamsSchema,
   sessionCreateRequestSchema,
   type CodingAgentToolName,
   type CodingAgentMode,
@@ -32,6 +37,12 @@ import {
   resolveChatSessionIdentifier,
   SessionNotFoundError,
 } from "../lib/chat-store";
+import {
+  ChatInteractionNotFoundError,
+  listChatInteractions,
+  resolveChatInteraction,
+  upsertChatInteraction,
+} from "../lib/chat-interaction-store";
 import {
   getErrorMessage,
   isProviderBillingOrQuotaError,
@@ -522,6 +533,102 @@ export const sessionRoutes = new Hono()
       );
     }
   })
+  .get(
+    "/:id/interactions",
+    zValidator("param", sessionInteractionPathParamsSchema),
+    zValidator("query", chatInteractionListQuerySchema),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const query = c.req.valid("query");
+
+      try {
+        const sessionId = await resolveChatSessionIdentifier(id);
+        return c.json(
+          await listChatInteractions({
+            sessionId,
+            status: query.status,
+            kind: query.kind,
+          }),
+        );
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+
+        console.error("Failed to list chat interactions.", error);
+        return c.json(
+          {
+            error: "Unable to list chat interactions.",
+            details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
+          },
+          500
+        );
+      }
+    }
+  )
+  .post(
+    "/:id/interactions",
+    zValidator("param", sessionInteractionPathParamsSchema),
+    zValidator("json", chatInteractionUpsertRequestSchema),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const body = c.req.valid("json");
+
+      try {
+        const sessionId = await resolveChatSessionIdentifier(id);
+        return c.json(await upsertChatInteraction({ sessionId, ...body }), 201);
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+
+        console.error("Failed to upsert chat interaction.", error);
+        return c.json(
+          {
+            error: "Unable to checkpoint chat interaction.",
+            details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
+          },
+          500
+        );
+      }
+    }
+  )
+  .patch(
+    "/:id/interactions/:toolCallId",
+    zValidator("param", concreteSessionInteractionPathParamsSchema),
+    zValidator("json", chatInteractionResolveRequestSchema),
+    async (c) => {
+      const { id, toolCallId } = c.req.valid("param");
+      const body = c.req.valid("json");
+
+      try {
+        const sessionId = await resolveChatSessionIdentifier(id);
+        return c.json(
+          await resolveChatInteraction({
+            sessionId,
+            toolCallId,
+            ...body,
+          }),
+        );
+      } catch (error) {
+        if (
+          error instanceof SessionNotFoundError ||
+          error instanceof ChatInteractionNotFoundError
+        ) {
+          return c.json({ error: error.message }, 404);
+        }
+
+        console.error("Failed to resolve chat interaction.", error);
+        return c.json(
+          {
+            error: "Unable to resolve chat interaction.",
+            details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
+          },
+          500
+        );
+      }
+    }
+  )
   .get("/:id/export", zValidator("param", sessionPathParamsSchema), async (c) => {
     const { id } = c.req.valid("param");
 

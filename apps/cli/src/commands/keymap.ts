@@ -3,6 +3,7 @@ export interface KeyBinding {
   action: string;
   label: string;
   category: "navigation" | "system" | "action";
+  shortcutLabel?: string;
 }
 
 export interface KeymapConfig {
@@ -11,13 +12,15 @@ export interface KeymapConfig {
   bindings: Record<string, KeyBinding>;
 }
 
+export const BACK_SHORTCUT_LABEL = "Ctrl+G";
+
 export const keymap: KeymapConfig = {
   leader: "",
   leader_timeout: 2000,
   bindings: {
     "/": { sequence: "/", action: "system:slashPalette", label: "Slash Commands", category: "system" },
     "ctrl+p": { sequence: "ctrl+p", action: "system:palette", label: "Command Palette", category: "system" },
-    "ctrl+h": { sequence: "ctrl+h", action: "system:back", label: "Go Back", category: "system" },
+    "ctrl+g": { sequence: "ctrl+g", action: "system:back", label: "Go Back", category: "system", shortcutLabel: BACK_SHORTCUT_LABEL },
     "ctrl+[": { sequence: "ctrl+[", action: "system:popLayer", label: "Close Layer", category: "system" },
     "q": { sequence: "q", action: "system:quit", label: "Quit", category: "system" },
     "escape": { sequence: "escape", action: "system:cancel", label: "Cancel", category: "system" },

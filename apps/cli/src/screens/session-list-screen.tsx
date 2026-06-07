@@ -10,6 +10,7 @@ import path from "node:path";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { client } from "../lib/client";
+import { BACK_SHORTCUT_LABEL } from "../commands/keymap";
 import { cliTheme, getOverlayRowColors } from "../ui/cli-theme";
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -236,7 +237,7 @@ export function SessionListScreen() {
 
   const footerText = useMemo(() => {
     if (sessions.length === 0) {
-      return "r refresh | l resume latest | Ctrl+H back";
+      return `r refresh | l resume latest | ${BACK_SHORTCUT_LABEL} back`;
     }
 
     return "Enter resume | l latest | e export JSON | d delete | r refresh";

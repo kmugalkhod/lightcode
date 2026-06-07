@@ -3,7 +3,7 @@ import { useKeyboard, useRenderer } from "@opentui/react";
 import { MemoryRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import { CommandPalette } from "./commands/command-palette";
 import { searchCommands } from "./commands/command-registry";
-import { keymap, getBinding, isLeaderKey, normalizeKeyName } from "./commands/keymap";
+import { BACK_SHORTCUT_LABEL, keymap, getBinding, isLeaderKey, normalizeKeyName } from "./commands/keymap";
 import { SlashPageMenu } from "./commands/slash-page-menu";
 import { WhichKey } from "./commands/which-key";
 import { getPathFromAction, getSlashPageRoutes } from "./navigation/route-registry";
@@ -300,7 +300,7 @@ function AppContent() {
       return "Slash pages open | Enter Open | Backspace Close | Esc Cancel";
     }
 
-    const backHint = canGoBack ? " | Ctrl+H Back" : "";
+    const backHint = canGoBack ? ` | ${BACK_SHORTCUT_LABEL} Back` : "";
     return "/ Pages | Ctrl+P Cmd | Esc/q Quit" + backHint;
   };
 

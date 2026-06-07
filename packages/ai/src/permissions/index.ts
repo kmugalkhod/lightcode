@@ -11,6 +11,7 @@ export type PermissionOutcome = "allow" | "ask" | "deny";
 export type PermissionRule = string;
 
 export const permissionModeSchema = z.enum(permissionModeOrder);
+export const permissionOutcomeSchema = z.enum(["allow", "ask", "deny"]);
 
 export const permissionRulesSchema = z.object({
   allow: z.array(z.string().min(1).max(2_000)).optional(),
@@ -35,6 +36,14 @@ export interface PermissionDecision {
   requiredMode: PermissionMode;
   reason?: string;
 }
+
+export const permissionDecisionSchema = z.object({
+  outcome: permissionOutcomeSchema,
+  toolName: z.string().min(1).max(120),
+  activeMode: permissionModeSchema,
+  requiredMode: permissionModeSchema,
+  reason: z.string().min(1).max(2_000).optional(),
+});
 
 export interface PermissionPolicyOptions {
   activeMode: PermissionMode;

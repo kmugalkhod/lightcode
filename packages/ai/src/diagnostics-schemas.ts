@@ -12,6 +12,7 @@ import {
 } from "./permissions";
 import { sandboxRuntimeStatusSchema } from "./sandbox/config";
 import { sessionSummarySchema } from "./chat-schemas";
+import { chatInteractionPendingSummarySchema } from "./chat-interaction-schemas";
 import { mcpServerStatusSchema } from "./mcp/config";
 
 export const diagnosticStatusSchema = z.enum(["ok", "warn", "error"]);
@@ -140,6 +141,7 @@ export const diagnosticsPermissionsResponseSchema = z.object({
   rules: permissionRulesSchema,
   sandbox: sandboxRuntimeStatusSchema,
   pendingApprovalsPersisted: z.boolean(),
+  pendingInteractions: chatInteractionPendingSummarySchema,
   notes: z.array(z.string()),
 });
 export type DiagnosticsPermissionsResponse = z.infer<

@@ -27,18 +27,36 @@ enum SubagentTaskStatus {
   @@map("subagent_task_status")
 }
 
+enum ChatInteractionKind {
+  tool_approval
+  user_prompt
+
+  @@map("chat_interaction_kind")
+}
+
+enum ChatInteractionStatus {
+  pending
+  approved
+  denied
+  answered
+  superseded
+
+  @@map("chat_interaction_status")
+}
+
 model ChatSession {
-  id             String        @id
-  title          String?
-  cwd            String?
-  mode           String        @default("build")
-  permissionMode String?       @map("permission_mode")
-  model          String?
-  revision       Int           @default(0)
-  createdAt      DateTime      @default(now()) @map("created_at")
-  updatedAt      DateTime      @updatedAt @map("updated_at")
-  messages       ChatMessage[]
-  subagentTasks  SubagentTask[]
+  id               String            @id
+  title            String?
+  cwd              String?
+  mode             String            @default("build")
+  permissionMode   String?           @map("permission_mode")
+  model            String?
+  revision         Int               @default(0)
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+  messages         ChatMessage[]
+  interactions     ChatInteraction[]
+  subagentTasks    SubagentTask[]
 
   @@index([updatedAt], map: "sessions_updated_at_idx")
   @@map("sessions")
@@ -62,6 +80,26 @@ model ChatMessage {
   @@index([sessionId, sequence], map: "messages_session_id_sequence_idx")
   @@index([sessionId, role], map: "messages_session_id_role_idx")
   @@map("messages")
+}
+
+model ChatInteraction {
+  id          String                @id @default(cuid())
+  sessionId   String                @map("session_id")
+  toolCallId  String                @map("tool_call_id")
+  kind        ChatInteractionKind
+  status      ChatInteractionStatus @default(pending)
+  payload     Json
+  response    Json?
+  resolvedAt  DateTime?             @map("resolved_at")
+  createdAt   DateTime              @default(now()) @map("created_at")
+  updatedAt   DateTime              @updatedAt @map("updated_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, toolCallId], map: "chat_interactions_session_id_tool_call_id_key")
+  @@index([sessionId, status], map: "chat_interactions_session_id_status_idx")
+  @@index([status, updatedAt], map: "chat_interactions_status_updated_at_idx")
+  @@map("chat_interactions")
 }
 
 model SubagentTask {

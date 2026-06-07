@@ -68,6 +68,63 @@ describe("parity mock provider", () => {
     expect(chunks.some((chunk) => chunk.type === "tool-call")).toBe(true);
   });
 
+  test("streams write-file and bash approval tool calls deterministically", async () => {
+    const writeModel = createParityMockLanguageModel({
+      scenario: parityMockScenarios.writeFileToolCall,
+    });
+    const bashModel = createParityMockLanguageModel({
+      scenario: parityMockScenarios.bashApprovalToolCall,
+    });
+
+    const writeChunks = await readStream((await writeModel.doStream(callOptions)).stream);
+    const bashChunks = await readStream((await bashModel.doStream(callOptions)).stream);
+
+    expect(writeChunks).toContainEqual(
+      expect.objectContaining({
+        type: "tool-call",
+        toolName: "write_file",
+        toolCallId: "write-file-1",
+      }),
+    );
+    expect(bashChunks).toContainEqual(
+      expect.objectContaining({
+        type: "tool-call",
+        toolName: "bash",
+        toolCallId: "bash-1",
+      }),
+    );
+  });
+
+  test("streams request-user-input and multi-tool turns", async () => {
+    const promptModel = createParityMockLanguageModel({
+      scenario: parityMockScenarios.requestUserInputToolCall,
+    });
+    const multiToolModel = createParityMockLanguageModel({
+      scenario: parityMockScenarios.multiToolTurn,
+    });
+
+    const promptChunks = await readStream((await promptModel.doStream(callOptions)).stream);
+    const multiToolChunks = await readStream(
+      (await multiToolModel.doStream(callOptions)).stream,
+    );
+    const multiToolCalls = multiToolChunks.filter(
+      (chunk) => chunk.type === "tool-call",
+    );
+
+    expect(promptChunks).toContainEqual(
+      expect.objectContaining({
+        type: "tool-call",
+        toolName: "request_user_input",
+        toolCallId: "question-1",
+      }),
+    );
+    expect(multiToolCalls).toHaveLength(2);
+    expect(multiToolCalls.map((chunk) => chunk.type)).toEqual([
+      "tool-call",
+      "tool-call",
+    ]);
+  });
+
   test("streams tool input deltas before the final tool call", async () => {
     const model = createParityMockLanguageModel({
       scenario: parityMockScenarios.toolCallDeltas,
@@ -115,6 +172,18 @@ describe("parity mock provider", () => {
 
     await expect(readStream(result.stream)).rejects.toThrow(
       "Mock recoverable disconnect.",
+    );
+  });
+
+  test("can disconnect after a pending tool call", async () => {
+    const model = createParityMockLanguageModel({
+      scenario: parityMockScenarios.disconnectAfterToolCall,
+    });
+
+    const result = await model.doStream(callOptions);
+
+    await expect(readStream(result.stream)).rejects.toThrow(
+      "Mock disconnect after tool call.",
     );
   });
 });

@@ -242,6 +242,11 @@ function renderPermissions(payload: DiagnosticsPermissionsResponse, routeState: 
             (currentSession.pendingApprovalCount ?? 0) > 0 ? "warn" : "ok"
           }
         />
+        <InfoRow
+          label="Persisted pending"
+          value={payload.pendingInteractions.total}
+          tone={payload.pendingInteractions.total > 0 ? "warn" : "ok"}
+        />
       </Section>
 
       <Section title="Policy">
@@ -255,6 +260,17 @@ function renderPermissions(payload: DiagnosticsPermissionsResponse, routeState: 
         <InfoRow label="Allow rules" value={payload.rules.allow?.length ?? 0} />
         <InfoRow label="Ask rules" value={payload.rules.ask?.length ?? 0} />
         <InfoRow label="Deny rules" value={payload.rules.deny?.length ?? 0} />
+      </Section>
+
+      <Section title="Recovery">
+        <InfoRow label="Tool approvals" value={payload.pendingInteractions.toolApprovals} />
+        <InfoRow label="User prompts" value={payload.pendingInteractions.userPrompts} />
+        <InfoRow
+          label="Stale pending"
+          value={payload.pendingInteractions.stale}
+          tone={payload.pendingInteractions.stale > 0 ? "warn" : "ok"}
+        />
+        <InfoRow label="Recoverable" value={payload.pendingInteractions.recoverable} />
       </Section>
 
       <Section title="Sandbox">

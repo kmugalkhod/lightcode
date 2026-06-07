@@ -1,4 +1,5 @@
 export * from "./agent-tools";
+export * from "./chat-interaction-schemas";
 export * from "./chat-schemas";
 export * from "./coding-agent";
 export * from "./coding-agent-modes";
