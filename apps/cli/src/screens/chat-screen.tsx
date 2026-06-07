@@ -1,7 +1,10 @@
 import {
   codingAgentModes,
+  chatInteractionListResponseSchema,
   cycleCodingAgentMode,
   defaultCodingAgentMode,
+  type ChatInteractionResolveRequest,
+  type ChatInteractionUpsertRequest,
   type PermissionMode,
   sessionMessagesResponseSchema,
   sessionPathParamsSchema,
@@ -230,10 +233,63 @@ export function ChatScreen() {
     return parsedPayload.data;
   }, [locationState.mode, locationState.permissionMode, sessionId]);
 
+  const loadPersistedInteractions = useCallback(async () => {
+    const response = await client.sessions[":id"].interactions.$get({
+      param: { id: sessionId },
+      query: { status: "pending" },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Unable to load pending interactions (HTTP ${response.status}).`);
+    }
+
+    const rawPayload = await response.json();
+    const parsedPayload = chatInteractionListResponseSchema.safeParse(rawPayload);
+    if (!parsedPayload.success) {
+      throw new Error("Server returned an invalid interaction response.");
+    }
+
+    return parsedPayload.data;
+  }, [sessionId]);
+
+  const upsertInteraction = useCallback(
+    async (interaction: ChatInteractionUpsertRequest) => {
+      const response = await client.sessions[":id"].interactions.$post({
+        param: { id: sessionId },
+        json: interaction,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Unable to checkpoint interaction (HTTP ${response.status}).`);
+      }
+    },
+    [sessionId],
+  );
+
+  const resolveInteraction = useCallback(
+    async (
+      toolCallId: string,
+      resolution: ChatInteractionResolveRequest,
+    ) => {
+      const response = await client.sessions[":id"].interactions[
+        ":toolCallId"
+      ].$patch({
+        param: { id: sessionId, toolCallId },
+        json: resolution,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Unable to resolve interaction (HTTP ${response.status}).`);
+      }
+    },
+    [sessionId],
+  );
+
   const {
     messages,
     pendingApprovals,
     pendingUserPrompts,
+    canRetryRecoverableResponse,
     respondToUserPrompt,
     resolveAllToolApprovals,
     resolveToolApproval,
@@ -248,6 +304,9 @@ export function ChatScreen() {
     initialPrompt,
     isSessionIdValid,
     loadPersistedMessages,
+    loadPersistedInteractions,
+    upsertInteraction,
+    resolveInteraction,
     sessionId,
     skipHistoryLoad,
     cwd: process.cwd(),
@@ -446,7 +505,9 @@ export function ChatScreen() {
             ) : null}
             footer={
               <box flexDirection="row" justifyContent="space-between">
-                {pendingApprovals.length > 0 ? (
+                {canRetryRecoverableResponse ? (
+                  <text fg={cliTheme.text.muted}>Type retry or regenerate to try again</text>
+                ) : pendingApprovals.length > 0 ? (
                   <text fg={cliTheme.text.muted}>Use approval card or approve/deny commands</text>
                 ) : hasBlockingPopup ? (
                   <text fg={cliTheme.text.muted}>Complete the inline prompt to continue</text>
