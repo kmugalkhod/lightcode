@@ -5,6 +5,11 @@ import { z } from "zod";
 import { codingAgentModeSchema, defaultCodingAgentMode } from "../coding-agent-modes";
 import { codingAgentToolNameSchema } from "../coding-agent-modes";
 import {
+  contextOptimizerConfigSchema,
+  defaultContextOptimizerConfig,
+  resolvedContextOptimizerConfigSchema,
+} from "../context-optimizer";
+import {
   permissionModeSchema,
   permissionRulesSchema,
 } from "../permissions";
@@ -29,6 +34,7 @@ export const lightcodeConfigSchema = z
     permissions: permissionRulesSchema.optional(),
     sandbox: sandboxConfigSchema.optional(),
     mcp: mcpConfigSchema.optional(),
+    context: contextOptimizerConfigSchema.optional(),
     maxOutputTokens: z.number().int().min(1).max(200_000).optional(),
     maxSteps: z.number().int().min(1).max(20).optional(),
   })
@@ -40,10 +46,14 @@ export type LightcodeConfig = z.infer<typeof lightcodeConfigSchema>;
 export const lightcodeConfigDefaults = {
   provider: "anthropic",
   defaultMode: defaultCodingAgentMode,
+  context: defaultContextOptimizerConfig,
   maxOutputTokens: 4_096,
   maxSteps: 5,
 } satisfies Required<
-  Pick<LightcodeConfig, "provider" | "defaultMode" | "maxOutputTokens" | "maxSteps">
+  Pick<
+    LightcodeConfig,
+    "provider" | "defaultMode" | "context" | "maxOutputTokens" | "maxSteps"
+  >
 >;
 
 export const loadedConfigFileSchema = z.object({
@@ -57,6 +67,7 @@ export type LoadedConfigFile = z.infer<typeof loadedConfigFileSchema>;
 export const lightcodeResolvedConfigSchema = lightcodeConfigSchema.extend({
   provider: lightcodeProviderSchema,
   defaultMode: codingAgentModeSchema,
+  context: resolvedContextOptimizerConfigSchema,
   maxOutputTokens: z.number().int().min(1).max(200_000),
   maxSteps: z.number().int().min(1).max(20),
 });
@@ -164,6 +175,23 @@ function parseNumberEnv(value: string | undefined, name: string) {
   return parsed;
 }
 
+function parseBooleanEnv(value: string | undefined, name: string) {
+  if (value === undefined || value.trim() === "") {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  throw new LightcodeConfigError(`${name} must be a boolean value.`);
+}
+
 function readEnvBaseUrl(env: Record<string, string | undefined>) {
   if (env.LIGHTCODE_BASE_URL) {
     return env.LIGHTCODE_BASE_URL;
@@ -194,6 +222,27 @@ function readEnvBaseUrl(env: Record<string, string | undefined>) {
 }
 
 function readEnvConfig(env: Record<string, string | undefined>): LightcodeConfig {
+  const contextConfig = {
+    autoCompact: parseBooleanEnv(
+      env.LIGHTCODE_CONTEXT_AUTO_COMPACT,
+      "LIGHTCODE_CONTEXT_AUTO_COMPACT",
+    ),
+    maxInputTokens: parseNumberEnv(
+      env.LIGHTCODE_CONTEXT_MAX_INPUT_TOKENS,
+      "LIGHTCODE_CONTEXT_MAX_INPUT_TOKENS",
+    ),
+    preserveRecentMessages: parseNumberEnv(
+      env.LIGHTCODE_CONTEXT_PRESERVE_RECENT_MESSAGES,
+      "LIGHTCODE_CONTEXT_PRESERVE_RECENT_MESSAGES",
+    ),
+    summaryMaxChars: parseNumberEnv(
+      env.LIGHTCODE_CONTEXT_SUMMARY_MAX_CHARS,
+      "LIGHTCODE_CONTEXT_SUMMARY_MAX_CHARS",
+    ),
+  };
+  const compactContextConfig = Object.fromEntries(
+    Object.entries(contextConfig).filter(([, value]) => value !== undefined),
+  );
   const rawConfig = {
     provider: env.LIGHTCODE_PROVIDER,
     model: env.LIGHTCODE_CHAT_MODEL,
@@ -205,6 +254,10 @@ function readEnvConfig(env: Record<string, string | undefined>): LightcodeConfig
       "LIGHTCODE_MAX_OUTPUT_TOKENS",
     ),
     maxSteps: parseNumberEnv(env.LIGHTCODE_MAX_STEPS, "LIGHTCODE_MAX_STEPS"),
+    context:
+      Object.keys(compactContextConfig).length > 0
+        ? compactContextConfig
+        : undefined,
   };
   const compactConfig = Object.fromEntries(
     Object.entries(rawConfig).filter(([, value]) => value !== undefined),
@@ -228,6 +281,12 @@ function mergeConfig(...configs: LightcodeConfig[]): LightcodeConfig {
       permissions: config.permissions ?? mergedConfig.permissions,
       sandbox: config.sandbox ?? mergedConfig.sandbox,
       mcp: config.mcp ?? mergedConfig.mcp,
+      context: config.context
+        ? {
+            ...mergedConfig.context,
+            ...config.context,
+          }
+        : mergedConfig.context,
       allowedTools: config.allowedTools ?? mergedConfig.allowedTools,
     }),
     {},
@@ -243,9 +302,14 @@ export function loadLightcodeConfig({
   const userConfig = readConfigFile("user", userConfigPath);
   const projectConfig = readConfigFile("project", projectConfigPath);
   const envConfig = readEnvConfig(env);
+  const mergedConfig = mergeConfig(userConfig.config, projectConfig.config, envConfig);
   const config = {
     ...lightcodeConfigDefaults,
-    ...mergeConfig(userConfig.config, projectConfig.config, envConfig),
+    ...mergedConfig,
+    context: {
+      ...defaultContextOptimizerConfig,
+      ...(mergedConfig.context ?? {}),
+    },
   };
 
   return lightcodeConfigLoadResultSchema.parse({

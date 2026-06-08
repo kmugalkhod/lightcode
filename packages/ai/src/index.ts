@@ -5,6 +5,7 @@ export * from "./coding-agent";
 export * from "./coding-agent-modes";
 export * from "./coding-agent-prompt";
 export * from "./config/lightcode-config";
+export * from "./context-optimizer";
 export * from "./diagnostics-schemas";
 export * from "./mcp/config";
 export * from "./mcp/manager";

@@ -16,6 +16,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { SlashPageMenu } from "../commands/slash-page-menu";
 import {
+  ChatContextSummaryCard,
+  isContextSummaryMessage,
+} from "../components/chat/chat-context-summary-card";
+import { containsProposedPlanBlock } from "../components/chat/chat-proposed-plan-card";
+import {
   ChatInteractionPopup,
   type ChatInteractionSubmitPayload,
 } from "../components/chat/chat-interaction-popup";
@@ -34,6 +39,7 @@ import {
 import { coerceSessionRouteLocationState } from "../navigation/route-state";
 import { useAppState } from "../state/app-state";
 import { cliTheme } from "../ui/cli-theme";
+import { estimateContextUsage } from "../utils/chat-context-utils";
 
 const autoImplementationInstruction =
   "Please implement the approved plan now. Execute the work end-to-end and summarize completed changes.";
@@ -114,8 +120,7 @@ function collectMessageText(message: UIMessage): string {
 }
 
 function hasProposedPlanBlock(message: UIMessage): boolean {
-  const text = collectMessageText(message);
-  return text.includes("<proposed_plan>") && text.includes("</proposed_plan>");
+  return containsProposedPlanBlock(collectMessageText(message));
 }
 
 export function ChatScreen() {
@@ -187,8 +192,16 @@ export function ChatScreen() {
   );
 
   useEffect(() => {
-    setMode(locationState.mode ?? defaultCodingAgentMode);
-    setPermissionMode(locationState.permissionMode);
+    const nextMode = locationState.mode ?? defaultCodingAgentMode;
+
+    setMode((currentMode) =>
+      currentMode === nextMode ? currentMode : nextMode,
+    );
+    setPermissionMode((currentPermissionMode) =>
+      currentPermissionMode === locationState.permissionMode
+        ? currentPermissionMode
+        : locationState.permissionMode,
+    );
   }, [locationState.mode, locationState.permissionMode, sessionId]);
 
   useEffect(() => {
@@ -220,13 +233,24 @@ export function ChatScreen() {
       throw new Error("Server returned an invalid chat history response.");
     }
 
-    if (parsedPayload.data.session) {
+    const persistedSession = parsedPayload.data.session;
+    if (persistedSession) {
       if (!locationState.mode) {
-        setMode(parsedPayload.data.session.mode);
+        setMode((currentMode) =>
+          currentMode === persistedSession.mode
+            ? currentMode
+            : persistedSession.mode,
+        );
       }
 
       if (!locationState.permissionMode) {
-        setPermissionMode(parsedPayload.data.session.permissionMode ?? undefined);
+        const nextPermissionMode =
+          persistedSession.permissionMode ?? undefined;
+        setPermissionMode((currentPermissionMode) =>
+          currentPermissionMode === nextPermissionMode
+            ? currentPermissionMode
+            : nextPermissionMode,
+        );
       }
     }
 
@@ -388,6 +412,7 @@ export function ChatScreen() {
   );
 
   const modeDefinition = codingAgentModes[mode];
+  const contextEstimate = estimateContextUsage(messages);
   const activeUserPrompt = pendingUserPrompts[0] ?? null;
   const pendingApprovalIds = useMemo(
     () => new Set(pendingApprovals.map((approval) => approval.toolCallId)),
@@ -429,7 +454,11 @@ export function ChatScreen() {
       return;
     }
 
-    setPlanConfirmationMessageId(latestAssistantMessage.id);
+    setPlanConfirmationMessageId((currentMessageId) =>
+      currentMessageId === latestAssistantMessage.id
+        ? currentMessageId
+        : latestAssistantMessage.id,
+    );
   }, [
     handledPlanMessageIds,
     messages,
@@ -516,10 +545,21 @@ export function ChatScreen() {
                 ) : (
                   <text fg={cliTheme.text.muted}>Tab/Ctrl+T switch mode | Ctrl+P commands</text>
                 )}
-                <text>
-                  <span fg={cliTheme.accent.primary}>{modeDefinition.label}</span>
-                  <span fg={cliTheme.text.muted}> mode</span>
-                </text>
+                <box flexDirection="row" gap={1} alignItems="center">
+                  <text
+                    fg={
+                      contextEstimate.percentage >= 80
+                        ? cliTheme.semantic.warning
+                        : cliTheme.text.muted
+                    }
+                  >
+                    {contextEstimate.displayText}
+                  </text>
+                  <text>
+                    <span fg={cliTheme.accent.primary}>{modeDefinition.label}</span>
+                    <span fg={cliTheme.text.muted}> mode</span>
+                  </text>
+                </box>
               </box>
             }
             modeToggleHint
@@ -527,13 +567,17 @@ export function ChatScreen() {
           />
         }
       >
-        {messages.map((message) => (
-          <ChatMessage
-            key={message.id}
-            message={message}
-            pendingApprovalIds={pendingApprovalIds}
-          />
-        ))}
+        {messages.map((message) =>
+          isContextSummaryMessage(message) ? (
+            <ChatContextSummaryCard key={message.id} message={message} />
+          ) : (
+            <ChatMessage
+              key={message.id}
+              message={message}
+              pendingApprovalIds={pendingApprovalIds}
+            />
+          ),
+        )}
         {isLoading || isStreaming ? <LoadingTimer elapsedSeconds={elapsedSeconds} /> : null}
         {isStreaming ? (
           <box paddingX={1}>
@@ -588,8 +632,8 @@ export function ChatScreen() {
         ) : null}
         {planConfirmationOpen ? (
           <ChatInteractionPopup
-            title="Plan Ready"
-            question="Do you want to implement this plan now?"
+            title="Plan review"
+            question="Implement this plan now?"
             options={[
               {
                 value: "yes",

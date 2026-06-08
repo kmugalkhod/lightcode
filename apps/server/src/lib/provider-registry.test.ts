@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { defaultContextOptimizerConfig } from "@lightcode/ai";
 import {
   createConfigStatus,
   resolveConfiguredProviderModel,
@@ -8,6 +9,7 @@ import {
 const baseConfig = {
   provider: "anthropic",
   defaultMode: "build",
+  context: defaultContextOptimizerConfig,
   maxOutputTokens: 10000,
   maxSteps: 5,
 } as const;

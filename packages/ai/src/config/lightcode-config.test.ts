@@ -41,11 +41,18 @@ describe("loadLightcodeConfig", () => {
       provider: "anthropic",
       model: "haiku",
       defaultMode: "plan",
+      context: {
+        maxInputTokens: 50_000,
+        preserveRecentMessages: 6,
+      },
       maxOutputTokens: 1000,
     });
     await writeJson(projectConfigPath, {
       model: "sonnet",
       permissionMode: "workspace-write",
+      context: {
+        summaryMaxChars: 2_000,
+      },
     });
 
     const result = loadLightcodeConfig({
@@ -53,6 +60,7 @@ describe("loadLightcodeConfig", () => {
       userConfigPath,
       env: {
         LIGHTCODE_CHAT_MODEL: "opus",
+        LIGHTCODE_CONTEXT_PRESERVE_RECENT_MESSAGES: "8",
         LIGHTCODE_MAX_OUTPUT_TOKENS: "2000",
       },
     });
@@ -61,6 +69,9 @@ describe("loadLightcodeConfig", () => {
     expect(result.config.model).toBe("opus");
     expect(result.config.defaultMode).toBe("plan");
     expect(result.config.permissionMode).toBe("workspace-write");
+    expect(result.config.context.maxInputTokens).toBe(50_000);
+    expect(result.config.context.preserveRecentMessages).toBe(8);
+    expect(result.config.context.summaryMaxChars).toBe(2_000);
     expect(result.config.maxOutputTokens).toBe(2000);
     expect(result.loadedFiles.every((file) => file.loaded)).toBe(true);
   });
@@ -75,11 +86,36 @@ describe("loadLightcodeConfig", () => {
 
     expect(result.config.provider).toBe("anthropic");
     expect(result.config.defaultMode).toBe("build");
+    expect(result.config.context.autoCompact).toBe(true);
+    expect(result.config.context.maxInputTokens).toBe(100_000);
+    expect(result.config.context.preserveRecentMessages).toBe(4);
+    expect(result.config.context.summaryMaxChars).toBe(1_200);
     expect(result.config.maxOutputTokens).toBe(4096);
     expect(result.config.maxSteps).toBe(5);
     expect(result.loadedFiles.every((file) => !file.exists && !file.loaded)).toBe(
       true,
     );
+  });
+
+  test("loads context optimizer settings from environment", async () => {
+    const cwd = await makeTempDirectory();
+    const result = loadLightcodeConfig({
+      cwd,
+      userConfigPath: path.join(cwd, "missing-user.json"),
+      env: {
+        LIGHTCODE_CONTEXT_AUTO_COMPACT: "false",
+        LIGHTCODE_CONTEXT_MAX_INPUT_TOKENS: "12345",
+        LIGHTCODE_CONTEXT_PRESERVE_RECENT_MESSAGES: "7",
+        LIGHTCODE_CONTEXT_SUMMARY_MAX_CHARS: "1600",
+      },
+    });
+
+    expect(result.config.context).toEqual({
+      autoCompact: false,
+      maxInputTokens: 12345,
+      preserveRecentMessages: 7,
+      summaryMaxChars: 1600,
+    });
   });
 
   test("loads OpenCode Zen provider and base URL from environment", async () => {

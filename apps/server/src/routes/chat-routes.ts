@@ -52,6 +52,7 @@ import {
   logChatDisconnectEvent,
   logChatWriteEvent,
 } from "../lib/chat-observability";
+import { prepareChatMessagesForProvider } from "../lib/context-optimization";
 import {
   chatModelId,
   codingAgent,
@@ -120,6 +121,27 @@ function shouldUseFastChatPath({
   }).length === 0;
 }
 
+async function countPendingChatInteractions(sessionId: string) {
+  try {
+    const pendingInteractions = await listChatInteractions({
+      sessionId,
+      status: "pending",
+    });
+
+    return pendingInteractions.interactions.length;
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: "context_compaction_pending_interactions_unavailable",
+        sessionId,
+        error: getErrorMessage(error),
+      }),
+    );
+
+    return 1;
+  }
+}
+
 async function streamSessionChat(
   c: Context,
   sessionIdentifier: string,
@@ -151,12 +173,32 @@ async function streamSessionChat(
   }
 
   const validatedMessages = validatedMessagesResult.data;
+  const pendingInteractionCount = await countPendingChatInteractions(sessionId);
+  const contextOptimization = prepareChatMessagesForProvider({
+    messages: validatedMessages,
+    contextConfig: lightcodeConfigResult.config.context,
+    pendingInteractionCount,
+  });
+  const providerMessages = contextOptimization.messages;
+
+  if (contextOptimization.compacted) {
+    console.log(
+      JSON.stringify({
+        event: "context_auto_compacted",
+        sessionId,
+        estimatedTokens: contextOptimization.estimatedTokens,
+        removedMessageCount: contextOptimization.removedMessageCount,
+        remainingMessages: providerMessages.length,
+      }),
+    );
+  }
+
   let baseRevision = 0;
 
   try {
     const persistResult = await persistChatMessages({
       sessionId,
-      messages: validatedMessages,
+      messages: providerMessages,
       assistantModel: chatModelId,
       cwd,
       mode,
@@ -183,7 +225,7 @@ async function streamSessionChat(
   try {
     if (
       shouldUseFastChatPath({
-        messages: validatedMessages,
+        messages: providerMessages,
         mode,
         allowedTools,
       })
@@ -201,7 +243,7 @@ async function streamSessionChat(
         system:
           "You are Lightcode's friendly coding assistant. For casual conversation, reply briefly and naturally. " +
           "If the user asks for coding work, say you can help and ask them what they want to change.",
-        messages: buildFastChatModelMessages(validatedMessages),
+        messages: buildFastChatModelMessages(providerMessages),
         maxOutputTokens: Math.min(lightcodeConfigResult.config.maxOutputTokens, 512),
         providerOptions: resolvedProviderModel.providerOptions,
       });
@@ -223,7 +265,7 @@ async function streamSessionChat(
       });
 
       return result.toUIMessageStreamResponse({
-        originalMessages: validatedMessages,
+        originalMessages: providerMessages,
         generateMessageId: generateId,
         sendReasoning: false,
         onError: (error) => {
@@ -325,7 +367,7 @@ async function streamSessionChat(
 
     return await createAgentUIStreamResponse({
       agent: codingAgent,
-      uiMessages: validatedMessages,
+      uiMessages: providerMessages,
       options: {
         cwd,
         mode,

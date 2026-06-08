@@ -60,6 +60,7 @@ const recoverableDisconnectMessage =
   "Connection interrupted. Please retry or regenerate your last message.";
 const buildModeAutoPromptResponse =
   "Proceed with implementation in Build mode. Continue without additional plan questions.";
+const chatMessageUpdateThrottleMs = 50;
 const retryCommandPattern = /^\/?(retry|regenerate)$/i;
 
 const codingToolNameSet = new Set<string>(Object.keys(codingToolInputSchemas));
@@ -473,6 +474,8 @@ export function useCodingSessionChat({
   const allowedToolsRef = useRef(allowedTools);
   const permissionRulesRef = useRef(permissionRules);
   const sandboxRef = useRef(sandbox);
+  const loadPersistedMessagesRef = useRef(loadPersistedMessages);
+  const loadPersistedInteractionsRef = useRef(loadPersistedInteractions);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [toolExecutionError, setToolExecutionError] = useState<string | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(true);
@@ -486,6 +489,8 @@ export function useCodingSessionChat({
   allowedToolsRef.current = allowedTools;
   permissionRulesRef.current = permissionRules;
   sandboxRef.current = sandbox;
+  loadPersistedMessagesRef.current = loadPersistedMessages;
+  loadPersistedInteractionsRef.current = loadPersistedInteractions;
 
   const transport = useMemo(() => {
     return new DefaultChatTransport({
@@ -543,6 +548,7 @@ export function useCodingSessionChat({
     useChat<UIMessage>({
       id: sessionId,
       transport,
+      experimental_throttle: chatMessageUpdateThrottleMs,
       sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
       onToolCall: async ({ toolCall }) => {
         if (toolCall.dynamic || !isCodingToolName(toolCall.toolName)) {
@@ -706,6 +712,9 @@ export function useCodingSessionChat({
         }
       },
     });
+
+  const setMessagesRef = useRef(setMessages);
+  setMessagesRef.current = setMessages;
 
   const runApprovedTool = useCallback(
     async (approval: PendingToolApproval) => {
@@ -996,23 +1005,23 @@ export function useCodingSessionChat({
 
     async function loadMessages() {
       if (!isSessionIdValid) {
-        setMessages([]);
+        setMessagesRef.current([]);
         setHistoryError("Invalid session route.");
         setIsHistoryLoading(false);
         return;
       }
 
       if (skipHistoryLoad) {
-        setMessages([]);
+        setMessagesRef.current([]);
         setIsHistoryLoading(false);
         return;
       }
 
       try {
         const [messagePayload, interactionPayload] = await Promise.all([
-          loadPersistedMessages(),
-          loadPersistedInteractions
-            ? loadPersistedInteractions()
+          loadPersistedMessagesRef.current(),
+          loadPersistedInteractionsRef.current
+            ? loadPersistedInteractionsRef.current()
             : Promise.resolve({ interactions: [] }),
         ]);
         const validatedMessages = await validatePersistedMessages(
@@ -1029,7 +1038,7 @@ export function useCodingSessionChat({
           return;
         }
 
-        setMessages(validatedMessages);
+        setMessagesRef.current(validatedMessages);
         setPendingApprovals(restoredApprovals);
         setPendingUserPrompts(restoredPrompts);
       } catch (historyLoadError) {
@@ -1037,7 +1046,7 @@ export function useCodingSessionChat({
           return;
         }
 
-        setMessages([]);
+        setMessagesRef.current([]);
         setPendingApprovals([]);
         setPendingUserPrompts([]);
         setHistoryError(
@@ -1057,10 +1066,7 @@ export function useCodingSessionChat({
     };
   }, [
     isSessionIdValid,
-    loadPersistedInteractions,
-    loadPersistedMessages,
     sessionId,
-    setMessages,
     skipHistoryLoad,
   ]);
 
