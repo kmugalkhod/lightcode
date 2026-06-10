@@ -4,7 +4,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
 }
 
 enum MessageRole {
@@ -109,7 +109,7 @@ model SubagentTask {
   status          SubagentTaskStatus @default(pending)
   mode            String             @default("plan")
   model           String?
-  allowedTools    String[]           @default([]) @map("allowed_tools")
+  allowedTools    Json               @default("[]") @map("allowed_tools")
   output          Json?
   error           String?
   startedAt       DateTime?          @map("started_at")

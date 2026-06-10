@@ -1,32 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-const hasDatabaseUrl = Boolean(Bun.env.DATABASE_URL);
-
-async function hasChatInteractionsTable() {
-  const { prisma } = await import("./prisma-client");
-  const rows = await prisma.$queryRaw<Array<{ exists: boolean }>>`
-    SELECT to_regclass('public.chat_interactions') IS NOT NULL AS exists
-  `;
-
-  return rows[0]?.exists === true;
-}
-
 describe("chat interaction store", () => {
-  if (!hasDatabaseUrl) {
-    test("skips database-backed checks without DATABASE_URL", () => {
-      expect(hasDatabaseUrl).toBe(false);
-    });
-    return;
-  }
-
   test(
     "upserts, resolves, protects terminal states, and cascades",
     async () => {
-      if (!(await hasChatInteractionsTable())) {
-        expect(true).toBe(true);
-        return;
-      }
-
       const { createChatSession, deleteChatSession } = await import("./chat-store");
       const { prisma } = await import("./prisma-client");
       const {
@@ -137,11 +114,6 @@ describe("chat interaction store", () => {
   test(
     "rejects invalid interaction payloads before writing",
     async () => {
-      if (!(await hasChatInteractionsTable())) {
-        expect(true).toBe(true);
-        return;
-      }
-
       const { createChatSession, deleteChatSession } = await import("./chat-store");
       const { upsertChatInteraction } = await import("./chat-interaction-store");
       const session = await createChatSession({

@@ -4,33 +4,10 @@ import {
   sessionCreateResponseSchema,
 } from "@lightcode/ai";
 
-const hasDatabaseUrl = Boolean(Bun.env.DATABASE_URL);
-
-async function hasChatInteractionsTable() {
-  const { prisma } = await import("../lib/prisma-client");
-  const rows = await prisma.$queryRaw<Array<{ exists: boolean }>>`
-    SELECT to_regclass('public.chat_interactions') IS NOT NULL AS exists
-  `;
-
-  return rows[0]?.exists === true;
-}
-
 describe("chat interaction routes", () => {
-  if (!hasDatabaseUrl) {
-    test("skips route checks without DATABASE_URL", () => {
-      expect(hasDatabaseUrl).toBe(false);
-    });
-    return;
-  }
-
   test(
     "checkpoints, lists, and resolves interactions through Hono",
     async () => {
-      if (!(await hasChatInteractionsTable())) {
-        expect(true).toBe(true);
-        return;
-      }
-
       const { app } = await import("../app");
       const createResponse = await app.request("/sessions", {
         method: "POST",
@@ -117,11 +94,6 @@ describe("chat interaction routes", () => {
   test(
     "returns validation errors for invalid interaction bodies",
     async () => {
-      if (!(await hasChatInteractionsTable())) {
-        expect(true).toBe(true);
-        return;
-      }
-
       const { app } = await import("../app");
       const createResponse = await app.request("/sessions", {
         method: "POST",

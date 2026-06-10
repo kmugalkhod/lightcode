@@ -317,8 +317,6 @@ export async function persistChatMessages({
     try {
       return await prisma.$transaction(
         async (tx) => {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sessionId}), hashtext(${`${sessionId}:chat`}))`;
-
           const session = await tx.chatSession.upsert({
             where: { id: sessionId },
             update: {},

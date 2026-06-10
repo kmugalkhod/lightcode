@@ -1,19 +1,16 @@
-import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaLibSql } from "@prisma/adapter-libsql";
 import { PrismaClient } from "../generated/prisma/client";
+import { initializeLocalDatabase, resolveDatabaseUrl } from "./local-database";
 
-const connectionString = process.env.DATABASE_URL;
-
-if (!connectionString) {
-  throw new Error("DATABASE_URL is required to initialize Prisma Client.");
-}
-
-const adapter = new PrismaPg({ connectionString });
+export const databaseUrl = resolveDatabaseUrl();
+initializeLocalDatabase(databaseUrl);
 
 declare global {
   var __lightcodePrismaClient: PrismaClient | undefined;
 }
 
 function createPrismaClient() {
+  const adapter = new PrismaLibSql({ url: databaseUrl });
   return new PrismaClient({ adapter });
 }
 

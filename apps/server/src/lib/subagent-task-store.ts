@@ -1,5 +1,6 @@
 import { Prisma } from "@lightcode/db/types";
 import {
+  codingAgentToolNameSchema,
   defaultSubagentTaskMode,
   sessionIdSchema,
   subagentTaskCreateRequestSchema,
@@ -94,11 +95,7 @@ function isPrismaInputJsonValue(value: unknown): value is Prisma.InputJsonValue 
   return false;
 }
 
-function toPrismaNullableJsonValue(value: unknown) {
-  if (value === null) {
-    return Prisma.JsonNull;
-  }
-
+function toPrismaJsonValue(value: unknown): Prisma.InputJsonValue {
   const serialized = JSON.parse(JSON.stringify(value));
 
   if (!isPrismaInputJsonValue(serialized)) {
@@ -106,6 +103,14 @@ function toPrismaNullableJsonValue(value: unknown) {
   }
 
   return serialized;
+}
+
+function toPrismaNullableJsonValue(value: unknown) {
+  if (value === null) {
+    return Prisma.JsonNull;
+  }
+
+  return toPrismaJsonValue(value);
 }
 
 function toIsoString(value: Date | null): string | null {
@@ -118,6 +123,11 @@ function normalizeAllowedTools(
   return [...new Set(allowedTools)];
 }
 
+function parseAllowedTools(value: unknown): CodingAgentToolName[] {
+  const parsed = codingAgentToolNameSchema.array().safeParse(value);
+  return parsed.success ? parsed.data : [];
+}
+
 function toSubagentTask(task: SubagentTaskRecord): SubagentTask {
   return subagentTaskSchema.parse({
     id: task.id,
@@ -126,7 +136,7 @@ function toSubagentTask(task: SubagentTaskRecord): SubagentTask {
     status: task.status,
     mode: task.mode,
     model: task.model,
-    allowedTools: task.allowedTools,
+    allowedTools: parseAllowedTools(task.allowedTools),
     output: task.output ?? null,
     error: task.error,
     startedAt: toIsoString(task.startedAt),
@@ -181,7 +191,7 @@ export async function createSubagentTask({
       status: validatedStatus,
       mode: validatedTask.mode,
       model: validatedTask.model ?? null,
-      allowedTools: validatedTask.allowedTools,
+      allowedTools: toPrismaJsonValue(validatedTask.allowedTools),
     },
     select: subagentTaskSelect,
   });
