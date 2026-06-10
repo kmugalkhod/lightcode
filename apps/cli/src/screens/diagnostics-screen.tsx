@@ -20,6 +20,7 @@ import { useLocation } from "react-router";
 import { z } from "zod";
 import { client } from "../lib/client";
 import { cliTheme } from "../ui/cli-theme";
+import { formatDate, getErrorMessage } from "../utils/text-utils";
 
 export type DiagnosticsScreenKind =
   | "status"
@@ -52,10 +53,6 @@ const pageTitles = {
   config: "Config",
 } satisfies Record<DiagnosticsScreenKind, string>;
 
-function getErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error ? error.message : fallback;
-}
-
 function getStatusColor(status: DiagnosticStatus) {
   if (status === "ok") {
     return cliTheme.semantic.success;
@@ -74,16 +71,6 @@ function formatNullable(value: string | number | null | undefined) {
   }
 
   return String(value);
-}
-
-function formatDate(value: string) {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString();
 }
 
 function InfoRow({

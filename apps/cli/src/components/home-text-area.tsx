@@ -11,16 +11,9 @@ import { ChatTextArea } from "./chat/chat-text-area";
 import { getSlashPageRoutes } from "../navigation/route-registry";
 import { useAppState } from "../state/app-state";
 import { cliTheme } from "../ui/cli-theme";
+import { getErrorMessage } from "../utils/text-utils";
 import { useState } from "react";
 import { useNavigate } from "react-router";
-
-function getErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return fallback;
-}
 
 export function HomeTextArea() {
   const navigate = useNavigate();

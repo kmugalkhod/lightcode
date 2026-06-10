@@ -2,6 +2,7 @@ import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { useMemo, useState } from "react";
 import { cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
+import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../../utils/key-utils";
 
 interface InteractionOption {
   value: string;
@@ -29,22 +30,6 @@ interface ChatInteractionPopupProps {
 }
 
 const customOptionValue = "__custom_answer__";
-
-function isDownKey(keyName: string) {
-  return keyName === "down" || keyName === "arrowdown";
-}
-
-function isUpKey(keyName: string) {
-  return keyName === "up" || keyName === "arrowup";
-}
-
-function isEnterKey(keyName: string) {
-  return keyName === "enter" || keyName === "return";
-}
-
-function isEscapeKey(keyName: string) {
-  return keyName === "escape";
-}
 
 export function ChatInteractionPopup({
   title,

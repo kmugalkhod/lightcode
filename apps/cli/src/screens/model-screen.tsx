@@ -1,44 +1,37 @@
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { client } from "../lib/client";
 import { cliTheme } from "../ui/cli-theme";
-import type { LightcodeConfigStatus } from "@lightcode/ai";
+import { lightcodeConfigStatusSchema, type LightcodeConfigStatus } from "@lightcode/ai";
+import { getErrorMessage } from "../utils/text-utils";
 
 export function ModelScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [payload, setPayload] = useState<LightcodeConfigStatus | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadModelConfig() {
-      setIsLoading(true);
-      try {
-        const response = await client.config.status.$get();
-        if (!response.ok) {
-          if (!cancelled) setErrorMessage("Unable to load model configuration.");
-          return;
-        }
-
-        const rawPayload = await response.json();
-        if (!cancelled) {
-          setPayload(rawPayload as LightcodeConfigStatus);
-          setErrorMessage(null);
-        }
-      } catch {
-        if (!cancelled) setErrorMessage("Failed to load model configuration.");
-      } finally {
-        if (!cancelled) setIsLoading(false);
+  const loadModelConfig = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const response = await client.config.status.$get();
+      if (!response.ok) {
+        throw new Error(`Unable to load model configuration (HTTP ${response.status}).`);
       }
-    }
 
-    void loadModelConfig();
-    return () => {
-      cancelled = true;
-    };
+      const rawPayload = await response.json();
+      setPayload(lightcodeConfigStatusSchema.parse(rawPayload));
+      setErrorMessage(null);
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error, "Failed to load model configuration."));
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadModelConfig();
+  }, [loadModelConfig]);
 
   useKeyboard((keyEvent) => {
     if (keyEvent.name.toLowerCase() !== "r") {
@@ -47,23 +40,7 @@ export function ModelScreen() {
 
     keyEvent.preventDefault();
     keyEvent.stopPropagation();
-    void (async () => {
-      setIsLoading(true);
-      try {
-        const response = await client.config.status.$get();
-        if (response.ok) {
-          const rawPayload = await response.json();
-          setPayload(rawPayload as LightcodeConfigStatus);
-          setErrorMessage(null);
-        } else {
-          setErrorMessage("Unable to load model configuration.");
-        }
-      } catch {
-        setErrorMessage("Failed to load model configuration.");
-      } finally {
-        setIsLoading(false);
-      }
-    })();
+    void loadModelConfig();
   });
 
   return (

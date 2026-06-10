@@ -1,5 +1,5 @@
 import { TextAttributes } from "@opentui/core";
-import { searchCommands, type Command } from "./command-registry";
+import { commandRegistry, searchCommands, type Command } from "./command-registry";
 import { cliTheme } from "../ui/cli-theme";
 
 interface CommandPaletteProps {
@@ -13,7 +13,7 @@ const INDICATOR_DEFAULT = " ";
 
 export function CommandPalette({ query, setQuery, selectedIndex }: CommandPaletteProps) {
   const commands: Command[] = searchCommands(query.trim());
-  const totalCommands = 12; // Total available commands (approximate)
+  const totalCommands = commandRegistry.length;
 
   return (
     <box
@@ -90,7 +90,6 @@ export function CommandPalette({ query, setQuery, selectedIndex }: CommandPalett
             <CommandItem
               key={cmd.id}
               command={cmd}
-              index={index}
               selected={index === selectedIndex}
             />
           ))
@@ -126,11 +125,10 @@ export function CommandPalette({ query, setQuery, selectedIndex }: CommandPalett
 // Individual command item component
 interface CommandItemProps {
   command: Command;
-  index: number;
   selected: boolean;
 }
 
-function CommandItem({ command, index, selected }: CommandItemProps) {
+function CommandItem({ command, selected }: CommandItemProps) {
   const rowColors = cliTheme.overlay;
 
   return (

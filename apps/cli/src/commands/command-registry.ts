@@ -29,14 +29,6 @@ export const commandRegistry: Command[] = [
   ...systemCommands,
 ];
 
-export function getCommand(id: string): Command | undefined {
-  return commandRegistry.find((cmd) => cmd.id === id);
-}
-
-export function getCommandByShortcut(shortcut: string): Command | undefined {
-  return commandRegistry.find((cmd) => cmd.shortcut === shortcut);
-}
-
 export function searchCommands(query: string): Command[] {
   const lower = query.toLowerCase();
   return commandRegistry.filter((cmd) =>

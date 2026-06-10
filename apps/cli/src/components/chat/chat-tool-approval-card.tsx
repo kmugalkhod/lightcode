@@ -5,6 +5,12 @@ import type {
   ToolApprovalAction,
 } from "@lightcode/ai/react";
 import { useEffect, useState } from "react";
+import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../../utils/key-utils";
+import {
+  getNumberProperty,
+  getStringProperty,
+  truncateInline,
+} from "../../utils/text-utils";
 import { cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
 
 interface ChatToolApprovalCardProps {
@@ -13,57 +19,21 @@ interface ChatToolApprovalCardProps {
   onResolveAll: (action: ToolApprovalAction) => void;
 }
 
-function isDownKey(keyName: string) {
-  return keyName === "down" || keyName === "arrowdown";
-}
-
-function isUpKey(keyName: string) {
-  return keyName === "up" || keyName === "arrowup";
-}
-
-function isEnterKey(keyName: string) {
-  return keyName === "enter" || keyName === "return";
-}
-
-function isEscapeKey(keyName: string) {
-  return keyName === "escape";
-}
-
-function getStringInputProperty(input: unknown, key: string): string | null {
-  if (!input || typeof input !== "object") {
-    return null;
-  }
-
-  const value = Reflect.get(input, key);
-  return typeof value === "string" && value.trim().length > 0
-    ? value.trim()
-    : null;
-}
-
-function getNumberInputProperty(input: unknown, key: string): number | null {
-  if (!input || typeof input !== "object") {
-    return null;
-  }
-
-  const value = Reflect.get(input, key);
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
 function getApprovalTarget(approval: PendingToolApproval): string {
   return (
-    getStringInputProperty(approval.input, "path") ??
-    getStringInputProperty(approval.input, "command") ??
-    getStringInputProperty(approval.input, "query") ??
-    getStringInputProperty(approval.input, "pattern") ??
-    getStringInputProperty(approval.input, "revision") ??
-    getStringInputProperty(approval.input, "url") ??
+    getStringProperty(approval.input, "path") ??
+    getStringProperty(approval.input, "command") ??
+    getStringProperty(approval.input, "query") ??
+    getStringProperty(approval.input, "pattern") ??
+    getStringProperty(approval.input, "revision") ??
+    getStringProperty(approval.input, "url") ??
     approval.summary
   );
 }
 
 function getApprovalDescription(approval: PendingToolApproval): string {
   if (approval.toolName === "bash") {
-    const timeoutMs = getNumberInputProperty(approval.input, "timeoutMs") ?? 30000;
+    const timeoutMs = getNumberProperty(approval.input, "timeoutMs") ?? 30000;
     const reason = approval.permissionDecision.reason ?? "Approval is required.";
     return (
       `Classification: ${approval.permissionDecision.requiredMode}; ` +
@@ -81,20 +51,11 @@ function getApprovalDescription(approval: PendingToolApproval): string {
   }
 
   if (approval.toolName === "write_file") {
-    const content = getStringInputProperty(approval.input, "content") ?? "";
+    const content = getStringProperty(approval.input, "content") ?? "";
     return `Write file content (${content.length} characters).`;
   }
 
   return "Review before running this tool.";
-}
-
-function truncateInline(text: string, maxLength = 96): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxLength - 3)}...`;
 }
 
 export function ChatToolApprovalCard({

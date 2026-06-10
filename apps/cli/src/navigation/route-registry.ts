@@ -84,14 +84,6 @@ export const routeRegistry: AnyRouteDefinition[] = [
   },
 ];
 
-export function getRoute(id: RouteDefinition["id"]): AnyRouteDefinition | undefined {
-  return routeRegistry.find((route) => route.id === id);
-}
-
-export function getRouteByShortcut(shortcut: string): AnyRouteDefinition | undefined {
-  return routeRegistry.find((route) => route.shortcut === shortcut);
-}
-
 export function getNavigationRoutes(): AnyRouteDefinition[] {
   return routeRegistry.filter((route) => !route.hidden);
 }

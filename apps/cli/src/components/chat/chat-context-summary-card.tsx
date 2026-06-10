@@ -1,23 +1,11 @@
 import { TextAttributes } from "@opentui/core";
 import type { UIMessage } from "ai";
 import { cliTheme } from "../../ui/cli-theme";
+import { stripTrailingPeriod, truncateInline } from "../../utils/text-utils";
 
 interface ParsedContextSummary {
   scopeLine?: string;
   metadataLines: string[];
-}
-
-function truncateInline(text: string, maxLength = 96): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxLength - 3)}...`;
-}
-
-function stripTrailingPeriod(text: string): string {
-  return text.endsWith(".") ? text.slice(0, -1) : text;
 }
 
 function parseContextSummary(text: string): ParsedContextSummary {

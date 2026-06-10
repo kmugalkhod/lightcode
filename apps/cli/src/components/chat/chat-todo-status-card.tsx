@@ -1,6 +1,7 @@
 import { TextAttributes } from "@opentui/core";
 import type { TodoItem } from "@lightcode/ai";
 import { cliTheme } from "../../ui/cli-theme";
+import { truncateInline } from "../../utils/text-utils";
 
 interface ChatTodoStatusCardProps {
   todos: TodoItem[];
@@ -27,15 +28,6 @@ function getStatusColor(status: TodoItem["status"]) {
   }
 
   return cliTheme.text.secondary;
-}
-
-function truncateInline(text: string, maxLength = 100) {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxLength - 3)}...`;
 }
 
 export function ChatTodoStatusCard({ todos }: ChatTodoStatusCardProps) {

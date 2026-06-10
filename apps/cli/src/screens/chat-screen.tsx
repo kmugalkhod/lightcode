@@ -39,7 +39,7 @@ import {
 import { coerceSessionRouteLocationState } from "../navigation/route-state";
 import { useAppState } from "../state/app-state";
 import { cliTheme } from "../ui/cli-theme";
-import { estimateContextUsage } from "../utils/chat-context-utils";
+import { collectMessageText, estimateContextUsage } from "../utils/chat-context-utils";
 
 const autoImplementationInstruction =
   "Please implement the approved plan now. Execute the work end-to-end and summarize completed changes.";
@@ -110,13 +110,6 @@ function getLatestAssistantMessage(messages: UIMessage[]): UIMessage | null {
   }
 
   return null;
-}
-
-function collectMessageText(message: UIMessage): string {
-  return message.parts
-    .map((part) => (part.type === "text" ? part.text : ""))
-    .filter((segment) => segment.length > 0)
-    .join("\n");
 }
 
 function hasProposedPlanBlock(message: UIMessage): boolean {

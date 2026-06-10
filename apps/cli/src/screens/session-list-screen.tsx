@@ -12,34 +12,8 @@ import { useNavigate } from "react-router";
 import { client } from "../lib/client";
 import { BACK_SHORTCUT_LABEL } from "../commands/keymap";
 import { cliTheme, getOverlayRowColors } from "../ui/cli-theme";
-
-function getErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return fallback;
-}
-
-function truncateInline(text: string, maxLength = 72) {
-  const normalized = text.replace(/\s+/g, " ").trim();
-
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
-}
-
-function formatDate(value: string) {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString();
-}
+import { isDownKey, isEnterKey, isUpKey } from "../utils/key-utils";
+import { formatDate, getErrorMessage, truncateInline } from "../utils/text-utils";
 
 function getSessionLabel(session: SessionSummary) {
   return session.title ?? session.latestUserPromptPreview ?? session.id;
@@ -179,10 +153,8 @@ export function SessionListScreen() {
 
   useKeyboard((keyEvent) => {
     const keyName = keyEvent.name.toLowerCase();
-    const isDownKey = keyName === "down" || keyName === "arrowdown" || keyName === "j";
-    const isUpKey = keyName === "up" || keyName === "arrowup" || keyName === "k";
 
-    if (isDownKey) {
+    if (isDownKey(keyName, { vim: true })) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
       setSelectedIndex((currentIndex) =>
@@ -192,7 +164,7 @@ export function SessionListScreen() {
       return;
     }
 
-    if (isUpKey) {
+    if (isUpKey(keyName, { vim: true })) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
       setSelectedIndex((currentIndex) => Math.max(currentIndex - 1, 0));
@@ -200,7 +172,7 @@ export function SessionListScreen() {
       return;
     }
 
-    if (keyName === "enter" || keyName === "return") {
+    if (isEnterKey(keyName)) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
       resumeSelectedSession();

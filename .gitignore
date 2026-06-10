@@ -15,5 +15,9 @@ packages/db/generated/
 *.log
 bun-debug.log*
 
+# Local scratch and screenshots
+.tmp/
+Screenshot*.png
+
 # Local agent/skill artifacts (not part of app source)
 .agents/skills/prisma-database-setup/

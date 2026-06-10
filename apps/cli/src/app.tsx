@@ -3,9 +3,8 @@ import { useKeyboard, useRenderer } from "@opentui/react";
 import { MemoryRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import { CommandPalette } from "./commands/command-palette";
 import { searchCommands } from "./commands/command-registry";
-import { BACK_SHORTCUT_LABEL, keymap, getBinding, isLeaderKey, normalizeKeyName } from "./commands/keymap";
+import { BACK_SHORTCUT_LABEL, getBinding, normalizeKeyName } from "./commands/keymap";
 import { SlashPageMenu } from "./commands/slash-page-menu";
-import { WhichKey } from "./commands/which-key";
 import { getPathFromAction, getSlashPageRoutes } from "./navigation/route-registry";
 import { ChatScreen } from "./screens/chat-screen";
 import { DiagnosticsScreen } from "./screens/diagnostics-screen";
@@ -15,6 +14,21 @@ import { SessionListScreen } from "./screens/session-list-screen";
 import { AppStateProvider, useAppState } from "./state/app-state";
 import { useConfigBadge } from "./hooks/use-config-badge";
 import { cliTheme } from "./ui/cli-theme";
+import {
+  isBackspaceKey as isBackspaceKeyName,
+  isDownKey as isDownKeyName,
+  isEnterKey as isEnterKeyName,
+  isEscapeKey as isEscapeKeyName,
+  isUpKey as isUpKeyName,
+} from "./utils/key-utils";
+
+interface KeyboardEventLike {
+  name: string;
+  sequence?: string;
+  ctrl?: boolean;
+  preventDefault?: () => void;
+  stopPropagation?: () => void;
+}
 
 function getCurrentViewLabel(pathname: string): string {
   if (pathname === "/" || pathname === "/home") {
@@ -74,15 +88,6 @@ function AppContent() {
     setSlashMenuSelected,
     openSlashMenu,
     closeSlashMenu,
-    layers,
-    popLayer,
-    leaderState,
-    activateLeader,
-    deactivateLeader,
-    setLeaderTimeout,
-    clearLeaderTimeout,
-    whichKeyOpen,
-    closeWhichKey,
   } = useAppState();
 
   const canGoBack = location.pathname !== "/" && location.pathname !== "/home";
@@ -114,18 +119,9 @@ function AppContent() {
           navigate(-1);
         }
         break;
-      case "system:popLayer":
-        if (layers.length > 0) {
-          popLayer();
-        }
-        break;
       case "system:cancel":
-        if (leaderState.active) {
-          deactivateLeader();
-        } else if (paletteOpen) {
+        if (paletteOpen) {
           closePalette();
-        } else if (layers.length > 0) {
-          popLayer();
         } else if (canGoBack) {
           navigate(-1);
         }
@@ -140,29 +136,27 @@ function AppContent() {
     Math.max(filteredSlashRoutes.length - 1, 0),
   );
 
-  const isDownKey = (keyEvent: any) =>
-    keyEvent.name === "down" || keyEvent.name === "ArrowDown" || (keyEvent.name === "j" && !keyEvent.ctrl);
+  const isDownKey = (keyEvent: KeyboardEventLike) =>
+    isDownKeyName(keyEvent.name, { vim: !keyEvent.ctrl });
 
-  const isUpKey = (keyEvent: any) =>
-    keyEvent.name === "up" || keyEvent.name === "ArrowUp" || (keyEvent.name === "k" && !keyEvent.ctrl);
+  const isUpKey = (keyEvent: KeyboardEventLike) =>
+    isUpKeyName(keyEvent.name, { vim: !keyEvent.ctrl });
 
-  const isEnterKey = (keyEvent: any) =>
-    keyEvent.name === "enter" || keyEvent.name === "return" || keyEvent.name === "Enter";
+  const isEnterKey = (keyEvent: KeyboardEventLike) =>
+    isEnterKeyName(keyEvent.name);
 
-  const isEscapeKey = (keyEvent: any) =>
-    keyEvent.name === "escape" || keyEvent.name === "Escape";
+  const isEscapeKey = (keyEvent: KeyboardEventLike) =>
+    isEscapeKeyName(keyEvent.name);
 
-  const isBackspaceKey = (keyEvent: any) =>
-    keyEvent.name === "backspace" ||
-    keyEvent.sequence === "\b" ||
-    keyEvent.sequence === "\x7f";
+  const isBackspaceKey = (keyEvent: KeyboardEventLike) =>
+    isBackspaceKeyName(keyEvent.name, keyEvent.sequence);
 
-  const captureKeyEvent = (keyEvent: any) => {
+  const captureKeyEvent = (keyEvent: KeyboardEventLike) => {
     keyEvent.preventDefault?.();
     keyEvent.stopPropagation?.();
   };
 
-  const handlePaletteKeyDown = (keyEvent: any) => {
+  const handlePaletteKeyDown = (keyEvent: KeyboardEventLike) => {
     const maxIndex = filteredCommands.length - 1;
     if (isDownKey(keyEvent)) {
       setPaletteSelected(Math.min(paletteSelected + 1, maxIndex));
@@ -179,7 +173,7 @@ function AppContent() {
     }
   };
 
-  const handleSlashMenuKeyDown = (keyEvent: any) => {
+  const handleSlashMenuKeyDown = (keyEvent: KeyboardEventLike) => {
     const maxIndex = filteredSlashRoutes.length - 1;
 
     if (isBackspaceKey(keyEvent) && !inputHostsSlashMenu && slashMenuQuery.trim().length <= 1) {
@@ -230,50 +224,8 @@ function AppContent() {
 
     const normalizedKey = normalizeKeyName(keyEvent.name, keyEvent.ctrl, false, false);
 
-    if (leaderState.active) {
-      clearLeaderTimeout();
-
-      if (isEscapeKey(keyEvent)) {
-        deactivateLeader();
-        return;
-      }
-
-      const sequence = `${leaderState.key} ${keyEvent.name}`;
-      const binding = getBinding(sequence);
-
-      if (binding) {
-        deactivateLeader();
-        closeWhichKey();
-        handleAction(binding.action);
-        return;
-      }
-
-      deactivateLeader();
-      closeWhichKey();
-      return;
-    }
-
-    if (isEscapeKey(keyEvent) && layers.length > 0) {
-      popLayer();
-      return;
-    }
-
     if (isEscapeKey(keyEvent) || (keyEvent.ctrl && keyEvent.name === "c")) {
       handleAction("system:quit");
-      return;
-    }
-
-    if (keyEvent.ctrl && keyEvent.name === "[") {
-      handleAction("system:popLayer");
-      return;
-    }
-
-    if (isLeaderKey(keyEvent.name)) {
-      activateLeader(keyEvent.name);
-      setLeaderTimeout(() => {
-        deactivateLeader();
-        closeWhichKey();
-      }, keymap.leader_timeout);
       return;
     }
 
@@ -292,10 +244,6 @@ function AppContent() {
   const configBadge = useConfigBadge();
 
   const getFooterStatus = () => {
-    if (leaderState.active) {
-      return "Waiting for key...";
-    }
-
     if (slashMenuOpen) {
       return "Slash pages open | Enter Open | Backspace Close | Esc Cancel";
     }
@@ -366,7 +314,6 @@ function AppContent() {
             />
           </box>
         ) : null}
-        {whichKeyOpen ? <WhichKey /> : null}
       </box>
 
       <box

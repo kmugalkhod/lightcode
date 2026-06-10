@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
+import { apiBaseUrl } from "../lib/api-base-url";
 import { serverStatusColors } from "../ui/cli-theme";
 
 type ServerStatus = "checking" | "online" | "unhealthy" | "offline";
-const apiBaseUrl = Bun.env.NIGHTCODE_API_URL ?? "http://localhost:3000";
 
 export function ServerStatus() {
   const [status, setStatus] = useState<ServerStatus>("checking");

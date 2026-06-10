@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@lightcode/ai": "workspace:*",
-    "@lightcode/db": "workspace:*",
     "@lightcode/shared": "workspace:*",
     "@opentui/core": "latest",
     "@opentui/react": "latest",
