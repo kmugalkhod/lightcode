@@ -146,6 +146,7 @@ const launcherSource = `#!/usr/bin/env node
 const { spawnSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 
 // Check if Bun is available
 try {
@@ -170,6 +171,27 @@ try {
   process.exit(1);
 }
 
+// On Windows, inject system root certificates into Bun via NODE_EXTRA_CA_CERTS.
+// Bun uses its own TLS stack and does not read the Windows certificate store,
+// so corporate SSL proxies (which install their CA into Windows) are invisible
+// to Bun unless we forward the certs explicitly.
+if (process.platform === "win32" && !process.env.NODE_EXTRA_CA_CERTS) {
+  try {
+    const winca = require("win-ca/api");
+    const pems = [];
+    winca.each({ store: ["root", "ca"], format: winca.der2.pem }, (pem) => {
+      pems.push(pem);
+    });
+    if (pems.length > 0) {
+      const tmpFile = path.join(os.tmpdir(), "lightcode-win-ca.pem");
+      fs.writeFileSync(tmpFile, pems.join("\\n"), "utf8");
+      process.env.NODE_EXTRA_CA_CERTS = tmpFile;
+    }
+  } catch {
+    // win-ca not available or failed — Bun uses its own bundled roots
+  }
+}
+
 // Get the directory of this launcher and find cli.js next to it
 const launcherDir = path.dirname(process.argv[1]);
 const cliPath = path.join(launcherDir, "cli.js");
@@ -185,6 +207,7 @@ try {
   const args = process.argv.slice(2);
   const result = spawnSync("bun", [cliPath, ...args], {
     stdio: "inherit",
+    env: process.env,
   });
   process.exit(result.status || 0);
 } catch (error) {
@@ -207,7 +230,10 @@ writeFileSync(
       bin: { lightcode: "./lightcode.cjs" },
       engines: { bun: ">=1.3.0" },
       files: ["cli.js", "lightcode.cjs", "server.js", "README.md"],
-      dependencies: externalDependencies,
+      dependencies: {
+        ...externalDependencies,
+        "win-ca": "^3.5.1",
+      },
     },
     null,
     2,
