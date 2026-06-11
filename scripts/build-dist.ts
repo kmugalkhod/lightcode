@@ -177,18 +177,35 @@ try {
 // to Bun unless we forward the certs explicitly.
 if (process.platform === "win32" && !process.env.NODE_EXTRA_CA_CERTS) {
   try {
-    const winca = require("win-ca/api");
-    const pems = [];
-    winca.each({ store: ["root", "ca"], format: winca.der2.pem }, (pem) => {
-      pems.push(pem);
-    });
-    if (pems.length > 0) {
-      const tmpFile = path.join(os.tmpdir(), "lightcode-win-ca.pem");
-      fs.writeFileSync(tmpFile, pems.join("\\n"), "utf8");
-      process.env.NODE_EXTRA_CA_CERTS = tmpFile;
+    const tmpPem = path.join(os.tmpdir(), "lightcode-win-ca.pem");
+    const tmpPs1 = path.join(os.tmpdir(), "lightcode-win-ca.ps1");
+    const escapedPem = tmpPem.replace(/\\\\/g, "\\\\\\\\");
+    const script = [
+      "$pem = ''",
+      "foreach ($store in @('Root', 'CA')) {",
+      "  try {",
+      "    foreach ($cert in (Get-ChildItem -Path \\"Cert:\\\\LocalMachine\\\\$store\\" -ErrorAction Stop)) {",
+      "      $b64 = [Convert]::ToBase64String($cert.RawData)",
+      "      $pem += \\"-----BEGIN CERTIFICATE-----\\\\n\\"",
+      "      for ($i = 0; $i -lt $b64.Length; $i += 64) {",
+      "        $pem += $b64.Substring($i, [Math]::Min(64, $b64.Length - $i)) + \\"\\\\n\\"",
+      "      }",
+      "      $pem += \\"-----END CERTIFICATE-----\\\\n\\"",
+      "    }",
+      "  } catch {}",
+      "}",
+      "[IO.File]::WriteAllText('" + escapedPem + "', $pem, [Text.Encoding]::ASCII)",
+    ].join("\\n");
+    fs.writeFileSync(tmpPs1, script, "utf8");
+    const r = spawnSync("powershell", [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", tmpPs1,
+    ], { stdio: "pipe" });
+    try { fs.unlinkSync(tmpPs1); } catch {}
+    if (r.status === 0 && fs.existsSync(tmpPem) && fs.statSync(tmpPem).size > 0) {
+      process.env.NODE_EXTRA_CA_CERTS = tmpPem;
     }
   } catch {
-    // win-ca not available or failed — Bun uses its own bundled roots
+    // cert export failed — Bun uses its own bundled roots
   }
 }
 
@@ -230,10 +247,7 @@ writeFileSync(
       bin: { lightcode: "./lightcode.cjs" },
       engines: { bun: ">=1.3.0" },
       files: ["cli.js", "lightcode.cjs", "server.js", "README.md"],
-      dependencies: {
-        ...externalDependencies,
-        "win-ca": "^3.5.1",
-      },
+      dependencies: externalDependencies,
     },
     null,
     2,
