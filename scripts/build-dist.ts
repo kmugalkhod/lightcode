@@ -175,35 +175,50 @@ try {
 // Bun uses its own TLS stack and does not read the Windows certificate store,
 // so corporate SSL proxies (which install their CA into Windows) are invisible
 // to Bun unless we forward the certs explicitly.
+// Strategy: use PowerShell only to export raw DER .cer files; do all PEM
+// formatting in Node.js where string/encoding handling is reliable.
 if (process.platform === "win32" && !process.env.NODE_EXTRA_CA_CERTS) {
   try {
-    const tmpPem = path.join(os.tmpdir(), "lightcode-win-ca.pem");
-    const tmpPs1 = path.join(os.tmpdir(), "lightcode-win-ca.ps1");
-    const escapedPem = tmpPem.replace(/\\\\/g, "\\\\\\\\");
-    const script = [
-      "$pem = ''",
-      "foreach ($store in @('Root', 'CA')) {",
-      "  try {",
-      "    foreach ($cert in (Get-ChildItem -Path \\"Cert:\\\\LocalMachine\\\\$store\\" -ErrorAction Stop)) {",
-      "      $b64 = [Convert]::ToBase64String($cert.RawData)",
-      "      $pem += \\"-----BEGIN CERTIFICATE-----\\\\n\\"",
-      "      for ($i = 0; $i -lt $b64.Length; $i += 64) {",
-      "        $pem += $b64.Substring($i, [Math]::Min(64, $b64.Length - $i)) + \\"\\\\n\\"",
-      "      }",
-      "      $pem += \\"-----END CERTIFICATE-----\\\\n\\"",
-      "    }",
-      "  } catch {}",
-      "}",
-      "[IO.File]::WriteAllText('" + escapedPem + "', $pem, [Text.Encoding]::ASCII)",
-    ].join("\\n");
-    fs.writeFileSync(tmpPs1, script, "utf8");
-    const r = spawnSync("powershell", [
-      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", tmpPs1,
-    ], { stdio: "pipe" });
-    try { fs.unlinkSync(tmpPs1); } catch {}
-    if (r.status === 0 && fs.existsSync(tmpPem) && fs.statSync(tmpPem).size > 0) {
-      process.env.NODE_EXTRA_CA_CERTS = tmpPem;
+    const tmpDir = os.tmpdir();
+    const cerDir = path.join(tmpDir, "lightcode-certs");
+    const pemFile = path.join(tmpDir, "lightcode-win-ca.pem");
+    const ps1File = path.join(tmpDir, "lightcode-cert-export.ps1");
+
+    if (!fs.existsSync(cerDir)) fs.mkdirSync(cerDir, { recursive: true });
+
+    // Forward slashes work in PowerShell and avoid backslash escaping issues
+    const cerDirFwd = cerDir.replace(/\\\\/g, "/");
+    const psLines = [
+      "$i = 0",
+      'foreach ($s in @("Root", "CA")) {',
+      '  try {',
+      '    foreach ($c in (Get-ChildItem "Cert:\\\\LocalMachine\\\\$s" -EA Stop)) {',
+      '      Export-Certificate -Cert $c -FilePath "' + cerDirFwd + '/$i.cer" -Type CERT | Out-Null',
+      '      $i++',
+      '    }',
+      '  } catch {}',
+      '}',
+    ];
+    fs.writeFileSync(ps1File, psLines.join("\\n"), "utf8");
+    spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1File], { stdio: "pipe" });
+    try { fs.unlinkSync(ps1File); } catch {}
+
+    // Convert DER .cer files to PEM entirely in Node.js
+    const cerFiles = fs.existsSync(cerDir) ? fs.readdirSync(cerDir).filter(function(f) { return f.endsWith(".cer"); }) : [];
+    const pems = cerFiles.map(function(f) {
+      const der = fs.readFileSync(path.join(cerDir, f));
+      const b64 = der.toString("base64").match(/.{1,64}/g).join("\\n");
+      return "-----BEGIN CERTIFICATE-----\\n" + b64 + "\\n-----END CERTIFICATE-----";
+    });
+
+    if (pems.length > 0) {
+      fs.writeFileSync(pemFile, pems.join("\\n") + "\\n", "ascii");
+      process.env.NODE_EXTRA_CA_CERTS = pemFile;
     }
+
+    // Cleanup individual cert files
+    cerFiles.forEach(function(f) { try { fs.unlinkSync(path.join(cerDir, f)); } catch {} });
+    try { fs.rmdirSync(cerDir); } catch {}
   } catch {
     // cert export failed — Bun uses its own bundled roots
   }
