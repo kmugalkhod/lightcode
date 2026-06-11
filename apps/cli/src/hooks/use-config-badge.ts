@@ -1,13 +1,18 @@
 import { useEffect, useState } from "react";
 import { client } from "../lib/client";
-import type { LightcodeConfigStatus } from "@lightcode/ai";
+import { lightcodeConfigStatusSchema } from "@lightcode/ai";
 
 export type ConfigBadgeState =
   | { status: "loading" }
-  | { status: "available"; provider: string; model: string }
+  | {
+      status: "available";
+      provider: string;
+      model: string;
+      missingCredentialHints: string[];
+    }
   | { status: "unavailable" };
 
-export function useConfigBadge(): ConfigBadgeState {
+export function useConfigBadge(refreshNonce = 0): ConfigBadgeState {
   const [state, setState] = useState<ConfigBadgeState>({ status: "loading" });
 
   useEffect(() => {
@@ -21,14 +26,19 @@ export function useConfigBadge(): ConfigBadgeState {
           return;
         }
 
-        const rawPayload = await response.json();
-        // Validate with schema - provider/model fields only, no secrets
-        const payload = rawPayload as LightcodeConfigStatus;
+        const parsed = lightcodeConfigStatusSchema.safeParse(await response.json());
+        if (!parsed.success) {
+          if (!cancelled) setState({ status: "unavailable" });
+          return;
+        }
 
         if (!cancelled) {
-          const provider = payload.selectedProvider ?? "unknown";
-          const model = payload.selectedModel ?? "unknown";
-          setState({ status: "available", provider, model });
+          setState({
+            status: "available",
+            provider: parsed.data.selectedProvider,
+            model: parsed.data.selectedModel,
+            missingCredentialHints: parsed.data.missingCredentialHints,
+          });
         }
       } catch {
         if (!cancelled) setState({ status: "unavailable" });
@@ -39,7 +49,7 @@ export function useConfigBadge(): ConfigBadgeState {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshNonce]);
 
   return state;
 }

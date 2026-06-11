@@ -7,8 +7,9 @@ import { codingAgentToolNameSchema } from "../coding-agent-modes";
 import {
   contextOptimizerConfigSchema,
   defaultContextOptimizerConfig,
+  normalizeContextOptimizerConfig,
   resolvedContextOptimizerConfigSchema,
-} from "../context-optimizer";
+} from "../context";
 import {
   permissionModeSchema,
   permissionRulesSchema,
@@ -23,6 +24,34 @@ export const lightcodeProviderSchema = z.enum([
   "openrouter",
 ]);
 
+export const autoContinueConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    maxAutoContinues: z.number().int().min(1).max(200).optional(),
+    maxErrorRetries: z.number().int().min(1).max(10).optional(),
+    /** Abort + retry a streaming response after this many silent seconds. */
+    stallTimeoutSeconds: z.number().int().min(30).max(600).optional(),
+  })
+  .strict();
+export type AutoContinueConfig = z.infer<typeof autoContinueConfigSchema>;
+
+export const resolvedAutoContinueConfigSchema = z.object({
+  enabled: z.boolean(),
+  maxAutoContinues: z.number().int().min(1).max(200),
+  maxErrorRetries: z.number().int().min(1).max(10),
+  stallTimeoutSeconds: z.number().int().min(30).max(600),
+});
+export type ResolvedAutoContinueConfig = z.infer<
+  typeof resolvedAutoContinueConfigSchema
+>;
+
+export const defaultAutoContinueConfig: ResolvedAutoContinueConfig = {
+  enabled: true,
+  maxAutoContinues: 50,
+  maxErrorRetries: 5,
+  stallTimeoutSeconds: 120,
+};
+
 export const lightcodeConfigSchema = z
   .object({
     provider: lightcodeProviderSchema.optional(),
@@ -36,7 +65,8 @@ export const lightcodeConfigSchema = z
     mcp: mcpConfigSchema.optional(),
     context: contextOptimizerConfigSchema.optional(),
     maxOutputTokens: z.number().int().min(1).max(200_000).optional(),
-    maxSteps: z.number().int().min(1).max(20).optional(),
+    maxSteps: z.number().int().min(1).max(100).optional(),
+    autoContinue: autoContinueConfigSchema.optional(),
   })
   .strict();
 
@@ -47,13 +77,15 @@ export const lightcodeConfigDefaults = {
   provider: "anthropic",
   defaultMode: defaultCodingAgentMode,
   context: defaultContextOptimizerConfig,
-  maxOutputTokens: 4_096,
-  maxSteps: 5,
-} satisfies Required<
-  Pick<
-    LightcodeConfig,
-    "provider" | "defaultMode" | "context" | "maxOutputTokens" | "maxSteps"
-  >
+  // Reasoning tokens count against the output budget; thinking models need
+  // far more than the text alone suggests.
+  maxOutputTokens: 32_768,
+  maxSteps: 30, // safety net only — the client-driven loop is budgeted by autoContinue
+
+  autoContinue: defaultAutoContinueConfig,
+} satisfies Pick<
+  LightcodeResolvedConfig,
+  "provider" | "defaultMode" | "context" | "maxOutputTokens" | "maxSteps" | "autoContinue"
 >;
 
 export const loadedConfigFileSchema = z.object({
@@ -69,7 +101,8 @@ export const lightcodeResolvedConfigSchema = lightcodeConfigSchema.extend({
   defaultMode: codingAgentModeSchema,
   context: resolvedContextOptimizerConfigSchema,
   maxOutputTokens: z.number().int().min(1).max(200_000),
-  maxSteps: z.number().int().min(1).max(20),
+  maxSteps: z.number().int().min(1).max(100),
+  autoContinue: resolvedAutoContinueConfigSchema,
 });
 export type LightcodeResolvedConfig = z.infer<typeof lightcodeResolvedConfigSchema>;
 
@@ -90,7 +123,10 @@ export const lightcodeConfigStatusSchema = z.object({
   defaultMode: codingAgentModeSchema,
   permissionMode: permissionModeSchema.nullable(),
   maxOutputTokens: z.number().int().min(1).max(200_000),
-  maxSteps: z.number().int().min(1).max(20),
+  maxSteps: z.number().int().min(1).max(100),
+  autoContinue: resolvedAutoContinueConfigSchema,
+  /** Effective context window in tokens (config override or model metadata). */
+  contextWindow: z.number().int().positive(),
   missingCredentialHints: z.array(z.string()),
 });
 export type LightcodeConfigStatus = z.infer<typeof lightcodeConfigStatusSchema>;
@@ -227,6 +263,18 @@ function readEnvConfig(env: Record<string, string | undefined>): LightcodeConfig
       env.LIGHTCODE_CONTEXT_AUTO_COMPACT,
       "LIGHTCODE_CONTEXT_AUTO_COMPACT",
     ),
+    compactAtFraction: parseNumberEnv(
+      env.LIGHTCODE_CONTEXT_COMPACT_AT_FRACTION,
+      "LIGHTCODE_CONTEXT_COMPACT_AT_FRACTION",
+    ),
+    pruneAtFraction: parseNumberEnv(
+      env.LIGHTCODE_CONTEXT_PRUNE_AT_FRACTION,
+      "LIGHTCODE_CONTEXT_PRUNE_AT_FRACTION",
+    ),
+    contextWindowOverride: parseNumberEnv(
+      env.LIGHTCODE_CONTEXT_WINDOW,
+      "LIGHTCODE_CONTEXT_WINDOW",
+    ),
     maxInputTokens: parseNumberEnv(
       env.LIGHTCODE_CONTEXT_MAX_INPUT_TOKENS,
       "LIGHTCODE_CONTEXT_MAX_INPUT_TOKENS",
@@ -287,6 +335,12 @@ function mergeConfig(...configs: LightcodeConfig[]): LightcodeConfig {
             ...config.context,
           }
         : mergedConfig.context,
+      autoContinue: config.autoContinue
+        ? {
+            ...mergedConfig.autoContinue,
+            ...config.autoContinue,
+          }
+        : mergedConfig.autoContinue,
       allowedTools: config.allowedTools ?? mergedConfig.allowedTools,
     }),
     {},
@@ -306,9 +360,10 @@ export function loadLightcodeConfig({
   const config = {
     ...lightcodeConfigDefaults,
     ...mergedConfig,
-    context: {
-      ...defaultContextOptimizerConfig,
-      ...(mergedConfig.context ?? {}),
+    context: normalizeContextOptimizerConfig(mergedConfig.context),
+    autoContinue: {
+      ...defaultAutoContinueConfig,
+      ...mergedConfig.autoContinue,
     },
   };
 

@@ -15,7 +15,7 @@
     "@lightcode/shared": "workspace:*",
     "@opentui/core": "latest",
     "@opentui/react": "latest",
-    "ai": "^6.0.182",
+    "ai": "6.0.182",
     "hono": "latest",
     "react": "^19.0.0",
     "react-router": "^7.1.0",

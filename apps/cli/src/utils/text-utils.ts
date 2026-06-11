@@ -1,6 +1,4 @@
-export function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
-}
+export { getErrorMessage } from "@lightcode/shared";
 
 export function truncateInline(text: string, maxLength = 96): string {
   const normalized = text.replace(/\s+/g, " ").trim();

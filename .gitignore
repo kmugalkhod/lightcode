@@ -21,3 +21,7 @@ Screenshot*.png
 
 # Local agent/skill artifacts (not part of app source)
 .agents/skills/prisma-database-setup/
+
+# Local SQLite scratch databases (created by prisma db push without DATABASE_URL)
+dev.db
+packages/db/dev.db

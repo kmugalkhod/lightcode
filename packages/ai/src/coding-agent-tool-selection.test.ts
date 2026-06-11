@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   limitProviderActiveTools,
   selectCodingAgentIntentTools,
-} from "./coding-agent";
+} from "./intent-tool-selection";
 
 describe("coding agent dynamic tool selection", () => {
   test("does not send tools for casual chat", () => {

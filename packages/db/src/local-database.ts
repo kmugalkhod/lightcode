@@ -51,7 +51,7 @@ export function resolveDatabaseUrl() {
   return databaseUrl;
 }
 
-function filePathFromDatabaseUrl(databaseUrl: string) {
+export function filePathFromDatabaseUrl(databaseUrl: string) {
   if (!databaseUrl.startsWith("file:")) {
     return null;
   }
@@ -169,8 +169,45 @@ export function initializeLocalDatabase(databaseUrl: string) {
         ON "subagent_tasks"("parent_session_id", "created_at");
       CREATE INDEX IF NOT EXISTS "subagent_tasks_status_updated_at_idx"
         ON "subagent_tasks"("status", "updated_at");
+
+      CREATE TABLE IF NOT EXISTS "session_context_states" (
+        "id" TEXT NOT NULL PRIMARY KEY,
+        "session_id" TEXT NOT NULL,
+        "summary" TEXT NOT NULL,
+        "anchor_message_id" TEXT NOT NULL,
+        "covered_message_count" INTEGER NOT NULL,
+        "estimated_tokens" INTEGER NOT NULL,
+        "tier" TEXT NOT NULL,
+        "model" TEXT,
+        "created_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updated_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "session_context_states_session_id_fkey"
+          FOREIGN KEY ("session_id") REFERENCES "sessions"("id")
+          ON DELETE CASCADE ON UPDATE CASCADE
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS "session_context_states_session_id_key"
+        ON "session_context_states"("session_id");
     `);
+
+    applyAdditiveMigrations(database);
   } finally {
     database.close();
+  }
+}
+
+/**
+ * CREATE TABLE IF NOT EXISTS does not evolve existing tables; add new
+ * columns here, guarded so re-runs are no-ops.
+ */
+function applyAdditiveMigrations(database: Database) {
+  const sessionColumns = database
+    .query<{ name: string }, []>("PRAGMA table_info(sessions)")
+    .all();
+
+  if (!sessionColumns.some((column) => column.name === "auto_titled")) {
+    database.exec(
+      'ALTER TABLE "sessions" ADD COLUMN "auto_titled" BOOLEAN NOT NULL DEFAULT 0',
+    );
   }
 }

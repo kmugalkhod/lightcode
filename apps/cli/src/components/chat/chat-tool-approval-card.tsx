@@ -154,7 +154,7 @@ export function ChatToolApprovalCard({
       width="100%"
       flexDirection="column"
       borderStyle="single"
-      borderColor={cliTheme.semantic.warning}
+      borderColor={keyboardActive ? cliTheme.accent.primary : cliTheme.semantic.warning}
       backgroundColor={cliTheme.surfaces.panel}
       paddingX={1}
       paddingY={1}
@@ -164,8 +164,10 @@ export function ChatToolApprovalCard({
         <text fg={cliTheme.semantic.warning} attributes={TextAttributes.BOLD}>
           Tool Approval
         </text>
-        <text fg={cliTheme.text.muted}>
-          {approvals.length} pending
+        <text fg={keyboardActive ? cliTheme.accent.primary : cliTheme.text.muted}>
+          {keyboardActive
+            ? `keyboard focus - ${approvals.length} pending`
+            : `${approvals.length} pending - press Down to focus`}
         </text>
       </box>
 
@@ -184,7 +186,15 @@ export function ChatToolApprovalCard({
               paddingX={1}
               backgroundColor={rowColors.backgroundColor}
             >
-              <text fg={rowColors.primaryTextColor}>
+              <text
+                fg={rowColors.primaryTextColor}
+                attributes={
+                  keyboardActive && index === safeSelectedIndex
+                    ? TextAttributes.BOLD
+                    : TextAttributes.NONE
+                }
+              >
+                {keyboardActive && index === safeSelectedIndex ? "> " : "  "}
                 {index + 1}. {approval.toolName} {target}
               </text>
               <text
@@ -200,7 +210,9 @@ export function ChatToolApprovalCard({
 
       <box width="100%" flexDirection="row" justifyContent="space-between">
         <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
-          Up/Down focus | Enter approve | d deny | a approve all | Esc release
+          {keyboardActive
+            ? "Enter approve | d deny | a approve all | Esc release focus"
+            : "Down focus card | or type approve/deny below"}
         </text>
         <text fg={cliTheme.text.secondary}>
           approve/deny also works in reply

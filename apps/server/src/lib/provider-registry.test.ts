@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { defaultContextOptimizerConfig } from "@lightcode/ai";
+import {
+  defaultAutoContinueConfig,
+  defaultContextOptimizerConfig,
+} from "@lightcode/ai";
 import {
   createConfigStatus,
   resolveConfiguredProviderModel,
@@ -12,6 +15,7 @@ const baseConfig = {
   context: defaultContextOptimizerConfig,
   maxOutputTokens: 10000,
   maxSteps: 5,
+  autoContinue: defaultAutoContinueConfig,
 } as const;
 
 describe("provider registry", () => {

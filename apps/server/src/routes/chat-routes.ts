@@ -1,42 +1,18 @@
 import { zValidator } from "@hono/zod-validator";
 import {
-  createAgentUIStreamResponse,
-  consumeStream,
-  generateId,
-  safeValidateUIMessages,
-  streamText,
-  type UIMessage,
-} from "ai";
-import {
+  buildProviderView,
   codingChatRequestSchema,
   chatInteractionListQuerySchema,
   chatInteractionResolveRequestSchema,
   chatInteractionUpsertRequestSchema,
   concreteSessionInteractionPathParamsSchema,
   concreteSessionPathParamsSchema,
-  selectCodingAgentIntentTools,
   sessionInteractionPathParamsSchema,
   sessionCreateRequestSchema,
-  type CodingAgentToolName,
-  type CodingAgentMode,
-  type PermissionMode,
-  type PermissionRules,
-  type SandboxConfig,
-  type SessionMessagesResponse,
   sessionPathParamsSchema,
+  sessionUpdateRequestSchema,
 } from "@lightcode/ai";
-import type { Context } from "hono";
 import { Hono } from "hono";
-import {
-  createChatSession,
-  deleteChatSession,
-  exportChatSessionJson,
-  listChatSessions,
-  loadChatSessionWithMessages,
-  persistChatMessages,
-  resolveChatSessionIdentifier,
-  SessionNotFoundError,
-} from "../lib/chat-store";
 import {
   ChatInteractionNotFoundError,
   listChatInteractions,
@@ -44,456 +20,29 @@ import {
   upsertChatInteraction,
 } from "../lib/chat-interaction-store";
 import {
-  getErrorMessage,
-  isProviderBillingOrQuotaError,
-  incrementChatFailureCounter,
-  isDisconnectOrTimeoutError,
-  isProviderSchemaRejectionError,
-  logChatDisconnectEvent,
-  logChatWriteEvent,
-} from "../lib/chat-observability";
-import { prepareChatMessagesForProvider } from "../lib/context-optimization";
+  createChatSession,
+  deleteChatSession,
+  exportChatSessionJson,
+  forkChatSession,
+  listChatSessions,
+  loadChatSessionWithMessages,
+  renameChatSession,
+  resolveChatSessionIdentifier,
+  updateSessionMetadata,
+  SessionNotFoundError,
+} from "../lib/chat-store";
+import {
+  loadSessionContextStateSafe,
+  streamSessionChat,
+} from "../lib/chat-stream";
+import { compactSessionContext } from "../lib/context-compaction";
+import { getSessionContextState } from "../lib/context-state-store";
 import {
   chatModelId,
-  codingAgent,
   lightcodeConfigResult,
   resolvedProviderModel,
 } from "../lib/runtime-config";
-
-const sessionChatRequestSchema = codingChatRequestSchema;
-
-const recoverableDisconnectMessage = "Connection interrupted. Please retry or regenerate your last message.";
-const genericRecoverableMessage = "The response stream was interrupted. Please retry.";
-const providerBillingOrQuotaMessage =
-  "The configured model provider rejected this request due to billing or quota limits. " +
-  "Update provider credits/quota and retry.";
-
-function isEmptyAssistantMessage(message: UIMessage) {
-  return message.role === "assistant" && message.parts.length === 0;
-}
-
-function removeTrailingEmptyAssistantMessages(messages: UIMessage[]) {
-  let endIndex = messages.length;
-
-  while (endIndex > 0 && isEmptyAssistantMessage(messages[endIndex - 1])) {
-    endIndex -= 1;
-  }
-
-  return endIndex === messages.length ? messages : messages.slice(0, endIndex);
-}
-
-function collectMessageText(message: UIMessage) {
-  return message.parts
-    .map((part) => (part.type === "text" ? part.text : ""))
-    .filter((text) => text.trim().length > 0)
-    .join("\n")
-    .trim();
-}
-
-function buildFastChatModelMessages(messages: UIMessage[]) {
-  return messages
-    .filter((message) => message.role === "user" || message.role === "assistant")
-    .map((message) => ({
-      role: message.role,
-      content: collectMessageText(message),
-    }))
-    .filter((message) => message.content.length > 0)
-    .slice(-6);
-}
-
-function shouldUseFastChatPath({
-  messages,
-  mode,
-  allowedTools,
-}: {
-  messages: UIMessage[];
-  mode: CodingAgentMode;
-  allowedTools: CodingAgentToolName[] | undefined;
-}) {
-  if (allowedTools && allowedTools.length > 0) {
-    return false;
-  }
-
-  return selectCodingAgentIntentTools({
-    mode,
-    prompt: "",
-    messages,
-  }).length === 0;
-}
-
-async function countPendingChatInteractions(sessionId: string) {
-  try {
-    const pendingInteractions = await listChatInteractions({
-      sessionId,
-      status: "pending",
-    });
-
-    return pendingInteractions.interactions.length;
-  } catch (error) {
-    console.warn(
-      JSON.stringify({
-        event: "context_compaction_pending_interactions_unavailable",
-        sessionId,
-        error: getErrorMessage(error),
-      }),
-    );
-
-    return 1;
-  }
-}
-
-async function streamSessionChat(
-  c: Context,
-  sessionIdentifier: string,
-  messagesPayload: SessionMessagesResponse["messages"],
-  cwd: string,
-  mode: CodingAgentMode,
-  permissionMode: PermissionMode | undefined,
-  allowedTools: CodingAgentToolName[] | undefined,
-  permissionRules: PermissionRules | undefined,
-  sandbox: SandboxConfig | undefined,
-) {
-  const validatedMessagesResult = await safeValidateUIMessages({
-    messages: messagesPayload,
-  });
-
-  if (!validatedMessagesResult.success) {
-    return c.json({ error: "Invalid chat messages payload." }, 400);
-  }
-
-  let sessionId: string;
-  try {
-    sessionId = await resolveChatSessionIdentifier(sessionIdentifier);
-  } catch (error) {
-    if (error instanceof SessionNotFoundError) {
-      return c.json({ error: error.message }, 404);
-    }
-
-    throw error;
-  }
-
-  const validatedMessages = validatedMessagesResult.data;
-  const pendingInteractionCount = await countPendingChatInteractions(sessionId);
-  const contextOptimization = prepareChatMessagesForProvider({
-    messages: validatedMessages,
-    contextConfig: lightcodeConfigResult.config.context,
-    pendingInteractionCount,
-  });
-  const providerMessages = contextOptimization.messages;
-
-  if (contextOptimization.compacted) {
-    console.log(
-      JSON.stringify({
-        event: "context_auto_compacted",
-        sessionId,
-        estimatedTokens: contextOptimization.estimatedTokens,
-        removedMessageCount: contextOptimization.removedMessageCount,
-        remainingMessages: providerMessages.length,
-      }),
-    );
-  }
-
-  let baseRevision = 0;
-
-  try {
-    const persistResult = await persistChatMessages({
-      sessionId,
-      messages: providerMessages,
-      assistantModel: chatModelId,
-      cwd,
-      mode,
-      permissionMode: permissionMode ?? null,
-    });
-    baseRevision = persistResult.revision;
-    logChatWriteEvent({
-      sessionId,
-      revision: persistResult.revision,
-      phase: "pre-stream",
-      staleSkip: false,
-    });
-  } catch (error) {
-    console.error("Failed to persist incoming chat messages.", error);
-    return c.json(
-      {
-        error: "Unable to persist incoming chat messages.",
-        details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
-      },
-      500
-    );
-  }
-
-  try {
-    if (
-      shouldUseFastChatPath({
-        messages: providerMessages,
-        mode,
-        allowedTools,
-      })
-    ) {
-      console.log(
-        JSON.stringify({
-          event: "chat_fast_path",
-          sessionId,
-          model: chatModelId,
-        }),
-      );
-
-      const result = streamText({
-        model: resolvedProviderModel.model,
-        system:
-          "You are Lightcode's friendly coding assistant. For casual conversation, reply briefly and naturally. " +
-          "If the user asks for coding work, say you can help and ask them what they want to change.",
-        messages: buildFastChatModelMessages(providerMessages),
-        maxOutputTokens: Math.min(lightcodeConfigResult.config.maxOutputTokens, 512),
-        providerOptions: resolvedProviderModel.providerOptions,
-      });
-
-      result.consumeStream({
-        onError: (error) => {
-          if (isDisconnectOrTimeoutError(error)) {
-            incrementChatFailureCounter("timeout_disconnect", {
-              sessionId,
-              phase: "stream",
-            });
-            logChatDisconnectEvent({
-              sessionId,
-              phase: "stream",
-              error,
-            });
-          }
-        },
-      });
-
-      return result.toUIMessageStreamResponse({
-        originalMessages: providerMessages,
-        generateMessageId: generateId,
-        sendReasoning: false,
-        onError: (error) => {
-          if (isProviderSchemaRejectionError(error)) {
-            incrementChatFailureCounter("provider_schema_rejection", {
-              sessionId,
-            });
-          }
-
-          return genericRecoverableMessage;
-        },
-        onFinish: async ({ isAborted, messages }) => {
-          if (isAborted) {
-            return;
-          }
-
-          const normalizedMessages = removeTrailingEmptyAssistantMessages(messages);
-          if (normalizedMessages.length !== messages.length) {
-            console.warn(
-              JSON.stringify({
-                event: "chat_finish_empty_assistant_skipped",
-                sessionId,
-              }),
-            );
-            return;
-          }
-
-          const validatedMessagesResult = await safeValidateUIMessages({
-            messages: normalizedMessages,
-          });
-          if (!validatedMessagesResult.success) {
-            console.warn(
-              JSON.stringify({
-                event: "chat_invalid_finish_payload",
-                sessionId,
-                message: validatedMessagesResult.error.message,
-              }),
-            );
-            return;
-          }
-
-          try {
-            const persistResult = await persistChatMessages({
-              sessionId,
-              messages: validatedMessagesResult.data,
-              assistantModel: chatModelId,
-              expectedRevision: baseRevision,
-              cwd,
-              mode,
-              permissionMode: permissionMode ?? null,
-            });
-
-            logChatWriteEvent({
-              sessionId,
-              revision: persistResult.revision,
-              phase: "finish",
-              staleSkip: persistResult.staleSkip,
-            });
-          } catch (error) {
-            console.error("Failed to persist fast assistant response message.", {
-              sessionId,
-              error: getErrorMessage(error),
-            });
-          }
-        },
-      });
-    }
-
-    const mapStreamError = (error: unknown) => {
-      if (isProviderSchemaRejectionError(error)) {
-        incrementChatFailureCounter("provider_schema_rejection", {
-          sessionId,
-        });
-        return genericRecoverableMessage;
-      }
-
-      if (isProviderBillingOrQuotaError(error)) {
-        incrementChatFailureCounter("provider_billing_quota", {
-          sessionId,
-        });
-        return providerBillingOrQuotaMessage;
-      }
-
-      if (isDisconnectOrTimeoutError(error)) {
-        incrementChatFailureCounter("timeout_disconnect", {
-          sessionId,
-          phase: "stream",
-        });
-        logChatDisconnectEvent({
-          sessionId,
-          phase: "stream",
-          error,
-        });
-        return recoverableDisconnectMessage;
-      }
-
-      return genericRecoverableMessage;
-    };
-
-    return await createAgentUIStreamResponse({
-      agent: codingAgent,
-      uiMessages: providerMessages,
-      options: {
-        cwd,
-        mode,
-        permissionMode,
-        allowedTools,
-        permissionRules,
-        sandbox,
-      },
-      generateMessageId: generateId,
-      sendReasoning: true,
-      consumeSseStream: async ({ stream }) => {
-        await consumeStream({
-          stream,
-          onError: (error) => {
-            if (isDisconnectOrTimeoutError(error)) {
-              incrementChatFailureCounter("timeout_disconnect", {
-                sessionId,
-                phase: "stream",
-              });
-              logChatDisconnectEvent({
-                sessionId,
-                phase: "stream",
-                error,
-              });
-            }
-          },
-        });
-      },
-      onError: mapStreamError,
-      onFinish: async ({ isAborted, messages }) => {
-        if (isAborted) {
-          return;
-        }
-
-        const normalizedMessages = removeTrailingEmptyAssistantMessages(messages);
-        if (normalizedMessages.length !== messages.length) {
-          console.warn(
-            JSON.stringify({
-              event: "chat_finish_empty_assistant_skipped",
-              sessionId,
-            })
-          );
-          return;
-        }
-
-        const validatedMessagesResult = await safeValidateUIMessages({ messages: normalizedMessages });
-        if (!validatedMessagesResult.success) {
-          console.warn(
-            JSON.stringify({
-              event: "chat_invalid_finish_payload",
-              sessionId,
-              message: validatedMessagesResult.error.message,
-            })
-          );
-          return;
-        }
-
-        try {
-          const persistResult = await persistChatMessages({
-            sessionId,
-            messages: validatedMessagesResult.data,
-            assistantModel: chatModelId,
-            expectedRevision: baseRevision,
-            cwd,
-            mode,
-            permissionMode: permissionMode ?? null,
-          });
-
-          if (persistResult.staleSkip) {
-            incrementChatFailureCounter("stale_finish_skip", {
-              sessionId,
-              expectedRevision: baseRevision,
-              actualRevision: persistResult.revision,
-            });
-          }
-
-          logChatWriteEvent({
-            sessionId,
-            revision: persistResult.revision,
-            phase: "finish",
-            staleSkip: persistResult.staleSkip,
-          });
-        } catch (error) {
-          console.error("Failed to persist assistant response message.", {
-            sessionId,
-            error: getErrorMessage(error),
-          });
-        }
-      },
-    });
-  } catch (error) {
-    if (isProviderSchemaRejectionError(error)) {
-      incrementChatFailureCounter("provider_schema_rejection", {
-        sessionId,
-      });
-    }
-
-    if (isProviderBillingOrQuotaError(error)) {
-      incrementChatFailureCounter("provider_billing_quota", {
-        sessionId,
-      });
-      return c.json({ error: providerBillingOrQuotaMessage }, 402);
-    }
-
-    if (isDisconnectOrTimeoutError(error)) {
-      incrementChatFailureCounter("timeout_disconnect", {
-        sessionId,
-        phase: "pre-stream",
-      });
-      logChatDisconnectEvent({
-        sessionId,
-        phase: "pre-stream",
-        error,
-      });
-      return c.json({ error: recoverableDisconnectMessage }, 503);
-    }
-
-    return c.json(
-      {
-        error: "Unable to start chat stream.",
-        details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
-      },
-      500
-    );
-  }
-}
+import { internalErrorResponse } from "./route-helpers";
 
 export const sessionRoutes = new Hono()
   .get("/", async (c) => {
@@ -501,14 +50,11 @@ export const sessionRoutes = new Hono()
       const sessions = await listChatSessions();
       return c.json({ sessions });
     } catch (error) {
-      console.error("Failed to list chat sessions.", error);
-      return c.json(
-        {
-          error: "Unable to list chat sessions.",
-          details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
-        },
-        500
-      );
+      return internalErrorResponse(c, {
+        event: "session_list_failed",
+        message: "Unable to list chat sessions.",
+        error,
+      });
     }
   })
   .post("/", zValidator("json", sessionCreateRequestSchema), async (c) => {
@@ -525,54 +71,136 @@ export const sessionRoutes = new Hono()
       });
       return c.json(session, 201);
     } catch (error) {
-      console.error("Failed to create chat session.", error);
-      return c.json(
-        {
-          error: "Unable to create chat session.",
-          details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
-        },
-        500
-      );
+      return internalErrorResponse(c, {
+        event: "session_create_failed",
+        message: "Unable to create chat session.",
+        error,
+      });
     }
   })
   .get("/:id", zValidator("param", sessionPathParamsSchema), async (c) => {
     const { id } = c.req.valid("param");
 
     try {
-      return c.json(await loadChatSessionWithMessages(id));
+      const sessionWithMessages = await loadChatSessionWithMessages(id);
+      const contextState = await loadSessionContextStateSafe(
+        sessionWithMessages.session.id,
+      );
+      return c.json({ ...sessionWithMessages, contextState });
     } catch (error) {
       if (error instanceof SessionNotFoundError) {
         return c.json({ error: error.message }, 404);
       }
 
-      console.error("Failed to resume chat session.", error);
-      return c.json(
-        {
-          error: "Unable to resume chat session.",
-          details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
-        },
-        500
-      );
+      return internalErrorResponse(c, {
+        event: "session_resume_failed",
+        message: "Unable to resume chat session.",
+        error,
+      });
     }
   })
   .get("/:id/messages", zValidator("param", sessionPathParamsSchema), async (c) => {
     const { id } = c.req.valid("param");
 
     try {
-      return c.json(await loadChatSessionWithMessages(id));
+      const sessionWithMessages = await loadChatSessionWithMessages(id);
+      const contextState = await loadSessionContextStateSafe(
+        sessionWithMessages.session.id,
+      );
+      return c.json({ ...sessionWithMessages, contextState });
     } catch (error) {
       if (error instanceof SessionNotFoundError) {
         return c.json({ error: error.message }, 404);
       }
 
-      console.error("Failed to load persisted chat messages.", error);
+      return internalErrorResponse(c, {
+        event: "session_messages_load_failed",
+        message: "Unable to load persisted chat messages.",
+        error,
+      });
+    }
+  })
+  .get("/:id/context", zValidator("param", sessionPathParamsSchema), async (c) => {
+    const { id } = c.req.valid("param");
+
+    try {
+      const sessionId = await resolveChatSessionIdentifier(id);
+      const { messages } = await loadChatSessionWithMessages(sessionId);
+      const contextState = await getSessionContextState(sessionId);
+      const view = buildProviderView({
+        messages,
+        contextState,
+        config: lightcodeConfigResult.config.context,
+        modelContextWindow: resolvedProviderModel.contextWindow,
+      });
+
+      return c.json({
+        contextState,
+        estimate: view.estimate,
+        contextWindow: view.contextWindow,
+      });
+    } catch (error) {
+      if (error instanceof SessionNotFoundError) {
+        return c.json({ error: error.message }, 404);
+      }
+
+      return internalErrorResponse(c, {
+        event: "session_context_load_failed",
+        message: "Unable to load session context state.",
+        error,
+      });
+    }
+  })
+  .post("/:id/compact", zValidator("param", sessionPathParamsSchema), async (c) => {
+    const { id } = c.req.valid("param");
+
+    try {
+      const sessionId = await resolveChatSessionIdentifier(id);
+      const { session, messages } = await loadChatSessionWithMessages(sessionId);
+      const contextState = await getSessionContextState(sessionId);
+      const contextConfig = lightcodeConfigResult.config.context;
+      const view = buildProviderView({
+        messages,
+        contextState,
+        config: contextConfig,
+        modelContextWindow: resolvedProviderModel.contextWindow,
+      });
+
+      if (view.coveredMessages.length === 0) {
+        return c.json(
+          { error: "Not enough new messages to compact yet." },
+          409,
+        );
+      }
+
+      const compaction = await compactSessionContext({
+        sessionId,
+        coveredMessages: view.coveredMessages,
+        previousState: contextState,
+        model: resolvedProviderModel.model,
+        modelId: chatModelId,
+        cwd: session.cwd ?? undefined,
+        config: contextConfig,
+        estimatedTokens: view.estimate.tokens,
+      });
+
       return c.json(
         {
-          error: "Unable to load persisted chat messages.",
-          details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
+          contextState: compaction.state,
+          usedFallback: compaction.usedFallback,
         },
-        500
+        201,
       );
+    } catch (error) {
+      if (error instanceof SessionNotFoundError) {
+        return c.json({ error: error.message }, 404);
+      }
+
+      return internalErrorResponse(c, {
+        event: "session_compact_failed",
+        message: "Unable to compact session context.",
+        error,
+      });
     }
   })
   .get(
@@ -597,14 +225,11 @@ export const sessionRoutes = new Hono()
           return c.json({ error: error.message }, 404);
         }
 
-        console.error("Failed to list chat interactions.", error);
-        return c.json(
-          {
-            error: "Unable to list chat interactions.",
-            details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
-          },
-          500
-        );
+        return internalErrorResponse(c, {
+          event: "interaction_list_failed",
+          message: "Unable to list chat interactions.",
+          error,
+        });
       }
     }
   )
@@ -624,14 +249,11 @@ export const sessionRoutes = new Hono()
           return c.json({ error: error.message }, 404);
         }
 
-        console.error("Failed to upsert chat interaction.", error);
-        return c.json(
-          {
-            error: "Unable to checkpoint chat interaction.",
-            details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
-          },
-          500
-        );
+        return internalErrorResponse(c, {
+          event: "interaction_upsert_failed",
+          message: "Unable to checkpoint chat interaction.",
+          error,
+        });
       }
     }
   )
@@ -660,14 +282,11 @@ export const sessionRoutes = new Hono()
           return c.json({ error: error.message }, 404);
         }
 
-        console.error("Failed to resolve chat interaction.", error);
-        return c.json(
-          {
-            error: "Unable to resolve chat interaction.",
-            details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
-          },
-          500
-        );
+        return internalErrorResponse(c, {
+          event: "interaction_resolve_failed",
+          message: "Unable to resolve chat interaction.",
+          error,
+        });
       }
     }
   )
@@ -681,16 +300,79 @@ export const sessionRoutes = new Hono()
         return c.json({ error: error.message }, 404);
       }
 
-      console.error("Failed to export chat session.", error);
-      return c.json(
-        {
-          error: "Unable to export chat session.",
-          details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
-        },
-        500
-      );
+      return internalErrorResponse(c, {
+        event: "session_export_failed",
+        message: "Unable to export chat session.",
+        error,
+      });
     }
   })
+  .patch(
+    "/:id",
+    zValidator("param", concreteSessionPathParamsSchema),
+    zValidator("json", sessionUpdateRequestSchema),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const body = c.req.valid("json");
+
+      // If only title is provided, use renameChatSession for backward compatibility
+      if (body.title !== undefined && body.permissionMode === undefined) {
+        try {
+          return c.json(await renameChatSession(id, body.title));
+        } catch (error) {
+          if (error instanceof SessionNotFoundError) {
+            return c.json({ error: error.message }, 404);
+          }
+          return internalErrorResponse(c, {
+            event: "session_rename_failed",
+            message: "Unable to rename chat session.",
+            error,
+          });
+        }
+      }
+
+      // Otherwise use updateSessionMetadata for title and/or permission mode
+      try {
+        return c.json(
+          await updateSessionMetadata(id, {
+            title: body.title,
+            permissionMode: body.permissionMode,
+          }),
+        );
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        return internalErrorResponse(c, {
+          event: "session_update_failed",
+          message: "Unable to update session metadata.",
+          error,
+        });
+      }
+    },
+  )
+  .post(
+    "/:id/fork",
+    zValidator("param", sessionPathParamsSchema),
+    async (c) => {
+      const { id } = c.req.valid("param");
+
+      try {
+        const sessionId = await resolveChatSessionIdentifier(id);
+        return c.json(await forkChatSession(sessionId), 201);
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+
+        return internalErrorResponse(c, {
+          event: "session_fork_failed",
+          message: "Unable to fork chat session.",
+          error,
+        });
+      }
+    },
+  )
   .delete("/:id", zValidator("param", concreteSessionPathParamsSchema), async (c) => {
     const { id } = c.req.valid("param");
 
@@ -701,20 +383,17 @@ export const sessionRoutes = new Hono()
         return c.json({ error: error.message }, 404);
       }
 
-      console.error("Failed to delete chat session.", error);
-      return c.json(
-        {
-          error: "Unable to delete chat session.",
-          details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
-        },
-        500
-      );
+      return internalErrorResponse(c, {
+        event: "session_delete_failed",
+        message: "Unable to delete chat session.",
+        error,
+      });
     }
   })
   .post(
     "/:id/chat",
     zValidator("param", sessionPathParamsSchema),
-    zValidator("json", sessionChatRequestSchema),
+    zValidator("json", codingChatRequestSchema),
     async (c) => {
       const { id } = c.req.valid("param");
       const body = c.req.valid("json");

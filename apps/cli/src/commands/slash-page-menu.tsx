@@ -1,11 +1,18 @@
 import { TextAttributes } from "@opentui/core";
-import type { AnyRouteDefinition } from "../navigation/route-registry";
 import { cliTheme } from "../ui/cli-theme";
+
+/** Minimal shape the menu needs; satisfied by routes and chat actions. */
+export interface SlashMenuDisplayItem {
+  id: string;
+  label: string;
+  description: string;
+  shortcut: string;
+}
 
 interface SlashPageMenuProps {
   query: string;
   selectedIndex: number;
-  routes: AnyRouteDefinition[];
+  routes: SlashMenuDisplayItem[];
 }
 
 export function SlashPageMenu({
@@ -64,7 +71,7 @@ export function SlashPageMenu({
 
 // Individual menu item component
 interface MenuItemProps {
-  route: AnyRouteDefinition;
+  route: SlashMenuDisplayItem;
   selected: boolean;
 }
 

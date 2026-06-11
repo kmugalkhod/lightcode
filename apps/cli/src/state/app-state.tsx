@@ -15,6 +15,20 @@ export interface AppStateValue {
   setSlashMenuSelected: (i: number) => void;
   openSlashMenu: () => void;
   closeSlashMenu: () => void;
+  /**
+   * Chat action picked in the slash menu (e.g. "compact"). The global key
+   * handler owns menu selection, but only the chat screen has the session
+   * context to execute it — it watches this value and clears it after running.
+   */
+  requestedChatActionId: string | null;
+  requestChatAction: (id: string) => void;
+  clearRequestedChatAction: () => void;
+  /** Bumped after onboarding writes config so config consumers refetch. */
+  configRefreshNonce: number;
+  bumpConfigRefresh: () => void;
+  /** Global toggle (Ctrl+O): show full tool outputs in chat. */
+  expandedToolOutput: boolean;
+  toggleToolOutputExpansion: () => void;
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null);
@@ -53,6 +67,28 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setSlashMenuSelected(0);
   }, []);
 
+  const [requestedChatActionId, setRequestedChatActionId] = useState<string | null>(null);
+
+  const requestChatAction = useCallback((id: string) => {
+    setRequestedChatActionId(id);
+  }, []);
+
+  const clearRequestedChatAction = useCallback(() => {
+    setRequestedChatActionId(null);
+  }, []);
+
+  const [configRefreshNonce, setConfigRefreshNonce] = useState(0);
+
+  const bumpConfigRefresh = useCallback(() => {
+    setConfigRefreshNonce((nonce) => nonce + 1);
+  }, []);
+
+  const [expandedToolOutput, setExpandedToolOutput] = useState(false);
+
+  const toggleToolOutputExpansion = useCallback(() => {
+    setExpandedToolOutput((expanded) => !expanded);
+  }, []);
+
   const value = useMemo<AppStateValue>(() => ({
     paletteOpen,
     paletteQuery,
@@ -68,6 +104,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setSlashMenuSelected,
     openSlashMenu,
     closeSlashMenu,
+    requestedChatActionId,
+    requestChatAction,
+    clearRequestedChatAction,
+    configRefreshNonce,
+    bumpConfigRefresh,
+    expandedToolOutput,
+    toggleToolOutputExpansion,
   }), [
     paletteOpen,
     paletteQuery,
@@ -79,6 +122,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     slashMenuSelected,
     openSlashMenu,
     closeSlashMenu,
+    requestedChatActionId,
+    requestChatAction,
+    clearRequestedChatAction,
+    configRefreshNonce,
+    bumpConfigRefresh,
+    expandedToolOutput,
+    toggleToolOutputExpansion,
   ]);
 
   return (

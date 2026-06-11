@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { codingAgentModeSchema } from "./coding-agent-modes";
+import { sessionContextStateSchema } from "./context/context-state";
 import { permissionModeSchema } from "./permissions";
 
 export const sessionIdSchema = z.string().uuid();
@@ -28,6 +29,18 @@ export const sessionCreateResponseSchema = z.object({
 });
 export type SessionCreateResponse = z.infer<typeof sessionCreateResponseSchema>;
 
+export const sessionUpdateRequestSchema = z.object({
+  title: z.string().min(1).max(120).optional(),
+  permissionMode: permissionModeSchema.optional(),
+});
+export type SessionUpdateRequest = z.infer<typeof sessionUpdateRequestSchema>;
+
+export const sessionForkResponseSchema = z.object({
+  id: sessionIdSchema,
+  copiedMessages: z.number().int().nonnegative(),
+});
+export type SessionForkResponse = z.infer<typeof sessionForkResponseSchema>;
+
 export const sessionMetadataSchema = z.object({
   id: sessionIdSchema,
   title: z.string().nullable(),
@@ -55,8 +68,27 @@ export type SessionListResponse = z.infer<typeof sessionListResponseSchema>;
 export const sessionMessagesResponseSchema = z.object({
   session: sessionMetadataSchema.optional(),
   messages: z.array(z.json()),
+  contextState: sessionContextStateSchema.nullable().optional(),
 });
 export type SessionMessagesResponse = z.infer<typeof sessionMessagesResponseSchema>;
+
+export const contextTokenEstimateSchema = z.object({
+  tokens: z.number().nonnegative(),
+  basis: z.enum(["usage_calibrated", "heuristic"]),
+});
+
+export const sessionContextResponseSchema = z.object({
+  contextState: sessionContextStateSchema.nullable(),
+  estimate: contextTokenEstimateSchema,
+  contextWindow: z.number().int().positive(),
+});
+export type SessionContextResponse = z.infer<typeof sessionContextResponseSchema>;
+
+export const sessionCompactResponseSchema = z.object({
+  contextState: sessionContextStateSchema,
+  usedFallback: z.boolean(),
+});
+export type SessionCompactResponse = z.infer<typeof sessionCompactResponseSchema>;
 
 export const sessionResumeResponseSchema = z.object({
   session: sessionMetadataSchema,

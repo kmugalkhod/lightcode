@@ -35,4 +35,5 @@ export const codingAgent = createCodingAgent({
   providerOptions: resolvedProviderModel.providerOptions,
   maxSteps: lightcodeConfigResult.config.maxSteps,
   maxOutputTokens: lightcodeConfigResult.config.maxOutputTokens,
+  includeToolDiscipline: resolvedProviderModel.needsToolCallDiscipline ?? false,
 });

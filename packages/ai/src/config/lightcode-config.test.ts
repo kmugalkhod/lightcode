@@ -69,7 +69,8 @@ describe("loadLightcodeConfig", () => {
     expect(result.config.model).toBe("opus");
     expect(result.config.defaultMode).toBe("plan");
     expect(result.config.permissionMode).toBe("workspace-write");
-    expect(result.config.context.maxInputTokens).toBe(50_000);
+    // Legacy maxInputTokens maps to contextWindowOverride.
+    expect(result.config.context.contextWindowOverride).toBe(50_000);
     expect(result.config.context.preserveRecentMessages).toBe(8);
     expect(result.config.context.summaryMaxChars).toBe(2_000);
     expect(result.config.maxOutputTokens).toBe(2000);
@@ -87,14 +88,41 @@ describe("loadLightcodeConfig", () => {
     expect(result.config.provider).toBe("anthropic");
     expect(result.config.defaultMode).toBe("build");
     expect(result.config.context.autoCompact).toBe(true);
-    expect(result.config.context.maxInputTokens).toBe(100_000);
-    expect(result.config.context.preserveRecentMessages).toBe(4);
-    expect(result.config.context.summaryMaxChars).toBe(1_200);
-    expect(result.config.maxOutputTokens).toBe(4096);
-    expect(result.config.maxSteps).toBe(5);
+    expect(result.config.context.compactAtFraction).toBe(0.8);
+    expect(result.config.context.pruneAtFraction).toBe(0.6);
+    expect(result.config.context.contextWindowOverride).toBeNull();
+    expect(result.config.context.preserveRecentMessages).toBe(6);
+    expect(result.config.context.summaryMaxChars).toBe(4_000);
+    expect(result.config.maxOutputTokens).toBe(32_768);
+    expect(result.config.maxSteps).toBe(30);
+    expect(result.config.autoContinue).toEqual({
+      enabled: true,
+      maxAutoContinues: 50,
+      maxErrorRetries: 5,
+      stallTimeoutSeconds: 120,
+    });
     expect(result.loadedFiles.every((file) => !file.exists && !file.loaded)).toBe(
       true,
     );
+  });
+
+  test("merges partial autoContinue overrides onto defaults", async () => {
+    const cwd = await makeTempDirectory();
+    await writeJson(path.join(cwd, ".lightcode", "settings.json"), {
+      autoContinue: { maxAutoContinues: 10 },
+    });
+    const result = loadLightcodeConfig({
+      cwd,
+      userConfigPath: path.join(cwd, "missing-user.json"),
+      env: {},
+    });
+
+    expect(result.config.autoContinue).toEqual({
+      enabled: true,
+      maxAutoContinues: 10,
+      maxErrorRetries: 5,
+      stallTimeoutSeconds: 120,
+    });
   });
 
   test("loads context optimizer settings from environment", async () => {
@@ -112,10 +140,29 @@ describe("loadLightcodeConfig", () => {
 
     expect(result.config.context).toEqual({
       autoCompact: false,
-      maxInputTokens: 12345,
+      compactAtFraction: 0.8,
+      pruneAtFraction: 0.6,
+      contextWindowOverride: 12345,
       preserveRecentMessages: 7,
       summaryMaxChars: 1600,
     });
+  });
+
+  test("loads tiered context thresholds and window from environment", async () => {
+    const cwd = await makeTempDirectory();
+    const result = loadLightcodeConfig({
+      cwd,
+      userConfigPath: path.join(cwd, "missing-user.json"),
+      env: {
+        LIGHTCODE_CONTEXT_COMPACT_AT_FRACTION: "0.7",
+        LIGHTCODE_CONTEXT_PRUNE_AT_FRACTION: "0.5",
+        LIGHTCODE_CONTEXT_WINDOW: "64000",
+      },
+    });
+
+    expect(result.config.context.compactAtFraction).toBe(0.7);
+    expect(result.config.context.pruneAtFraction).toBe(0.5);
+    expect(result.config.context.contextWindowOverride).toBe(64_000);
   });
 
   test("loads OpenCode Zen provider and base URL from environment", async () => {

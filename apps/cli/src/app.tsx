@@ -1,15 +1,19 @@
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/react";
+import { useEffect, useState } from "react";
 import { MemoryRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
+import { HelpOverlay } from "./components/help-overlay";
 import { CommandPalette } from "./commands/command-palette";
 import { searchCommands } from "./commands/command-registry";
 import { BACK_SHORTCUT_LABEL, getBinding, normalizeKeyName } from "./commands/keymap";
 import { SlashPageMenu } from "./commands/slash-page-menu";
-import { getPathFromAction, getSlashPageRoutes } from "./navigation/route-registry";
+import { getSlashMenuItems } from "./commands/slash-menu-items";
+import { getPathFromAction } from "./navigation/route-registry";
 import { ChatScreen } from "./screens/chat-screen";
 import { DiagnosticsScreen } from "./screens/diagnostics-screen";
 import { HomeScreen } from "./screens/home-screen";
 import { ModelScreen } from "./screens/model-screen";
+import { OnboardingScreen } from "./screens/onboarding-screen";
 import { SessionListScreen } from "./screens/session-list-screen";
 import { AppStateProvider, useAppState } from "./state/app-state";
 import { useConfigBadge } from "./hooks/use-config-badge";
@@ -88,14 +92,19 @@ function AppContent() {
     setSlashMenuSelected,
     openSlashMenu,
     closeSlashMenu,
+    requestChatAction,
+    configRefreshNonce,
+    toggleToolOutputExpansion,
   } = useAppState();
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const canGoBack = location.pathname !== "/" && location.pathname !== "/home";
   const currentView = getCurrentViewLabel(location.pathname);
+  const inChatSession = location.pathname.startsWith("/sessions/");
   const inputHostsSlashMenu =
     location.pathname === "/" ||
     location.pathname === "/home" ||
-    location.pathname.startsWith("/sessions/");
+    inChatSession;
 
   const handleAction = (action: string) => {
     const path = getPathFromAction(action);
@@ -119,8 +128,16 @@ function AppContent() {
           navigate(-1);
         }
         break;
+      case "system:help":
+        setHelpOpen((open) => !open);
+        break;
+      case "system:toggleToolOutput":
+        toggleToolOutputExpansion();
+        break;
       case "system:cancel":
-        if (paletteOpen) {
+        if (helpOpen) {
+          setHelpOpen(false);
+        } else if (paletteOpen) {
           closePalette();
         } else if (canGoBack) {
           navigate(-1);
@@ -130,7 +147,9 @@ function AppContent() {
   };
 
   const filteredCommands = searchCommands(paletteQuery.trim());
-  const filteredSlashRoutes = getSlashPageRoutes(slashMenuQuery);
+  const filteredSlashRoutes = getSlashMenuItems(slashMenuQuery, {
+    includeChatActions: inChatSession,
+  });
   const selectedSlashRouteIndex = Math.min(
     slashMenuSelected,
     Math.max(filteredSlashRoutes.length - 1, 0),
@@ -200,9 +219,13 @@ function AppContent() {
       setSlashMenuSelected(Math.max(slashMenuSelected - 1, 0));
     } else if (isEnterKey(keyEvent)) {
       captureKeyEvent(keyEvent);
-      const route = filteredSlashRoutes[selectedSlashRouteIndex];
-      if (route) {
-        navigate(route.path);
+      const item = filteredSlashRoutes[selectedSlashRouteIndex];
+      if (item) {
+        if ("path" in item) {
+          navigate(item.path);
+        } else {
+          requestChatAction(item.id);
+        }
         closeSlashMenu();
       }
     } else if (isEscapeKey(keyEvent)) {
@@ -224,8 +247,13 @@ function AppContent() {
 
     const normalizedKey = normalizeKeyName(keyEvent.name, keyEvent.ctrl, false, false);
 
-    if (isEscapeKey(keyEvent) || (keyEvent.ctrl && keyEvent.name === "c")) {
+    if (keyEvent.ctrl && keyEvent.name === "c") {
       handleAction("system:quit");
+      return;
+    }
+
+    if (isEscapeKey(keyEvent)) {
+      handleAction("system:cancel");
       return;
     }
 
@@ -241,15 +269,24 @@ function AppContent() {
     }
   });
 
-  const configBadge = useConfigBadge();
+  const configBadge = useConfigBadge(configRefreshNonce);
+  const needsOnboarding =
+    configBadge.status === "available" &&
+    configBadge.missingCredentialHints.length > 0;
+
+  useEffect(() => {
+    if (needsOnboarding && location.pathname !== "/onboarding") {
+      navigate("/onboarding");
+    }
+  }, [location.pathname, navigate, needsOnboarding]);
 
   const getFooterStatus = () => {
     if (slashMenuOpen) {
       return "Slash pages open | Enter Open | Backspace Close | Esc Cancel";
     }
 
-    const backHint = canGoBack ? ` | ${BACK_SHORTCUT_LABEL} Back` : "";
-    return "/ Pages | Ctrl+P Cmd | Esc/q Quit" + backHint;
+    const backHint = canGoBack ? ` | Esc/${BACK_SHORTCUT_LABEL} Back` : "";
+    return "/ Pages | Ctrl+P Cmd | F1 Help | Ctrl+C Quit" + backHint;
   };
 
   return (
@@ -296,6 +333,7 @@ function AppContent() {
           <Route path="/tools" element={<DiagnosticsScreen kind="tools" />} />
           <Route path="/config" element={<DiagnosticsScreen kind="config" />} />
           <Route path="/model" element={<ModelScreen />} />
+          <Route path="/onboarding" element={<OnboardingScreen />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         {paletteOpen ? (
@@ -312,6 +350,11 @@ function AppContent() {
               selectedIndex={selectedSlashRouteIndex}
               routes={filteredSlashRoutes}
             />
+          </box>
+        ) : null}
+        {helpOpen ? (
+          <box position="absolute" top={1} left={4} right={4} zIndex={30}>
+            <HelpOverlay />
           </box>
         ) : null}
       </box>

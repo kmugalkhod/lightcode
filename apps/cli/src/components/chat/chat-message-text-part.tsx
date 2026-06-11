@@ -1,6 +1,6 @@
-import { SyntaxStyle } from "@opentui/core";
 import type { TextUIPart } from "ai";
 import { cliTheme } from "../../ui/cli-theme";
+import { codeSyntaxStyle } from "../../ui/code-syntax-style";
 import {
   ChatProposedPlanCard,
   splitProposedPlanBlocks,
@@ -10,7 +10,7 @@ interface ChatMessageTextPartProps {
   part: TextUIPart;
 }
 
-const markdownSyntaxStyle = SyntaxStyle.create();
+const markdownSyntaxStyle = codeSyntaxStyle;
 
 function renderMarkdown(content: string, key: string) {
   const trimmedContent = content.trim();

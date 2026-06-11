@@ -51,6 +51,13 @@ import {
 } from "../request-user-input/schema";
 import { loadSessionTodos } from "../todo-write/runtime";
 import type { TodoItem } from "../todo-write/schema";
+import {
+  decideAutoContinue,
+  defaultAutoContinueLimits,
+  shouldTreatAsStalled,
+  type AutoContinueDecision,
+  type AutoContinueKind,
+} from "./auto-continue";
 
 export type ToolApprovalAction = "approve" | "deny";
 
@@ -95,6 +102,26 @@ export interface RespondToUserPromptInput extends RequestUserInputToolOutput {
   toolCallId: string;
 }
 
+export interface AutoContinueOptions {
+  enabled?: boolean;
+  maxAutoContinues?: number;
+  maxErrorRetries?: number;
+  /** Abort + retry a streaming response after this many silent seconds. */
+  stallTimeoutSeconds?: number;
+}
+
+export interface AutoContinueState {
+  /** Continuations sent automatically since the last user message. */
+  attempt: number;
+  /** What the most recent automatic action was. */
+  kind: AutoContinueKind | "retry-error";
+  /** Set when continuation stopped because a loop guard tripped. */
+  guardTripped?: AutoContinueDecision["guardTripped"];
+}
+
+const errorRetryBaseDelayMs = 1_000;
+const errorRetryMaxDelayMs = 8_000;
+
 export interface UseCodingSessionChatOptions {
   chatApi: string;
   initialPrompt?: string;
@@ -114,6 +141,7 @@ export interface UseCodingSessionChatOptions {
   allowedTools?: readonly CodingToolName[];
   permissionRules?: PermissionRules;
   sandbox?: SandboxConfig;
+  autoContinue?: AutoContinueOptions;
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -220,25 +248,28 @@ function isTodoWriteOutput(
   );
 }
 
-function normalizeChatErrorMessage(message: string) {
-  const normalized = message.toLowerCase();
+const disconnectErrorPattern =
+  /(failed to fetch|networkerror|socket|connection|aborted|terminated|timed?\s?out|timeout|econnreset)/i;
+const transientProviderErrorPattern =
+  /(rate.?limit|too many requests|\b429\b|overloaded|quota)/i;
 
-  if (
-    normalized.includes("failed to fetch") ||
-    normalized.includes("networkerror") ||
-    normalized.includes("socket") ||
-    normalized.includes("connection") ||
-    normalized.includes("aborted") ||
-    normalized.includes("terminated")
-  ) {
+function normalizeChatErrorMessage(message: string) {
+  if (disconnectErrorPattern.test(message)) {
     return recoverableDisconnectMessage;
   }
 
   return message;
 }
 
+/**
+ * Transient failures (network drops, timeouts, rate limits, overload) are
+ * retried automatically with backoff; only hard failures surface.
+ */
 function isRecoverableChatErrorMessage(message: string) {
-  return normalizeChatErrorMessage(message) === recoverableDisconnectMessage;
+  return (
+    disconnectErrorPattern.test(message) ||
+    transientProviderErrorPattern.test(message)
+  );
 }
 
 function isRetryCommand(input: string) {
@@ -466,8 +497,12 @@ export function useCodingSessionChat({
   allowedTools,
   permissionRules,
   sandbox,
+  autoContinue,
 }: UseCodingSessionChatOptions) {
   const submittedInitialPromptRef = useRef<string | null>(null);
+  // Groups file edits by user turn so /undo can revert one turn at a time.
+  const turnCounterRef = useRef(0);
+  const turnKeyRef = useRef(`turn-${Date.now()}-0`);
   const modeRef = useRef(mode);
   const cwdRef = useRef(cwd);
   const permissionModeRef = useRef(permissionMode);
@@ -482,6 +517,47 @@ export function useCodingSessionChat({
   const [pendingApprovals, setPendingApprovals] = useState<PendingToolApproval[]>([]);
   const [pendingUserPrompts, setPendingUserPrompts] = useState<PendingUserPrompt[]>([]);
   const [todos, setTodos] = useState<TodoItem[]>([]);
+  const [autoContinueState, setAutoContinueState] =
+    useState<AutoContinueState | null>(null);
+
+  const autoContinueLimits = {
+    enabled: autoContinue?.enabled ?? defaultAutoContinueLimits.enabled,
+    maxAutoContinues:
+      autoContinue?.maxAutoContinues ?? defaultAutoContinueLimits.maxAutoContinues,
+  };
+  const maxErrorRetries = autoContinue?.maxErrorRetries ?? 5;
+  const stallTimeoutMs = (autoContinue?.stallTimeoutSeconds ?? 120) * 1_000;
+  const autoContinueLimitsRef = useRef(autoContinueLimits);
+  autoContinueLimitsRef.current = autoContinueLimits;
+  const maxErrorRetriesRef = useRef(maxErrorRetries);
+  maxErrorRetriesRef.current = maxErrorRetries;
+  const stallTimeoutMsRef = useRef(stallTimeoutMs);
+  stallTimeoutMsRef.current = stallTimeoutMs;
+  // Timestamp of the most recent streaming activity (any messages update).
+  const lastStreamActivityRef = useRef(Date.now());
+  // Guards against the error-retry effect double-firing during a stall abort.
+  const stallRecoveryInFlightRef = useRef(false);
+  // Continuations/nudges sent since the last real user message.
+  const autoContinuesRef = useRef(0);
+  // Transport-error retries in the current error episode.
+  const errorRetriesRef = useRef(0);
+  const errorRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Message id of the assistant response we already decided on, so the
+  // ready-state effect fires once per response.
+  const lastDecidedAssistantIdRef = useRef<string | null>(null);
+
+  const advanceTurnKey = useCallback(() => {
+    turnCounterRef.current += 1;
+    turnKeyRef.current = `turn-${Date.now()}-${turnCounterRef.current}`;
+    autoContinuesRef.current = 0;
+    errorRetriesRef.current = 0;
+    lastDecidedAssistantIdRef.current = null;
+    if (errorRetryTimerRef.current) {
+      clearTimeout(errorRetryTimerRef.current);
+      errorRetryTimerRef.current = null;
+    }
+    setAutoContinueState(null);
+  }, []);
 
   modeRef.current = mode;
   cwdRef.current = cwd;
@@ -544,6 +620,7 @@ export function useCodingSessionChat({
     clearError,
     error,
     status,
+    stop,
   } =
     useChat<UIMessage>({
       id: sessionId,
@@ -680,15 +757,18 @@ export function useCodingSessionChat({
           const output = await executeCodingTool(
             toolName,
             parsedInput,
-            buildExecutionOptions({
-              mode,
-              cwd,
-              sessionId,
-              permissionMode,
-              allowedTools,
-              permissionRules,
-              sandbox,
-            }),
+            {
+              ...buildExecutionOptions({
+                mode,
+                cwd,
+                sessionId,
+                permissionMode,
+                allowedTools,
+                permissionRules,
+                sandbox,
+              }),
+              turnKey: turnKeyRef.current,
+            },
           );
           if (isTodoWriteOutput(toolName, output)) {
             setTodos(output.todos);
@@ -722,16 +802,19 @@ export function useCodingSessionChat({
         const output = await executeCodingTool(
           approval.toolName,
           approval.input,
-          buildExecutionOptions({
-            mode,
-            cwd,
-            sessionId,
-            permissionMode,
-            allowedTools,
-            permissionRules,
-            approved: true,
-            sandbox,
-          }),
+          {
+            ...buildExecutionOptions({
+              mode,
+              cwd,
+              sessionId,
+              permissionMode,
+              allowedTools,
+              permissionRules,
+              approved: true,
+              sandbox,
+            }),
+            turnKey: turnKeyRef.current,
+          },
         );
         if (isTodoWriteOutput(approval.toolName, output)) {
           setTodos(output.todos);
@@ -936,6 +1019,196 @@ export function useCodingSessionChat({
     setMessages,
   ]);
 
+  // A new stream starting means the previous error episode is over.
+  useEffect(() => {
+    if (status === "streaming") {
+      errorRetriesRef.current = 0;
+    }
+  }, [status]);
+
+  // Any messages update while a request is active counts as stream activity.
+  useEffect(() => {
+    if (status === "streaming" || status === "submitted") {
+      lastStreamActivityRef.current = Date.now();
+    }
+  }, [messages, status]);
+
+  // Stall watchdog: a request that produces no chunks for stallTimeoutMs is
+  // dead (provider/network hang) — abort it and retry automatically instead
+  // of waiting minutes for a fetch timeout.
+  useEffect(() => {
+    if (status !== "streaming" && status !== "submitted") {
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      if (
+        !shouldTreatAsStalled({
+          lastActivityAt: lastStreamActivityRef.current,
+          now: Date.now(),
+          stallTimeoutMs: stallTimeoutMsRef.current,
+        })
+      ) {
+        return;
+      }
+
+      if (
+        stallRecoveryInFlightRef.current ||
+        errorRetriesRef.current >= maxErrorRetriesRef.current
+      ) {
+        return;
+      }
+
+      stallRecoveryInFlightRef.current = true;
+      errorRetriesRef.current += 1;
+      setAutoContinueState({
+        attempt: errorRetriesRef.current,
+        kind: "retry-error",
+      });
+
+      void (async () => {
+        try {
+          await stop();
+          setMessages((current) =>
+            trimIncompleteTrailingAssistantMessages(current),
+          );
+          clearError();
+          setToolExecutionError(null);
+          await sendMessage();
+        } finally {
+          stallRecoveryInFlightRef.current = false;
+        }
+      })();
+    }, 15_000);
+
+    return () => clearInterval(intervalId);
+  }, [clearError, sendMessage, setMessages, status, stop]);
+
+  // Fully automatic continuation: when a response ends but the task is not
+  // done (output truncated, unparsed tool intent, unfinished todos, or text
+  // that announces more work), keep the agent going without user action.
+  useEffect(() => {
+    if (status !== "ready" || error) {
+      return;
+    }
+
+    if (
+      isHistoryLoading ||
+      pendingApprovals.length > 0 ||
+      pendingUserPrompts.length > 0 ||
+      hasUnresolvedToolParts(messages)
+    ) {
+      return;
+    }
+
+    const lastMessage = messages[messages.length - 1];
+    if (!lastMessage || lastMessage.role !== "assistant") {
+      return;
+    }
+
+    if (lastDecidedAssistantIdRef.current === lastMessage.id) {
+      return;
+    }
+    lastDecidedAssistantIdRef.current = lastMessage.id;
+
+    const decision = decideAutoContinue({
+      messages,
+      todos,
+      autoContinuesThisTurn: autoContinuesRef.current,
+      limits: autoContinueLimitsRef.current,
+    });
+
+    if (decision.guardTripped) {
+      setAutoContinueState({
+        attempt: autoContinuesRef.current,
+        kind: "none",
+        guardTripped: decision.guardTripped,
+      });
+      return;
+    }
+
+    if (decision.kind === "none" || !decision.prompt) {
+      setAutoContinueState(null);
+      return;
+    }
+
+    autoContinuesRef.current += 1;
+    setAutoContinueState({
+      attempt: autoContinuesRef.current,
+      kind: decision.kind,
+    });
+    void sendMessage({
+      text: decision.prompt,
+      metadata: { autoContinue: true },
+    });
+  }, [
+    error,
+    isHistoryLoading,
+    messages,
+    pendingApprovals.length,
+    pendingUserPrompts.length,
+    sendMessage,
+    status,
+    todos,
+  ]);
+
+  // Recoverable transport errors retry automatically with backoff; the user
+  // never has to type /retry.
+  useEffect(() => {
+    if (!error?.message || !isRecoverableChatErrorMessage(error.message)) {
+      return;
+    }
+
+    if (
+      pendingApprovals.length > 0 ||
+      pendingUserPrompts.length > 0 ||
+      errorRetryTimerRef.current ||
+      stallRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+
+    if (errorRetriesRef.current >= maxErrorRetriesRef.current) {
+      return;
+    }
+
+    const retryMessages = trimIncompleteTrailingAssistantMessages(messages);
+    if (hasUnresolvedToolParts(retryMessages)) {
+      return;
+    }
+
+    const attempt = errorRetriesRef.current + 1;
+    const delay = Math.min(
+      errorRetryBaseDelayMs * 2 ** (attempt - 1),
+      errorRetryMaxDelayMs,
+    );
+
+    errorRetryTimerRef.current = setTimeout(() => {
+      errorRetryTimerRef.current = null;
+      errorRetriesRef.current = attempt;
+      setAutoContinueState({ attempt, kind: "retry-error" });
+      setMessages(retryMessages);
+      clearError();
+      setToolExecutionError(null);
+      void sendMessage();
+    }, delay);
+
+    return () => {
+      if (errorRetryTimerRef.current) {
+        clearTimeout(errorRetryTimerRef.current);
+        errorRetryTimerRef.current = null;
+      }
+    };
+  }, [
+    clearError,
+    error?.message,
+    messages,
+    pendingApprovals.length,
+    pendingUserPrompts.length,
+    sendMessage,
+    setMessages,
+  ]);
+
   const submitInput = useCallback(
     (text: string) => {
       if (canRetryRecoverableResponse && isRetryCommand(text)) {
@@ -968,9 +1241,11 @@ export function useCodingSessionChat({
       }
 
       setToolExecutionError(null);
+      advanceTurnKey();
       void sendMessage({ text });
     },
     [
+      advanceTurnKey,
       pendingApprovals.length,
       pendingUserPrompts.length,
       canRetryRecoverableResponse,
@@ -989,9 +1264,10 @@ export function useCodingSessionChat({
       }
 
       setToolExecutionError(null);
+      advanceTurnKey();
       void sendMessage({ text: messageText });
     },
-    [sendMessage],
+    [advanceTurnKey, sendMessage],
   );
 
   useEffect(() => {
@@ -1038,7 +1314,15 @@ export function useCodingSessionChat({
           return;
         }
 
-        setMessagesRef.current(validatedMessages);
+        // A session that crashed mid-stream may end with an incomplete
+        // assistant message; trim it so resume starts from a clean state.
+        // Keep it when pending interactions reference its tool calls.
+        const resumableMessages =
+          restoredApprovals.length === 0 && restoredPrompts.length === 0
+            ? trimIncompleteTrailingAssistantMessages(validatedMessages)
+            : validatedMessages;
+
+        setMessagesRef.current(resumableMessages);
         setPendingApprovals(restoredApprovals);
         setPendingUserPrompts(restoredPrompts);
       } catch (historyLoadError) {
@@ -1157,12 +1441,23 @@ export function useCodingSessionChat({
   const isStreaming =
     status === "submitted" || status === "streaming" || hasActiveToolWork;
   const isLoading = isHistoryLoading || isStreaming;
+  // Recoverable errors stay invisible while automatic retries remain; the
+  // status line is the only signal. Hard failures (or exhausted retries)
+  // surface normally.
+  const recoverableRetryPending = Boolean(
+    error?.message &&
+      isRecoverableChatErrorMessage(error.message) &&
+      errorRetriesRef.current < maxErrorRetriesRef.current,
+  );
   const errorMessage =
     historyError ??
     toolExecutionError ??
-    (error?.message ? normalizeChatErrorMessage(error.message) : null);
+    (error?.message && !recoverableRetryPending
+      ? normalizeChatErrorMessage(error.message)
+      : null);
 
   return {
+    autoContinueState,
     errorMessage,
     isHistoryLoading,
     isLoading,

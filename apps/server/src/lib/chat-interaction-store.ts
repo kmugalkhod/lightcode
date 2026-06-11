@@ -1,4 +1,5 @@
-import { Prisma } from "@lightcode/db/types";
+import { Database } from "bun:sqlite";
+import { fileURLToPath } from "node:url";
 import {
   chatInteractionListResponseSchema,
   chatInteractionListQuerySchema,
@@ -14,27 +15,12 @@ import {
   type ChatInteractionStatus,
   type ChatInteractionUpsertRequest,
 } from "@lightcode/ai";
-import { prisma } from "./prisma-client";
-
-const chatInteractionSelect = {
-  id: true,
-  sessionId: true,
-  toolCallId: true,
-  kind: true,
-  status: true,
-  payload: true,
-  response: true,
-  resolvedAt: true,
-  createdAt: true,
-  updatedAt: true,
-} satisfies Prisma.ChatInteractionSelect;
-
-type ChatInteractionRecord = Prisma.ChatInteractionGetPayload<{
-  select: typeof chatInteractionSelect;
-}>;
-
-type JsonPrimitive = string | number | boolean | null;
-type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+import {
+  filePathFromDatabaseUrl,
+  getDefaultDatabasePath,
+  initializeLocalDatabase,
+  resolveDatabaseUrl,
+} from "@lightcode/db/local-database";
 
 export class ChatInteractionNotFoundError extends Error {
   constructor(toolCallId: string) {
@@ -42,6 +28,36 @@ export class ChatInteractionNotFoundError extends Error {
     this.name = "ChatInteractionNotFoundError";
   }
 }
+
+// Singleton database instance — initialized once and closed on process exit
+let _db: Database | null = null;
+let _initialized = false;
+
+function getDatabase(): Database {
+  if (!_initialized) {
+    const dbUrl = resolveDatabaseUrl();
+    initializeLocalDatabase(dbUrl);
+    _initialized = true;
+  }
+
+  if (!_db) {
+    const dbUrl = process.env.DATABASE_URL ?? getDefaultDatabasePath();
+    const dbPath = filePathFromDatabaseUrl(dbUrl) ?? (dbUrl.startsWith("file:") ? dbUrl.slice(5) : dbUrl);
+
+    _db = new Database(dbPath as string);
+  }
+
+  return _db;
+}
+
+// Close the database on process exit to avoid connection leaks
+process.on("exit", () => {
+  _db?.close();
+  _db = null;
+});
+
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -68,60 +84,38 @@ function isJsonValue(value: unknown): value is JsonValue {
   return false;
 }
 
-function isPrismaInputJsonValue(value: unknown): value is Prisma.InputJsonValue {
-  if (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return true;
-  }
-
-  if (Array.isArray(value)) {
-    return value.every((entry) => isJsonValue(entry));
-  }
-
-  if (isRecord(value)) {
-    return Object.values(value).every((entry) => isJsonValue(entry));
-  }
-
-  return false;
+function safeStringifyJson(value: unknown): string {
+  return JSON.stringify(value, (_, v) => {
+    if (isJsonValue(v)) return v;
+    return "[unserializable]";
+  });
 }
 
-function toPrismaJsonValue(value: unknown): Prisma.InputJsonValue {
-  const serialized = JSON.parse(JSON.stringify(value));
-
-  if (!isPrismaInputJsonValue(serialized)) {
-    throw new Error("Unable to serialize chat interaction payload to JSON.");
-  }
-
-  return serialized;
+interface ChatInteractionRow {
+  id: string;
+  session_id: string;
+  tool_call_id: string;
+  kind: string;
+  status: string;
+  payload: string;
+  response: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
-function toPrismaNullableJsonValue(value: unknown) {
-  if (value === null || value === undefined) {
-    return Prisma.JsonNull;
-  }
-
-  return toPrismaJsonValue(value);
-}
-
-function toIsoString(value: Date | null): string | null {
-  return value ? value.toISOString() : null;
-}
-
-function toChatInteraction(record: ChatInteractionRecord): ChatInteraction {
+function toChatInteraction(row: ChatInteractionRow): ChatInteraction {
   return chatInteractionSchema.parse({
-    id: record.id,
-    sessionId: record.sessionId,
-    toolCallId: record.toolCallId,
-    kind: record.kind,
-    status: record.status,
-    payload: record.payload,
-    response: record.response ?? null,
-    resolvedAt: toIsoString(record.resolvedAt),
-    createdAt: record.createdAt.toISOString(),
-    updatedAt: record.updatedAt.toISOString(),
+    id: row.id,
+    sessionId: row.session_id,
+    toolCallId: row.tool_call_id,
+    kind: row.kind,
+    status: row.status,
+    payload: JSON.parse(row.payload),
+    response: row.response ? JSON.parse(row.response) : null,
+    resolvedAt: row.resolved_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   });
 }
 
@@ -131,16 +125,16 @@ async function findChatInteraction({
 }: {
   sessionId: string;
   toolCallId: string;
-}) {
-  return prisma.chatInteraction.findUnique({
-    where: {
-      sessionId_toolCallId: {
-        sessionId,
-        toolCallId,
-      },
-    },
-    select: chatInteractionSelect,
-  });
+}): Promise<ChatInteractionRow | null> {
+  const db = getDatabase();
+  const row = db
+    .query<ChatInteractionRow, [string, string]>(
+      `SELECT * FROM chat_interactions 
+       WHERE session_id = ? AND tool_call_id = ? 
+       LIMIT 1`
+    )
+    .get(sessionId, toolCallId);
+  return row ?? null;
 }
 
 export async function upsertChatInteraction({
@@ -151,39 +145,45 @@ export async function upsertChatInteraction({
 } & ChatInteractionUpsertRequest): Promise<ChatInteraction> {
   const validatedSessionId = sessionIdSchema.parse(sessionId);
   const input = chatInteractionUpsertRequestSchema.parse(rawInput);
+
+  const db = getDatabase();
   const existing = await findChatInteraction({
     sessionId: validatedSessionId,
     toolCallId: input.toolCallId,
   });
 
-  if (existing && isTerminalChatInteractionStatus(existing.status)) {
+  if (existing && isTerminalChatInteractionStatus(existing.status as ChatInteractionStatus)) {
     return toChatInteraction(existing);
   }
 
-  const data = {
-    kind: input.kind,
-    status: "pending" as const,
-    payload: toPrismaJsonValue(input.payload),
-    response: Prisma.JsonNull,
-    resolvedAt: null,
-  };
+  const now = new Date().toISOString();
+  const payload = safeStringifyJson(input.payload);
 
-  const record = existing
-    ? await prisma.chatInteraction.update({
-        where: { id: existing.id },
-        data,
-        select: chatInteractionSelect,
-      })
-    : await prisma.chatInteraction.create({
-        data: {
-          sessionId: validatedSessionId,
-          toolCallId: input.toolCallId,
-          ...data,
-        },
-        select: chatInteractionSelect,
-      });
+  if (existing) {
+    db.query(
+      `UPDATE chat_interactions 
+       SET kind = ?, status = ?, payload = ?, response = NULL, 
+           resolved_at = NULL, updated_at = ? 
+       WHERE id = ?`
+    ).run(input.kind, "pending", payload, now, existing.id);
 
-  return toChatInteraction(record);
+    const updated = db
+      .query<ChatInteractionRow, [string]>("SELECT * FROM chat_interactions WHERE id = ?")
+      .get(existing.id);
+    return toChatInteraction(updated!);
+  }
+
+  const id = crypto.randomUUID();
+  db.query(
+    `INSERT INTO chat_interactions 
+       (id, session_id, tool_call_id, kind, status, payload, response, resolved_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'pending', ?, NULL, NULL, ?, ?)`
+  ).run(id, validatedSessionId, input.toolCallId, input.kind, payload, now, now);
+
+  const inserted = db
+    .query<ChatInteractionRow, [string]>("SELECT * FROM chat_interactions WHERE id = ?")
+    .get(id);
+  return toChatInteraction(inserted!);
 }
 
 export async function resolveChatInteraction({
@@ -196,6 +196,8 @@ export async function resolveChatInteraction({
 } & ChatInteractionResolveRequest): Promise<ChatInteraction> {
   const validatedSessionId = sessionIdSchema.parse(sessionId);
   const input = chatInteractionResolveRequestSchema.parse(rawInput);
+
+  const db = getDatabase();
   const existing = await findChatInteraction({
     sessionId: validatedSessionId,
     toolCallId,
@@ -205,21 +207,23 @@ export async function resolveChatInteraction({
     throw new ChatInteractionNotFoundError(toolCallId);
   }
 
-  if (isTerminalChatInteractionStatus(existing.status)) {
+  if (isTerminalChatInteractionStatus(existing.status as ChatInteractionStatus)) {
     return toChatInteraction(existing);
   }
 
-  const record = await prisma.chatInteraction.update({
-    where: { id: existing.id },
-    data: {
-      status: input.status,
-      response: toPrismaNullableJsonValue(input.response),
-      resolvedAt: new Date(),
-    },
-    select: chatInteractionSelect,
-  });
+  const now = new Date().toISOString();
+  const response = input.response !== undefined ? safeStringifyJson(input.response) : null;
 
-  return toChatInteraction(record);
+  db.query(
+    `UPDATE chat_interactions 
+     SET status = ?, response = ?, resolved_at = ?, updated_at = ? 
+     WHERE id = ?`
+  ).run(input.status, response, now, now, existing.id);
+
+  const updated = db
+    .query<ChatInteractionRow, [string]>("SELECT * FROM chat_interactions WHERE id = ?")
+    .get(existing.id);
+  return toChatInteraction(updated!);
 }
 
 export async function listChatInteractions({
@@ -232,18 +236,29 @@ export async function listChatInteractions({
   kind?: ChatInteractionKind;
 }) {
   const query = chatInteractionListQuerySchema.parse({ status, kind });
-  const records = await prisma.chatInteraction.findMany({
-    where: {
-      sessionId: sessionIdSchema.parse(sessionId),
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.kind ? { kind: query.kind } : {}),
-    },
-    orderBy: [{ createdAt: "asc" }],
-    select: chatInteractionSelect,
-  });
+  const db = getDatabase();
+
+  let sql = `SELECT * FROM chat_interactions WHERE session_id = ?`;
+  const params: string[] = [sessionIdSchema.parse(sessionId)];
+
+  if (query.status) {
+    sql += ` AND status = ?`;
+    params.push(query.status);
+  }
+
+  if (query.kind) {
+    sql += ` AND kind = ?`;
+    params.push(query.kind);
+  }
+
+  sql += ` ORDER BY created_at ASC`;
+
+  const rows = db
+    .query<ChatInteractionRow, string[]>(sql)
+    .all(...params);
 
   return chatInteractionListResponseSchema.parse({
-    interactions: records.map(toChatInteraction),
+    interactions: rows.map(toChatInteraction),
   });
 }
 
@@ -252,18 +267,30 @@ export async function summarizePendingChatInteractions({
 }: {
   staleAfterMs?: number;
 } = {}): Promise<ChatInteractionPendingSummary> {
-  const staleBefore = new Date(Date.now() - staleAfterMs);
-  const [toolApprovals, userPrompts, stale] = await Promise.all([
-    prisma.chatInteraction.count({
-      where: { status: "pending", kind: "tool_approval" },
-    }),
-    prisma.chatInteraction.count({
-      where: { status: "pending", kind: "user_prompt" },
-    }),
-    prisma.chatInteraction.count({
-      where: { status: "pending", updatedAt: { lt: staleBefore } },
-    }),
-  ]);
+  const db = getDatabase();
+  const staleBefore = new Date(Date.now() - staleAfterMs).toISOString();
+
+  const toolApprovals = db
+    .query<{ count: number }, [string, string]>(
+      `SELECT COUNT(*) as count FROM chat_interactions 
+       WHERE status = ? AND kind = ?`
+    )
+    .get("pending", "tool_approval")!.count;
+
+  const userPrompts = db
+    .query<{ count: number }, [string, string]>(
+      `SELECT COUNT(*) as count FROM chat_interactions 
+       WHERE status = ? AND kind = ?`
+    )
+    .get("pending", "user_prompt")!.count;
+
+  const stale = db
+    .query<{ count: number }, [string, string]>(
+      `SELECT COUNT(*) as count FROM chat_interactions 
+       WHERE status = ? AND updated_at < ?`
+    )
+    .get("pending", staleBefore)!.count;
+
   const total = toolApprovals + userPrompts;
 
   return {

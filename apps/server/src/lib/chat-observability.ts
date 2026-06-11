@@ -1,3 +1,5 @@
+import { createLogger, getErrorMessage } from "@lightcode/shared";
+
 export type ChatFailureClass =
   | "provider_schema_rejection"
   | "provider_billing_quota"
@@ -15,17 +17,9 @@ const chatFailureCounters: Record<ChatFailureClass, number> = {
 
 export type ChatWriteLogPhase = "pre-stream" | "finish";
 
-export function getErrorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return error.message;
-  }
+const logger = createLogger("chat");
 
-  if (typeof error === "string") {
-    return error;
-  }
-
-  return "Unknown error";
-}
+export { getErrorMessage };
 
 function normalizeErrorMessage(message: string) {
   return message.toLowerCase();
@@ -79,15 +73,12 @@ export function logChatWriteEvent({
   phase: ChatWriteLogPhase;
   staleSkip: boolean;
 }) {
-  console.info(
-    JSON.stringify({
-      event: "chat_write",
-      sessionId,
-      revision,
-      phase,
-      staleSkip,
-    })
-  );
+  logger.info("chat_write", {
+    sessionId,
+    revision,
+    phase,
+    staleSkip,
+  });
 }
 
 export function incrementChatFailureCounter(
@@ -96,14 +87,11 @@ export function incrementChatFailureCounter(
 ) {
   chatFailureCounters[failureClass] += 1;
 
-  console.warn(
-    JSON.stringify({
-      event: "chat_failure",
-      failureClass,
-      count: chatFailureCounters[failureClass],
-      ...context,
-    })
-  );
+  logger.warn("chat_failure", {
+    failureClass,
+    count: chatFailureCounters[failureClass],
+    ...context,
+  });
 }
 
 export function logChatDisconnectEvent({
@@ -115,13 +103,10 @@ export function logChatDisconnectEvent({
   phase: ChatWriteLogPhase | "stream";
   error: unknown;
 }) {
-  console.warn(
-    JSON.stringify({
-      event: "chat_disconnect",
-      sessionId,
-      phase,
-      disconnect: true,
-      message: getErrorMessage(error),
-    })
-  );
+  logger.warn("chat_disconnect", {
+    sessionId,
+    phase,
+    disconnect: true,
+    message: getErrorMessage(error),
+  });
 }

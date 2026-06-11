@@ -19,7 +19,7 @@ import {
   type DiagnosticsTool,
   type DiagnosticsToolSummary,
 } from "@lightcode/ai";
-import { productName } from "@lightcode/shared";
+import { getErrorMessage, productName } from "@lightcode/shared";
 import { listChatSessions } from "../lib/chat-store";
 import { summarizePendingChatInteractions } from "../lib/chat-interaction-store";
 import { prisma } from "../lib/prisma-client";
@@ -29,10 +29,6 @@ import {
   resolvedProviderModel,
 } from "../lib/runtime-config";
 import { getExtensionRuntimeStatus } from "../lib/extension-runtime";
-
-function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unknown error.";
-}
 
 function combineStatuses(statuses: DiagnosticStatus[]): DiagnosticStatus {
   if (statuses.includes("error")) {

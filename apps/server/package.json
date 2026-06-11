@@ -12,13 +12,13 @@
     "typecheck": "bunx tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.77",
-    "@ai-sdk/openai-compatible": "^2.0.48",
-    "@hono/zod-validator": "^0.8.0",
+    "@ai-sdk/anthropic": "3.0.77",
+    "@ai-sdk/openai-compatible": "2.0.48",
+    "@hono/zod-validator": "0.8.0",
     "@lightcode/ai": "workspace:*",
     "@lightcode/db": "workspace:*",
     "@lightcode/shared": "workspace:*",
-    "ai": "^6.0.182",
+    "ai": "6.0.182",
     "hono": "latest",
     "zod": "^4.4.3"
   }

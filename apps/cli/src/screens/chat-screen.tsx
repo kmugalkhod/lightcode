@@ -1,21 +1,32 @@
 import {
   codingAgentModes,
   chatInteractionListResponseSchema,
+  collectMessageText,
   cycleCodingAgentMode,
   defaultCodingAgentMode,
   type ChatInteractionResolveRequest,
   type ChatInteractionUpsertRequest,
   type PermissionMode,
+  type SessionContextState,
+  sessionContextResponseSchema,
   sessionMessagesResponseSchema,
   sessionPathParamsSchema,
 } from "@lightcode/ai";
 import { useCodingSessionChat } from "@lightcode/ai/react";
 import { useKeyboard } from "@opentui/react";
 import type { UIMessage } from "ai";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
+import {
+  findChatSlashAction,
+  getChatSlashActionById,
+  type ChatActionTone,
+  type ChatSlashActionDefinition,
+} from "../commands/chat-slash-actions";
+import { getSlashMenuItems } from "../commands/slash-menu-items";
 import { SlashPageMenu } from "../commands/slash-page-menu";
 import {
+  ChatContextStateCard,
   ChatContextSummaryCard,
   isContextSummaryMessage,
 } from "../components/chat/chat-context-summary-card";
@@ -26,10 +37,13 @@ import {
 } from "../components/chat/chat-interaction-popup";
 import { ChatMessage } from "../components/chat/chat-message";
 import { ChatShell } from "../components/chat/chat-shell";
+import { PermissionModeSelector } from "../components/chat/permission-mode-selector";
 import { ChatTextArea } from "../components/chat/chat-text-area";
 import { ChatTodoStatusCard } from "../components/chat/chat-todo-status-card";
 import { ChatToolApprovalCard } from "../components/chat/chat-tool-approval-card";
 import { LoadingTimer } from "../components/chat/loading-timer";
+import { useAutoContinueConfig } from "../hooks/use-auto-continue-config";
+import { useContextWindow } from "../hooks/use-context-window";
 import { useLoadingTimer } from "../hooks/use-loading-timer";
 import { client } from "../lib/client";
 import {
@@ -39,7 +53,8 @@ import {
 import { coerceSessionRouteLocationState } from "../navigation/route-state";
 import { useAppState } from "../state/app-state";
 import { cliTheme } from "../ui/cli-theme";
-import { collectMessageText, estimateContextUsage } from "../utils/chat-context-utils";
+import { estimateContextUsage } from "../utils/chat-context-utils";
+import { appendMentionAttachments } from "../utils/file-mentions";
 
 const autoImplementationInstruction =
   "Please implement the approved plan now. Execute the work end-to-end and summarize completed changes.";
@@ -116,6 +131,32 @@ function hasProposedPlanBlock(message: UIMessage): boolean {
   return containsProposedPlanBlock(collectMessageText(message));
 }
 
+// Matches textual tool-call blocks (any dialect the middleware understands) like:
+// <tool_call>{"name":"read_file","parameters":{...}}</tool_call>
+// <function_call>{"name":"bash","arguments":{...}}</function_call>
+// <invoke name="read_file">, <function=bash>, DeepSeek <｜tool▁call▁begin｜> markers
+const TOOL_CALL_XML_RE =
+  /<(?:tool_call|function_call)>|<invoke\s+name=|<function=[\w.-]+>|<｜tool▁call(?:s)?▁begin｜>/i;
+
+function hasToolCallXmlLeak(message: UIMessage): boolean {
+  // Reset regex state to ensure consistent matching
+  TOOL_CALL_XML_RE.lastIndex = 0;
+  return TOOL_CALL_XML_RE.test(collectMessageText(message));
+}
+
+/**
+ * Synthetic loop messages (auto-continue, nudges, stall retries) stay in
+ * history for the model but are never rendered — limit handling is internal.
+ */
+function isAutoContinueMessage(message: UIMessage): boolean {
+  return (
+    message.role === "user" &&
+    typeof message.metadata === "object" &&
+    message.metadata !== null &&
+    Reflect.get(message.metadata, "autoContinue") === true
+  );
+}
+
 export function ChatScreen() {
   const routeParams = useParams();
   const location = useLocation();
@@ -128,6 +169,8 @@ export function ChatScreen() {
     setSlashMenuSelected,
     openSlashMenu,
     closeSlashMenu,
+    requestedChatActionId,
+    clearRequestedChatAction,
   } = useAppState();
 
   const parsedRouteParams = useMemo(
@@ -151,7 +194,15 @@ export function ChatScreen() {
   const [planConfirmationMessageId, setPlanConfirmationMessageId] = useState<string | null>(null);
   const [handledPlanMessageIds, setHandledPlanMessageIds] = useState<string[]>([]);
   const [queuedImplementationInstruction, setQueuedImplementationInstruction] = useState<string | null>(null);
-  const slashRoutes = getSlashPageRoutes(slashMenuQuery);
+  const [contextState, setContextState] = useState<SessionContextState | null>(null);
+  const [actionNotice, setActionNotice] = useState<{
+    text: string;
+    tone: ChatActionTone;
+  } | null>(null);
+  const [permissionSelectorOpen, setPermissionSelectorOpen] = useState(false);
+  const slashRoutes = getSlashMenuItems(slashMenuQuery, {
+    includeChatActions: true,
+  });
   const selectedSlashRouteIndex = Math.min(
     slashMenuSelected,
     Math.max(slashRoutes.length - 1, 0),
@@ -201,6 +252,8 @@ export function ChatScreen() {
     setPlanConfirmationMessageId(null);
     setHandledPlanMessageIds([]);
     setQueuedImplementationInstruction(null);
+    setContextState(null);
+    setActionNotice(null);
   }, [sessionId]);
 
   const chatApi = useMemo(() => {
@@ -225,6 +278,8 @@ export function ChatScreen() {
     if (!parsedPayload.success) {
       throw new Error("Server returned an invalid chat history response.");
     }
+
+    setContextState(parsedPayload.data.contextState ?? null);
 
     const persistedSession = parsedPayload.data.session;
     if (persistedSession) {
@@ -302,7 +357,9 @@ export function ChatScreen() {
     [sessionId],
   );
 
+  const autoContinueConfig = useAutoContinueConfig();
   const {
+    autoContinueState,
     messages,
     pendingApprovals,
     pendingUserPrompts,
@@ -329,9 +386,133 @@ export function ChatScreen() {
     cwd: process.cwd(),
     mode,
     permissionMode,
+    autoContinue: autoContinueConfig,
   });
 
   const elapsedSeconds = useLoadingTimer(isLoading || isStreaming);
+  const contextWindow = useContextWindow();
+  const [mentionCandidates, setMentionCandidates] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadMentionCandidates() {
+      try {
+        const { createWorkspaceContext, executeGlobSearch } = await import(
+          "@lightcode/ai/runtime"
+        );
+        const output = await executeGlobSearch(
+          { pattern: "**/*", maxResults: 200 },
+          createWorkspaceContext(process.cwd()),
+        );
+        if (!cancelled) {
+          setMentionCandidates(
+            output.matches
+              .filter((match) => match.type === "file")
+              .map((match) => match.path),
+          );
+        }
+      } catch {
+        // The mention picker simply stays empty.
+      }
+    }
+
+    void loadMentionCandidates();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const refreshContextState = useCallback(async () => {
+    try {
+      const response = await client.sessions[":id"].context.$get({
+        param: { id: sessionId },
+      });
+      if (!response.ok) {
+        return;
+      }
+
+      const parsed = sessionContextResponseSchema.safeParse(await response.json());
+      if (parsed.success) {
+        setContextState(parsed.data.contextState);
+      }
+    } catch {
+      // Context state is cosmetic; ignore refresh failures.
+    }
+  }, [sessionId]);
+
+  // Auto-compaction happens server-side during streaming; refresh the stored
+  // context state whenever a stream finishes so the card stays accurate.
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    if (wasStreamingRef.current && !isStreaming) {
+      void refreshContextState();
+    }
+    wasStreamingRef.current = isStreaming;
+  }, [isStreaming, refreshContextState]);
+
+  const notifyChatAction = useCallback(
+    (text: string, tone: ChatActionTone = "info") => {
+      setActionNotice({ text, tone });
+    },
+    [],
+  );
+
+  const runChatSlashAction = useCallback(
+    (action: ChatSlashActionDefinition) => {
+      void action.run({
+        sessionId,
+        setContextState,
+        notify: notifyChatAction,
+        setPermissionMode: setPermissionModeToState,
+      });
+    },
+    [notifyChatAction, sessionId],
+  );
+
+  const updatePermissionMode = useCallback(
+    async (newMode: PermissionMode) => {
+      setPermissionMode(newMode);
+      setPermissionSelectorOpen(false);
+
+      try {
+        await client.sessions[":id"].$patch({
+          param: { id: sessionId },
+          json: { permissionMode: newMode },
+        });
+        notifyChatAction(`Permission mode set to: ${newMode}`);
+      } catch (error) {
+        notifyChatAction(
+          `Failed to update permission mode: ${error instanceof Error ? error.message : "unknown"}`,
+          "error",
+        );
+      }
+    },
+    [sessionId],
+  );
+
+  // Local state setter callback for chat action context
+  const setPermissionModeToState = useCallback((newMode: PermissionMode) => {
+    setPermissionMode(newMode);
+  }, []);
+
+  useEffect(() => {
+    if (!requestedChatActionId) {
+      return;
+    }
+
+    const action = getChatSlashActionById(requestedChatActionId);
+    clearRequestedChatAction();
+
+    if (action) {
+      // Special handling for permission action - open the selector instead of running
+      if (action.id === "permission") {
+        setPermissionSelectorOpen(true);
+        return;
+      }
+      runChatSlashAction(action);
+    }
+  }, [clearRequestedChatAction, requestedChatActionId, runChatSlashAction]);
 
   const getSlashRouteState = useCallback(
     (route: AnyRouteDefinition) => {
@@ -395,17 +576,44 @@ export function ChatScreen() {
 
   const submitChatInput = useCallback(
     (text: string) => {
+      const action = findChatSlashAction(text);
+      if (action) {
+        closeSlashMenu();
+        runChatSlashAction(action);
+        return;
+      }
+
       if (navigateIfSlashRoute(text)) {
         return;
       }
 
-      submitInput(text);
+      setActionNotice(null);
+      void (async () => {
+        const expandedText = await appendMentionAttachments(text, process.cwd());
+        submitInput(expandedText);
+      })();
     },
-    [navigateIfSlashRoute, submitInput],
+    [closeSlashMenu, navigateIfSlashRoute, runChatSlashAction, submitInput],
   );
 
   const modeDefinition = codingAgentModes[mode];
-  const contextEstimate = estimateContextUsage(messages);
+  const contextEstimate = estimateContextUsage(messages, contextWindow);
+  const contextMeterColor =
+    contextEstimate.level === "critical"
+      ? cliTheme.semantic.error
+      : contextEstimate.level === "warning"
+        ? cliTheme.semantic.warning
+        : cliTheme.text.muted;
+  const anchorVisibleInMessages =
+    contextState !== null &&
+    messages.some((message) => message.id === contextState.anchorMessageId);
+
+  const lastAssistantMessage = getLatestAssistantMessage(messages);
+  const modelHasToolCallXmlLeak =
+    !isLoading && !isStreaming && lastAssistantMessage
+      ? hasToolCallXmlLeak(lastAssistantMessage)
+      : false;
+
   const activeUserPrompt = pendingUserPrompts[0] ?? null;
   const pendingApprovalIds = useMemo(
     () => new Set(pendingApprovals.map((approval) => approval.toolCallId)),
@@ -469,6 +677,10 @@ export function ChatScreen() {
     setQueuedImplementationInstruction(null);
   }, [mode, queuedImplementationInstruction, sendDirectMessage]);
 
+  // Continuation after truncation/premature stops is handled inside
+  // useCodingSessionChat (auto-continue with loop guards); the screen only
+  // renders its status via autoContinueState.
+
   useKeyboard((keyEvent) => {
     const keyName = keyEvent.name.toLowerCase();
     const isPlainTab =
@@ -513,10 +725,11 @@ export function ChatScreen() {
         errorMessage={errorMessage}
         inputArea={
           <ChatTextArea
-            placeholder={isLoading ? "Waiting for response..." : "Reply..."}
+            placeholder={isLoading ? "Waiting for response..." : "Reply... (@ to attach files)"}
             focused={canTypeInChat}
             disabled={!canTypeInChat}
             slashMenuOpen={slashMenuOpen}
+            mentionCandidates={mentionCandidates}
             onTextChange={syncSlashMenuFromInput}
             beforeInput={slashMenuOpen ? (
               <SlashPageMenu
@@ -539,18 +752,26 @@ export function ChatScreen() {
                   <text fg={cliTheme.text.muted}>Tab/Ctrl+T switch mode | Ctrl+P commands</text>
                 )}
                 <box flexDirection="row" gap={1} alignItems="center">
-                  <text
-                    fg={
-                      contextEstimate.percentage >= 80
-                        ? cliTheme.semantic.warning
-                        : cliTheme.text.muted
-                    }
-                  >
+                  <text fg={contextMeterColor}>
                     {contextEstimate.displayText}
                   </text>
                   <text>
                     <span fg={cliTheme.accent.primary}>{modeDefinition.label}</span>
                     <span fg={cliTheme.text.muted}> mode</span>
+                  </text>
+                  <text>
+                    <span fg={cliTheme.semantic.warning}>|</span>
+                  </text>
+                  <text>
+                    <span fg={
+                      permissionMode === "danger-full-access"
+                        ? cliTheme.semantic.error
+                        : permissionMode === "read-only"
+                          ? cliTheme.text.muted
+                          : cliTheme.text.primary
+                    }>
+                      {permissionMode ?? "default"}
+                    </span>
                   </text>
                 </box>
               </box>
@@ -560,17 +781,74 @@ export function ChatScreen() {
           />
         }
       >
-        {messages.map((message) =>
-          isContextSummaryMessage(message) ? (
-            <ChatContextSummaryCard key={message.id} message={message} />
-          ) : (
-            <ChatMessage
-              key={message.id}
-              message={message}
-              pendingApprovalIds={pendingApprovalIds}
-            />
-          ),
-        )}
+        {contextState && !anchorVisibleInMessages ? (
+          <ChatContextStateCard contextState={contextState} />
+        ) : null}
+        {messages.map((message) => (
+          <Fragment key={message.id}>
+            {isAutoContinueMessage(message) ? null : isContextSummaryMessage(
+                message,
+              ) ? (
+              <ChatContextSummaryCard message={message} />
+            ) : (
+              <ChatMessage
+                message={message}
+                pendingApprovalIds={pendingApprovalIds}
+              />
+            )}
+            {contextState && contextState.anchorMessageId === message.id ? (
+              <ChatContextStateCard contextState={contextState} />
+            ) : null}
+          </Fragment>
+        ))}
+        {actionNotice ? (
+          <box paddingX={1}>
+            <text
+              fg={
+                actionNotice.tone === "error"
+                  ? cliTheme.semantic.error
+                  : cliTheme.semantic.info
+              }
+            >
+              {actionNotice.text}
+            </text>
+          </box>
+        ) : null}
+        {modelHasToolCallXmlLeak ? (
+          <box
+            paddingX={1}
+            paddingY={1}
+            borderStyle="single"
+            borderColor={cliTheme.semantic.warning}
+            flexDirection="column"
+            gap={1}
+          >
+            <text fg={cliTheme.semantic.warning}>
+              Model compatibility issue: this model output raw tool call XML instead of invoking tools.
+            </text>
+            <text fg={cliTheme.text.muted}>
+              Switch to a model with native function calling (Claude, GPT-4, Llama 3) via /model.
+            </text>
+          </box>
+        ) : autoContinueState?.guardTripped ? (
+          <box paddingX={1}>
+            <text fg={cliTheme.semantic.warning}>
+              {autoContinueState.guardTripped === "doom-loop"
+                ? "Agent appears stuck repeating itself — automatic continuation stopped. Send a message to resume."
+                : `Reached the automatic continuation limit (${autoContinueState.attempt}). Send a message to resume.`}
+            </text>
+          </box>
+        ) : autoContinueState ? (
+          <box paddingX={1}>
+            <text fg={cliTheme.semantic.info}>
+              {autoContinueState.kind === "continue-length"
+                ? `Output limit hit — continuing automatically (${autoContinueState.attempt})...`
+                : autoContinueState.kind === "retry-error"
+                  ? `Connection dropped — retrying automatically (${autoContinueState.attempt})...`
+                  : `Agent stopped early — continuing automatically (${autoContinueState.attempt})...`}
+            </text>
+          </box>
+        ) : null}
         {isLoading || isStreaming ? <LoadingTimer elapsedSeconds={elapsedSeconds} /> : null}
         {isStreaming ? (
           <box paddingX={1}>
@@ -678,6 +956,13 @@ export function ChatScreen() {
               setPlanConfirmationMessageId(null);
               sendDirectMessage(defaultPlanRevisionRequest);
             }}
+          />
+        ) : null}
+        {permissionSelectorOpen ? (
+          <PermissionModeSelector
+            currentMode={permissionMode}
+            onSelect={updatePermissionMode}
+            onClose={() => setPermissionSelectorOpen(false)}
           />
         ) : null}
       </ChatShell>

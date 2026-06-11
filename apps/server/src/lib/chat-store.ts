@@ -578,6 +578,131 @@ export async function listChatSessions(limit = 50): Promise<SessionSummary[]> {
   });
 }
 
+/** User-initiated rename: pins the title so auto-titling never overwrites it. */
+export async function renameChatSession(sessionId: string, title: string) {
+  const normalizedTitle = normalizeSessionTitle(title);
+
+  try {
+    const session = await prisma.chatSession.update({
+      where: { id: sessionId },
+      data: { title: normalizedTitle, autoTitled: true },
+      select: { id: true, title: true },
+    });
+    return { id: session.id, title: session.title };
+  } catch (error) {
+    if (getErrorCode(error) === "P2025") {
+      throw new SessionNotFoundError(sessionId);
+    }
+    throw error;
+  }
+}
+
+/** Updates session metadata: title and/or permission mode. */
+export async function updateSessionMetadata(
+  sessionId: string,
+  updates: { title?: string; permissionMode?: PermissionMode },
+) {
+  try {
+    const data: Prisma.ChatSessionUpdateInput = {};
+
+    if (updates.title !== undefined) {
+      data.title = normalizeSessionTitle(updates.title);
+      data.autoTitled = true;
+    }
+
+    if (updates.permissionMode !== undefined) {
+      data.permissionMode = updates.permissionMode;
+    }
+
+    const session = await prisma.chatSession.update({
+      where: { id: sessionId },
+      data,
+      select: { id: true, title: true, permissionMode: true },
+    });
+
+    return {
+      id: session.id,
+      title: session.title,
+      permissionMode: session.permissionMode,
+    };
+  } catch (error) {
+    if (getErrorCode(error) === "P2025") {
+      throw new SessionNotFoundError(sessionId);
+    }
+    throw error;
+  }
+}
+
+/** Applies an LLM-generated title unless one was already pinned. */
+export async function applyGeneratedSessionTitle(sessionId: string, title: string) {
+  const normalizedTitle = normalizeSessionTitle(title);
+
+  const updated = await prisma.chatSession.updateMany({
+    where: { id: sessionId, autoTitled: false },
+    data: { title: normalizedTitle, autoTitled: true },
+  });
+
+  return updated.count > 0;
+}
+
+/** Duplicates a session with its messages; interactions and context state regenerate. */
+export async function forkChatSession(sessionId: string): Promise<{
+  id: string;
+  copiedMessages: number;
+}> {
+  return prisma.$transaction(async (tx) => {
+    const session = await tx.chatSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        title: true,
+        cwd: true,
+        mode: true,
+        permissionMode: true,
+        model: true,
+        messages: {
+          orderBy: { sequence: "asc" },
+          select: {
+            messageId: true,
+            role: true,
+            model: true,
+            sequence: true,
+            payload: true,
+          },
+        },
+      },
+    });
+
+    if (!session) {
+      throw new SessionNotFoundError(sessionId);
+    }
+
+    const forkId = crypto.randomUUID();
+    const { messages, ...metadata } = session;
+
+    await tx.chatSession.create({
+      data: {
+        id: forkId,
+        ...metadata,
+        title: metadata.title ? `${metadata.title} (fork)` : null,
+        autoTitled: true,
+        revision: 0,
+      },
+    });
+
+    if (messages.length > 0) {
+      await tx.chatMessage.createMany({
+        data: messages.map((message) => ({
+          ...message,
+          payload: toPrismaJsonValue(message.payload),
+          sessionId: forkId,
+        })),
+      });
+    }
+
+    return { id: forkId, copiedMessages: messages.length };
+  });
+}
+
 export async function deleteChatSession(sessionId: string) {
   return prisma.$transaction(async (tx) => {
     const existingSession = await tx.chatSession.findUnique({

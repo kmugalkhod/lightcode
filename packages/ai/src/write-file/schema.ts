@@ -19,4 +19,6 @@ export const writeFileOutputSchema = z.object({
   path: z.string(),
   created: z.boolean(),
   bytesWritten: z.number().int().nonnegative(),
+  /** Unified diff against the previous content, for TUI rendering. */
+  diff: z.string().optional(),
 });

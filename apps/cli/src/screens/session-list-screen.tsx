@@ -3,6 +3,7 @@ import { useKeyboard } from "@opentui/react";
 import {
   sessionDeleteResponseSchema,
   sessionExportJsonSchema,
+  sessionForkResponseSchema,
   sessionListResponseSchema,
   type SessionSummary,
 } from "@lightcode/ai";
@@ -11,12 +12,26 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { client } from "../lib/client";
 import { BACK_SHORTCUT_LABEL } from "../commands/keymap";
+import { ChatTextArea } from "../components/chat/chat-text-area";
 import { cliTheme, getOverlayRowColors } from "../ui/cli-theme";
-import { isDownKey, isEnterKey, isUpKey } from "../utils/key-utils";
+import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../utils/key-utils";
 import { formatDate, getErrorMessage, truncateInline } from "../utils/text-utils";
 
 function getSessionLabel(session: SessionSummary) {
   return session.title ?? session.latestUserPromptPreview ?? session.id;
+}
+
+function sessionMatchesFilter(session: SessionSummary, query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  return (
+    (session.title ?? "").toLowerCase().includes(normalized) ||
+    (session.latestUserPromptPreview ?? "").toLowerCase().includes(normalized) ||
+    session.id.toLowerCase().includes(normalized)
+  );
 }
 
 export function SessionListScreen() {
@@ -27,12 +42,20 @@ export function SessionListScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [filterQuery, setFilterQuery] = useState("");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
 
+  const visibleSessions = useMemo(
+    () => sessions.filter((session) => sessionMatchesFilter(session, filterQuery)),
+    [filterQuery, sessions],
+  );
   const safeSelectedIndex = Math.min(
     selectedIndex,
-    Math.max(sessions.length - 1, 0),
+    Math.max(visibleSessions.length - 1, 0),
   );
-  const selectedSession = sessions[safeSelectedIndex] ?? null;
+  const selectedSession = visibleSessions[safeSelectedIndex] ?? null;
+  const inputActive = filterOpen || renamingSessionId !== null;
 
   const loadSessions = useCallback(async () => {
     setIsLoading(true);
@@ -147,6 +170,65 @@ export function SessionListScreen() {
     }
   }, [selectedSession]);
 
+  const forkSelectedSession = useCallback(async () => {
+    if (!selectedSession) {
+      setActionMessage("No session selected.");
+      return;
+    }
+
+    try {
+      const response = await client.sessions[":id"].fork.$post({
+        param: { id: selectedSession.id },
+      });
+      if (!response.ok) {
+        throw new Error(`Unable to fork session (HTTP ${response.status}).`);
+      }
+
+      const parsedPayload = sessionForkResponseSchema.safeParse(
+        await response.json(),
+      );
+      if (!parsedPayload.success) {
+        throw new Error("Server returned an invalid fork response.");
+      }
+
+      navigate(`/sessions/${encodeURIComponent(parsedPayload.data.id)}`, {
+        state: {
+          mode: selectedSession.mode,
+          permissionMode: selectedSession.permissionMode ?? undefined,
+        },
+      });
+    } catch (error) {
+      setActionMessage(getErrorMessage(error, "Unable to fork session."));
+    }
+  }, [navigate, selectedSession]);
+
+  const renameSession = useCallback(
+    async (sessionId: string, title: string) => {
+      setRenamingSessionId(null);
+
+      const trimmedTitle = title.trim();
+      if (!trimmedTitle) {
+        return;
+      }
+
+      try {
+        const response = await client.sessions[":id"].$patch({
+          param: { id: sessionId },
+          json: { title: trimmedTitle },
+        });
+        if (!response.ok) {
+          throw new Error(`Unable to rename session (HTTP ${response.status}).`);
+        }
+
+        setActionMessage(`Renamed session to "${trimmedTitle}".`);
+        await loadSessions();
+      } catch (error) {
+        setActionMessage(getErrorMessage(error, "Unable to rename session."));
+      }
+    },
+    [loadSessions],
+  );
+
   useEffect(() => {
     void loadSessions();
   }, [loadSessions]);
@@ -154,11 +236,23 @@ export function SessionListScreen() {
   useKeyboard((keyEvent) => {
     const keyName = keyEvent.name.toLowerCase();
 
+    if (inputActive) {
+      // The inline input owns the keyboard; Esc cancels it.
+      if (isEscapeKey(keyName)) {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        setFilterOpen(false);
+        setFilterQuery("");
+        setRenamingSessionId(null);
+      }
+      return;
+    }
+
     if (isDownKey(keyName, { vim: true })) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
       setSelectedIndex((currentIndex) =>
-        Math.min(currentIndex + 1, Math.max(sessions.length - 1, 0)),
+        Math.min(currentIndex + 1, Math.max(visibleSessions.length - 1, 0)),
       );
       setPendingDeleteId(null);
       return;
@@ -179,6 +273,13 @@ export function SessionListScreen() {
       return;
     }
 
+    if (isEscapeKey(keyName) && filterQuery) {
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+      setFilterQuery("");
+      return;
+    }
+
     if (keyName === "l") {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
@@ -186,10 +287,33 @@ export function SessionListScreen() {
       return;
     }
 
-    if (keyName === "r") {
+    if (keyName === "u") {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
       void loadSessions();
+      return;
+    }
+
+    if (keyName === "r") {
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+      if (selectedSession) {
+        setRenamingSessionId(selectedSession.id);
+      }
+      return;
+    }
+
+    if (keyName === "f") {
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+      void forkSelectedSession();
+      return;
+    }
+
+    if (keyName === "/" || keyName === "slash") {
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+      setFilterOpen(true);
       return;
     }
 
@@ -209,10 +333,10 @@ export function SessionListScreen() {
 
   const footerText = useMemo(() => {
     if (sessions.length === 0) {
-      return `r refresh | l resume latest | ${BACK_SHORTCUT_LABEL} back`;
+      return `u refresh | l resume latest | ${BACK_SHORTCUT_LABEL} back`;
     }
 
-    return "Enter resume | l latest | e export JSON | d delete | r refresh";
+    return "Enter resume | r rename | f fork | / filter | e export | d delete | u refresh";
   }, [sessions.length]);
 
   return (
@@ -232,15 +356,30 @@ export function SessionListScreen() {
         </box>
       ) : null}
 
-      <box flexDirection="column" flexGrow={1} gap={1}>
-        {sessions.length === 0 && !isLoading ? (
+      {filterQuery && !filterOpen ? (
+        <box paddingX={1}>
+          <text fg={cliTheme.accent.primary}>
+            {`Filter: "${filterQuery}" (${visibleSessions.length} match${
+              visibleSessions.length === 1 ? "" : "es"
+            }) - Esc clears`}
+          </text>
+        </box>
+      ) : null}
+
+      <box flexDirection="column" flexGrow={1}>
+        {visibleSessions.length === 0 && !isLoading ? (
           <box paddingX={1}>
-            <text fg={cliTheme.text.muted}>No saved sessions yet.</text>
+            <text fg={cliTheme.text.muted}>
+              {sessions.length === 0
+                ? "No saved sessions yet."
+                : "No sessions match the filter."}
+            </text>
           </box>
         ) : null}
 
-        {sessions.map((session, index) => {
-          const rowColors = getOverlayRowColors(index === safeSelectedIndex);
+        {visibleSessions.map((session, index) => {
+          const isSelected = index === safeSelectedIndex;
+          const rowColors = getOverlayRowColors(isSelected);
           const selectedForDelete = pendingDeleteId === session.id;
 
           return (
@@ -248,7 +387,6 @@ export function SessionListScreen() {
               key={session.id}
               flexDirection="column"
               paddingX={1}
-              paddingY={1}
               backgroundColor={rowColors.backgroundColor}
             >
               <box flexDirection="row" justifyContent="space-between">
@@ -260,22 +398,13 @@ export function SessionListScreen() {
                   }
                   attributes={TextAttributes.BOLD}
                 >
-                  {index + 1}. {truncateInline(getSessionLabel(session))}
-                </text>
-                <text fg={rowColors.secondaryTextColor}>
-                  {session.mode}
-                  {session.permissionMode ? `/${session.permissionMode}` : ""}
-                </text>
-              </box>
-              <box flexDirection="row" justifyContent="space-between">
-                <text fg={rowColors.secondaryTextColor} attributes={TextAttributes.DIM}>
-                  {session.messageCount} messages | {session.model ?? "model unknown"}
+                  {index + 1}. {truncateInline(getSessionLabel(session), 64)}
                 </text>
                 <text fg={rowColors.secondaryTextColor} attributes={TextAttributes.DIM}>
-                  {formatDate(session.updatedAt)}
+                  {`${session.messageCount} msgs - ${session.mode} - ${formatDate(session.updatedAt)}`}
                 </text>
               </box>
-              {session.latestUserPromptPreview ? (
+              {isSelected && session.latestUserPromptPreview ? (
                 <text fg={rowColors.secondaryTextColor} attributes={TextAttributes.DIM}>
                   {truncateInline(session.latestUserPromptPreview, 110)}
                 </text>
@@ -291,9 +420,27 @@ export function SessionListScreen() {
         </box>
       ) : null}
 
+      {filterOpen ? (
+        <ChatTextArea
+          placeholder="Filter sessions..."
+          allowEmpty
+          onTextChange={setFilterQuery}
+          onSubmit={() => setFilterOpen(false)}
+        />
+      ) : null}
+
+      {renamingSessionId !== null ? (
+        <ChatTextArea
+          placeholder="New session title..."
+          onSubmit={(title) => void renameSession(renamingSessionId, title)}
+        />
+      ) : null}
+
       <box paddingX={1}>
         <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
-          {footerText}
+          {inputActive
+            ? "Enter confirm | Esc cancel"
+            : footerText}
         </text>
       </box>
     </box>

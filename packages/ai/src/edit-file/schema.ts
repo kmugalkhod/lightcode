@@ -17,4 +17,6 @@ export const editFileOutputSchema = z.object({
   path: z.string(),
   replacements: z.number().int().nonnegative(),
   bytesWritten: z.number().int().nonnegative(),
+  /** Unified diff of the applied change, for TUI rendering. */
+  diff: z.string().optional(),
 });

@@ -3,10 +3,15 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import type { LanguageModel } from "ai";
 import {
+  getModelContextWindow,
   lightcodeConfigStatusSchema,
+  readStoredCredentials,
+  resolveContextWindowTokens,
+  withXmlToolCallSupport,
   type LightcodeConfigStatus,
   type LightcodeResolvedConfig,
   type LoadedConfigFile,
+  type StoredCredentials,
 } from "@lightcode/ai";
 
 export interface ResolvedProviderModel {
@@ -16,7 +21,14 @@ export interface ResolvedProviderModel {
   baseUrl: string | null;
   model: LanguageModel;
   providerOptions?: SharedV3ProviderOptions;
+  /** Context window of the resolved model in tokens (model metadata). */
+  contextWindow: number;
   missingCredentialHints: string[];
+  /**
+   * True when the model goes through the XML tool-call middleware — the
+   * system prompt should include tool-calling discipline for it.
+   */
+  needsToolCallDiscipline?: boolean;
 }
 
 const anthropicModelAliases = {
@@ -75,16 +87,19 @@ function getAnthropicProviderOptions(
 function resolveAnthropicModel({
   config,
   env,
+  storedCredentials,
 }: {
   config: LightcodeResolvedConfig;
   env: Record<string, string | undefined>;
+  storedCredentials: StoredCredentials;
 }): ResolvedProviderModel {
   const configuredModel = config.model ?? null;
   const modelId = resolveModelAlias(
     "anthropic",
     configuredModel ?? "haiku",
   );
-  const apiKey = getEnvValue(env, "ANTHROPIC_API_KEY");
+  const apiKey =
+    getEnvValue(env, "ANTHROPIC_API_KEY") ?? storedCredentials.anthropicApiKey;
   const authToken = getEnvValue(env, "ANTHROPIC_AUTH_TOKEN");
   const baseUrl = config.baseUrl ?? getEnvValue(env, "ANTHROPIC_BASE_URL") ?? null;
   const missingCredentialHints =
@@ -106,6 +121,7 @@ function resolveAnthropicModel({
     baseUrl,
     model: provider(modelId),
     providerOptions: getAnthropicProviderOptions(modelId),
+    contextWindow: getModelContextWindow("anthropic", modelId),
     missingCredentialHints,
   };
 }
@@ -113,9 +129,11 @@ function resolveAnthropicModel({
 function resolveOpenAITransportModel({
   config,
   env,
+  storedCredentials,
 }: {
   config: LightcodeResolvedConfig;
   env: Record<string, string | undefined>;
+  storedCredentials: StoredCredentials;
 }): ResolvedProviderModel {
   const isOpenCodeZen = config.provider === "opencode-zen";
   const isOpenRouter = config.provider === "openrouter";
@@ -149,19 +167,19 @@ function resolveOpenAITransportModel({
         "OPENCODE_API_KEY",
         "LIGHTCODE_OPENAI_COMPATIBLE_API_KEY",
         "OPENAI_API_KEY",
-      )
+      ) ?? storedCredentials.opencodeApiKey
     : isOpenRouter
       ? getEnvValue(
           env,
           "OPENROUTER_API_KEY",
           "LIGHTCODE_OPENAI_COMPATIBLE_API_KEY",
           "OPENAI_API_KEY",
-        )
+        ) ?? storedCredentials.openrouterApiKey
     : getEnvValue(
         env,
         "LIGHTCODE_OPENAI_COMPATIBLE_API_KEY",
         "OPENAI_API_KEY",
-      );
+      ) ?? storedCredentials.openaiCompatibleApiKey;
   const headers: Record<string, string> = {};
   if (isOpenRouter) {
     const referer = getEnvValue(env, "OPENROUTER_HTTP_REFERER");
@@ -185,7 +203,11 @@ function resolveOpenAITransportModel({
     configuredModel,
     resolvedModelId: configuredModel,
     baseUrl,
-    model: provider(configuredModel),
+    // Wrap with XML tool-call support for models (e.g. MiniMax via OpenRouter)
+    // that output <tool_call> XML instead of proper function-call responses.
+    model: withXmlToolCallSupport(provider(configuredModel)),
+    needsToolCallDiscipline: true,
+    contextWindow: getModelContextWindow(config.provider, configuredModel),
     missingCredentialHints: apiKey
       ? []
       : isOpenCodeZen
@@ -205,15 +227,17 @@ export function resolveConfiguredProviderModel({
   config: LightcodeResolvedConfig;
   env?: Record<string, string | undefined>;
 }): ResolvedProviderModel {
+  const storedCredentials = readStoredCredentials(env);
+
   if (
     config.provider === "openai-compatible" ||
     config.provider === "opencode-zen" ||
     config.provider === "openrouter"
   ) {
-    return resolveOpenAITransportModel({ config, env });
+    return resolveOpenAITransportModel({ config, env, storedCredentials });
   }
 
-  return resolveAnthropicModel({ config, env });
+  return resolveAnthropicModel({ config, env, storedCredentials });
 }
 
 export function createConfigStatus({
@@ -235,6 +259,11 @@ export function createConfigStatus({
     permissionMode: config.permissionMode ?? null,
     maxOutputTokens: config.maxOutputTokens,
     maxSteps: config.maxSteps,
+    autoContinue: config.autoContinue,
+    contextWindow: resolveContextWindowTokens({
+      config: config.context,
+      modelContextWindow: resolvedProviderModel.contextWindow,
+    }),
     missingCredentialHints: resolvedProviderModel.missingCredentialHints,
   });
 }

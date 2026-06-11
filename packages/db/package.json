@@ -5,7 +5,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
-    "./types": "./src/types.ts"
+    "./types": "./src/types.ts",
+    "./local-database": "./src/local-database.ts"
   },
   "scripts": {
     "typecheck": "bunx tsc --noEmit --project tsconfig.json"

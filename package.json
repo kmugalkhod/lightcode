@@ -1,6 +1,7 @@
 {
   "name": "lightcode",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Lightcode — a personal AI coding agent with a terminal UI and local session storage.",
   "type": "module",
   "packageManager": "bun@1.3.13",
   "workspaces": [
@@ -8,18 +9,31 @@
     "packages/*"
   ],
   "scripts": {
-    "server:dev": "bun --watch --env-file=.env apps/server/src/index.ts",
-    "server:start": "bun --env-file=.env apps/server/src/index.ts",
-    "cli:dev": "bun run --cwd apps/cli dev",
-    "cli:start": "bun run --cwd apps/cli start",
+    "build": "bun scripts/build-dist.ts",
+    "release": "bun scripts/release.ts",
+    "test": "bun test",
     "test:parity": "bun test packages/ai/src/parity",
     "typecheck": "bunx tsc --noEmit && bun run tool-schema:check",
     "tool-schema:check": "bun test packages/ai/src/agent-tools-schema-preflight.test.ts",
     "db:push": "bunx --bun prisma db push --config packages/db/prisma.config.ts",
     "db:push:accept-data-loss": "bunx --bun prisma db push --config packages/db/prisma.config.ts --accept-data-loss",
     "db:generate": "bunx --bun prisma generate --config packages/db/prisma.config.ts",
-    "db:validate": "bunx --bun prisma validate --config packages/db/prisma.config.ts"
+    "db:validate": "bunx --bun prisma validate --config packages/db/prisma.config.ts",
+    "postinstall": "bun run db:generate",
+    "server:dev": "bun --watch --env-file=.env apps/server/src/index.ts",
+    "server:start": "bun --env-file=.env apps/server/src/index.ts",
+    "cli:dev": "bun apps/cli/src/index.tsx",
+    "cli:start": "bun apps/cli/src/index.tsx"
   },
+  "bin": {
+    "lightcode": "./dist/cli.js"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "files": [
+    "dist"
+  ],
   "devDependencies": {
     "@types/bun": "latest",
     "@types/react": "^19.0.0",
