@@ -467,7 +467,8 @@ async function validatePersistedMessages(
   });
 
   if (!validationResult.success) {
-    throw new Error(`Persisted chat history failed validation: ${validationResult.error.message}`);
+    console.error(`Persisted chat history failed validation, starting fresh: ${validationResult.error.message}`);
+    return [];
   }
 
   return validationResult.data;
