@@ -10,6 +10,11 @@ if (cliArgs.includes("--version") || cliArgs.includes("-v")) {
 const { ensureServerRunning } = await import("./lib/server-launcher");
 const serverLaunch = await ensureServerRunning();
 
+if (serverLaunch.error) {
+  console.error(`\n${serverLaunch.error}\n`);
+  process.exit(1);
+}
+
 const { createCliRenderer } = await import("@opentui/core");
 const { createRoot } = await import("@opentui/react");
 const { App } = await import("./app");

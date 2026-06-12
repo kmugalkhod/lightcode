@@ -43,6 +43,16 @@ variables. Notable keys:
 | `context.compactAtFraction` | Context compaction threshold (default 0.8) |
 | `context.pruneAtFraction` | Tool-output pruning threshold (default 0.6) |
 | `context.contextWindowOverride` | Override the model context window |
+| `maxRetries` | Provider-call retries for transient errors (default 5) |
+| `autoContinue.stallTimeoutSeconds` | Abort+retry a byte-silent stream (default 180) |
+
+The local companion server listens on `127.0.0.1:4983` (uncommon on purpose —
+port 3000 belongs to the apps you build). Override with `PORT` for the server
+and `LIGHTCODE_API_URL` for the CLI. Runtime model switching: `/model` in the
+TUI lists every OpenRouter model and persists the choice to
+`~/.lightcode/settings.json`. Diagnostics: `GET /diagnostics/connectivity`
+probes the provider endpoint, and daily JSONL logs live under the Lightcode
+data directory (`logs/`).
 
 ## Context optimization
 

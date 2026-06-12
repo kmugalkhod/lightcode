@@ -18,7 +18,13 @@ export const defaultCodingAgentSystemPrompt =
   "You are an agent — keep working until the user's request is fully resolved before ending your turn. " +
   "Never stop with a partial answer. If you say you will do something, do it in the same turn by calling a tool. " +
   "Use todo_write to track multi-step work and do not finish while any todo is pending or in_progress. " +
-  "Only end your turn when the task is complete or you are blocked on input that only the user can provide.";
+  "Only end your turn when the task is complete or you are blocked on input that only the user can provide.\n\n" +
+  "Long-running processes: never run dev servers, watchers, or other non-exiting commands as plain foreground bash — " +
+  "the bash tool enforces a timeout and the command will be killed. Start them detached with output redirected to a " +
+  "log file (e.g. on Windows: start /B cmd /c \"npm run dev > dev.log 2>&1\"; on Unix: nohup npm run dev > dev.log 2>&1 &), " +
+  "wait briefly, then verify by reading the log file or with a bounded probe like curl --max-time 5. " +
+  "Dev servers do not always get their default port — read the actual port from the startup log instead of assuming it. " +
+  "Never kill processes or free ports you did not open yourself; other tools (including this agent's own backend) may be using them.";
 
 /**
  * Extra tool-calling discipline for models that tend to emit tool calls as

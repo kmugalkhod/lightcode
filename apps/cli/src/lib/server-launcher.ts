@@ -8,6 +8,8 @@ export interface ServerLaunchResult {
   url: string;
   /** Child process when this CLI started the server; null if it was already up. */
   ownedProcess: ReturnType<typeof Bun.spawn> | null;
+  /** Fatal launch problem the user must resolve (e.g. foreign port owner). */
+  error?: string;
 }
 
 let currentOwnedProcess: ReturnType<typeof Bun.spawn> | null = null;
@@ -58,14 +60,34 @@ function getLightcodeDataDir(): string {
   return path.join(homedir(), ".lightcode");
 }
 
-async function isServerHealthy(url: string): Promise<boolean> {
+type ServerHealth = "healthy" | "foreign" | "down";
+
+/**
+ * Distinguishes "our server", "some other app on our port" (e.g. a user dev
+ * server), and "nothing listening". Treating any 200 as healthy once routed
+ * every CLI request to a Next.js dev server that shared the port.
+ */
+async function checkServer(url: string): Promise<ServerHealth> {
   try {
     const response = await fetch(new URL("/config/status", url), {
       signal: AbortSignal.timeout(healthCheckTimeoutMs),
     });
-    return response.ok;
+
+    if (!response.ok) {
+      return "foreign";
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("application/json")) {
+      return "foreign";
+    }
+
+    const payload = (await response.json()) as Record<string, unknown> | null;
+    return payload && typeof payload === "object" && "selectedProvider" in payload
+      ? "healthy"
+      : "foreign";
   } catch {
-    return false;
+    return "down";
   }
 }
 
@@ -86,8 +108,22 @@ function resolveServerEntry(): string | null {
  * process with logs under the Lightcode data directory.
  */
 export async function ensureServerRunning(): Promise<ServerLaunchResult> {
-  if (await isServerHealthy(apiBaseUrl)) {
+  const port = new URL(apiBaseUrl).port || "4983";
+  const initialHealth = await checkServer(apiBaseUrl);
+
+  if (initialHealth === "healthy") {
     return { url: apiBaseUrl, ownedProcess: null };
+  }
+
+  if (initialHealth === "foreign") {
+    return {
+      url: apiBaseUrl,
+      ownedProcess: null,
+      error:
+        `Port ${port} is in use by another application (not Lightcode). ` +
+        "Free the port, or point Lightcode elsewhere with " +
+        "LIGHTCODE_API_URL (CLI) and PORT (server).",
+    };
   }
 
   const serverEntry = resolveServerEntry();
@@ -98,7 +134,6 @@ export async function ensureServerRunning(): Promise<ServerLaunchResult> {
   const logDirectory = path.join(getLightcodeDataDir(), "logs");
   mkdirSync(logDirectory, { recursive: true });
   const logFile = Bun.file(path.join(logDirectory, "server.log"));
-  const port = new URL(apiBaseUrl).port || "3000";
 
   const ownedProcess = Bun.spawn([process.execPath, serverEntry], {
     stdout: logFile,
@@ -110,14 +145,21 @@ export async function ensureServerRunning(): Promise<ServerLaunchResult> {
   });
 
   for (let attempt = 0; attempt < startupPollAttempts; attempt += 1) {
-    if (await isServerHealthy(apiBaseUrl)) {
+    if ((await checkServer(apiBaseUrl)) === "healthy") {
       currentOwnedProcess = ownedProcess;
       return { url: apiBaseUrl, ownedProcess };
     }
 
     if (ownedProcess.exitCode !== null) {
       // Server died during startup (config error, port conflict, ...).
-      return { url: apiBaseUrl, ownedProcess: null };
+      return {
+        url: apiBaseUrl,
+        ownedProcess: null,
+        error:
+          "The Lightcode server exited during startup. Check the log at " +
+          `${path.join(logDirectory, "server.log")} — a port conflict or ` +
+          "invalid settings.json are the usual causes.",
+      };
     }
 
     await Bun.sleep(startupPollIntervalMs);

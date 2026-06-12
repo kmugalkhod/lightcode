@@ -26,7 +26,9 @@ async function startServer() {
     logger.info("file_log_sink_enabled", { directory: logDirectory });
   }
 
-  const port = Number(Bun.env.PORT ?? 3000);
+  // Uncommon default on purpose: 3000 is what scaffolded user apps (Next.js,
+  // CRA, Express) grab, and sharing it breaks the CLI<->server channel.
+  const port = Number(Bun.env.PORT ?? 4983);
   // Bind loopback-only by default: the server is a local companion process
   // with no authentication and must not be reachable from the network.
   const hostname = Bun.env.LIGHTCODE_HOST ?? "127.0.0.1";
@@ -59,18 +61,34 @@ async function startServer() {
       });
     });
 
-  const server = Bun.serve({
-    idleTimeout: httpIdleTimeoutSeconds,
-    port,
-    hostname,
-    async fetch(request, bunServer) {
-      if (isChatStreamingRoute(request)) {
-        bunServer.timeout(request, 0);
-      }
+  let server: ReturnType<typeof Bun.serve>;
+  try {
+    server = Bun.serve({
+      idleTimeout: httpIdleTimeoutSeconds,
+      port,
+      hostname,
+      async fetch(request, bunServer) {
+        if (isChatStreamingRoute(request)) {
+          bunServer.timeout(request, 0);
+        }
 
-      return app.fetch(request);
-    },
-  });
+        return app.fetch(request);
+      },
+    });
+  } catch (error) {
+    process.stderr.write(
+      [
+        "",
+        `Lightcode server could not bind ${hostname}:${port}:`,
+        `  ${getErrorMessage(error)}`,
+        "",
+        "Another process is likely using this port. Set PORT (or",
+        "LIGHTCODE_API_URL for the CLI) to a free port and restart.",
+        "",
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
