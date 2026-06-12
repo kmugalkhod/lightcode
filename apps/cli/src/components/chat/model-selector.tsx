@@ -233,10 +233,7 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
       </box>
 
       <box width="100%" paddingX={2} paddingY={1}>
-        <text fg={cliTheme.text.primary}>
-          Filter: {filter}
-          <text fg={cliTheme.accent.primary}>█</text>
-        </text>
+        <text fg={cliTheme.text.primary}>{`Filter: ${filter}█`}</text>
       </box>
 
       {isLoading ? (
@@ -249,7 +246,7 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
         </box>
       ) : filteredModels.length === 0 ? (
         <box paddingX={2} paddingY={1}>
-          <text fg={cliTheme.text.muted}>No models match "{filter}".</text>
+          <text fg={cliTheme.text.muted}>{`No models match "${filter}".`}</text>
         </box>
       ) : (
         <box flexDirection="column" paddingY={1}>
@@ -284,9 +281,9 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
                   {model.id}
                 </text>
                 <text fg={cliTheme.text.muted} marginLeft={2}>
-                  {formatContextLength(model.contextLength)}
-                  {model.supportsTools ? " | tools" : ""}
-                  {model.supportsReasoning ? " | reasoning" : ""}
+                  {`${formatContextLength(model.contextLength)}${
+                    model.supportsTools ? " | tools" : ""
+                  }${model.supportsReasoning ? " | reasoning" : ""}`}
                 </text>
                 {model.id === currentModel && (
                   <text fg={cliTheme.accent.primary} marginLeft={2}>
@@ -298,9 +295,9 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
           })}
           <box paddingX={2} marginTop={1}>
             <text fg={cliTheme.overlay.footerText}>
-              {filteredModels.length} model
-              {filteredModels.length === 1 ? "" : "s"}
-              {isApplying ? " | switching..." : ""}
+              {`${filteredModels.length} model${
+                filteredModels.length === 1 ? "" : "s"
+              }${isApplying ? " | switching..." : ""}`}
             </text>
           </box>
         </box>
