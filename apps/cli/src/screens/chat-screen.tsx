@@ -585,6 +585,15 @@ export function ChatScreen() {
       const action = findChatSlashAction(text);
       if (action) {
         closeSlashMenu();
+        // Selector actions open an overlay; their run() is a placeholder.
+        if (action.id === "permission") {
+          setPermissionSelectorOpen(true);
+          return;
+        }
+        if (action.id === "model") {
+          setModelSelectorOpen(true);
+          return;
+        }
         runChatSlashAction(action);
         return;
       }

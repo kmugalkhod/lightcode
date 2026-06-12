@@ -70,10 +70,12 @@ export const routeRegistry: AnyRouteDefinition[] = [
   },
   {
     id: "model",
-    label: "Model",
+    label: "Model Info",
     description: "Show provider, model, base URL, and key hints",
-    path: "/model",
-    shortcut: "/model",
+    // "/model" itself opens the model SELECTOR (chat slash action); this
+    // read-only page moved to /model-info so the two stop colliding.
+    path: "/model-info",
+    shortcut: "/model-info",
   },
   {
     id: "latest-session",

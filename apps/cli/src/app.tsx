@@ -67,7 +67,7 @@ function getCurrentViewLabel(pathname: string): string {
     return "config";
   }
 
-  if (pathname === "/model") {
+  if (pathname === "/model-info") {
     return "model";
   }
 
@@ -332,7 +332,7 @@ function AppContent() {
           <Route path="/sessions/:id" element={<ChatScreen />} />
           <Route path="/tools" element={<DiagnosticsScreen kind="tools" />} />
           <Route path="/config" element={<DiagnosticsScreen kind="config" />} />
-          <Route path="/model" element={<ModelScreen />} />
+          <Route path="/model-info" element={<ModelScreen />} />
           <Route path="/onboarding" element={<OnboardingScreen />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
