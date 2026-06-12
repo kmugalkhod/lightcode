@@ -15,6 +15,10 @@ import {
   type CodingToolName,
   type CodingToolOutputByName,
 } from "../agent-tools";
+import {
+  describeChatStreamError,
+  parseChatStreamError,
+} from "../chat-error";
 import type { SessionMessagesResponse } from "../chat-schemas";
 import {
   chatInteractionToolApprovalPayloadSchema,
@@ -253,7 +257,13 @@ const disconnectErrorPattern =
 const transientProviderErrorPattern =
   /(rate.?limit|too many requests|\b429\b|overloaded|quota)/i;
 
-function normalizeChatErrorMessage(message: string) {
+export function normalizeChatErrorMessage(message: string) {
+  const structured = parseChatStreamError(message);
+  if (structured) {
+    // Surface the real provider error instead of a generic retry hint.
+    return describeChatStreamError(structured);
+  }
+
   if (disconnectErrorPattern.test(message)) {
     return recoverableDisconnectMessage;
   }
@@ -263,9 +273,16 @@ function normalizeChatErrorMessage(message: string) {
 
 /**
  * Transient failures (network drops, timeouts, rate limits, overload) are
- * retried automatically with backoff; only hard failures surface.
+ * retried automatically with backoff; only hard failures surface. The server
+ * encodes its classification into the error string — trust it when present
+ * and fall back to message heuristics for plain transport errors.
  */
-function isRecoverableChatErrorMessage(message: string) {
+export function isRecoverableChatErrorMessage(message: string) {
+  const structured = parseChatStreamError(message);
+  if (structured) {
+    return structured.retryable;
+  }
+
   return (
     disconnectErrorPattern.test(message) ||
     transientProviderErrorPattern.test(message)
@@ -334,6 +351,55 @@ function hasUnresolvedToolParts(messages: UIMessage[]) {
       ].includes(part.state);
     }),
   );
+}
+
+const interruptedToolRetryErrorText =
+  "Tool call was interrupted by a connection retry. Re-issue the tool call if it is still needed.";
+
+const terminalToolPartStates = new Set([
+  "output-available",
+  "output-error",
+  "output-denied",
+]);
+
+/**
+ * Prepares a message history for an automatic resend after an abort or
+ * transport error. Trailing partially-streamed assistant messages are
+ * dropped, and any tool call left without a result (e.g. aborted between
+ * input-available and execution) gets a synthesized error output — providers
+ * reject histories containing dangling tool calls with HTTP 400, which
+ * previously turned one interrupted stream into an unrecoverable retry loop.
+ *
+ * Pending tool calls are never executed here: the abort may have raced an
+ * actual execution, and re-running side-effectful tools (bash, edit_file)
+ * silently would be worse than asking the model to re-issue the call.
+ *
+ * Postcondition: hasUnresolvedToolParts(result) === false.
+ */
+export function sanitizeMessagesForRetry(messages: UIMessage[]): UIMessage[] {
+  const trimmed = trimIncompleteTrailingAssistantMessages(messages);
+
+  return trimmed.map((message) => {
+    if (message.role !== "assistant") {
+      return message;
+    }
+
+    let changed = false;
+    const parts = message.parts.map((part) => {
+      if (!isToolUIPart(part) || terminalToolPartStates.has(part.state)) {
+        return part;
+      }
+
+      changed = true;
+      return {
+        ...part,
+        state: "output-error",
+        errorText: interruptedToolRetryErrorText,
+      } as unknown as typeof part;
+    });
+
+    return changed ? { ...message, parts } : message;
+  });
 }
 
 function hasActiveClientToolWork({
@@ -526,7 +592,9 @@ export function useCodingSessionChat({
       autoContinue?.maxAutoContinues ?? defaultAutoContinueLimits.maxAutoContinues,
   };
   const maxErrorRetries = autoContinue?.maxErrorRetries ?? 5;
-  const stallTimeoutMs = (autoContinue?.stallTimeoutSeconds ?? 120) * 1_000;
+  // 180s of *byte* silence (heartbeats arrive every 15s while the server is
+  // healthy) means the connection is genuinely dead, not a slow model.
+  const stallTimeoutMs = (autoContinue?.stallTimeoutSeconds ?? 180) * 1_000;
   const autoContinueLimitsRef = useRef(autoContinueLimits);
   autoContinueLimitsRef.current = autoContinueLimits;
   const maxErrorRetriesRef = useRef(maxErrorRetries);
@@ -569,8 +637,39 @@ export function useCodingSessionChat({
   loadPersistedInteractionsRef.current = loadPersistedInteractions;
 
   const transport = useMemo(() => {
+    // Stall detection must observe transport bytes, not React state updates:
+    // server heartbeats and reasoning deltas prove the connection is alive
+    // even when nothing user-visible renders for minutes.
+    const monitoredFetch = (async (
+      input: Parameters<typeof globalThis.fetch>[0],
+      init?: Parameters<typeof globalThis.fetch>[1],
+    ) => {
+      const response = await globalThis.fetch(input, init);
+      lastStreamActivityRef.current = Date.now();
+
+      if (!response.body) {
+        return response;
+      }
+
+      const monitoredBody = response.body.pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            lastStreamActivityRef.current = Date.now();
+            controller.enqueue(chunk);
+          },
+        }),
+      );
+
+      return new Response(monitoredBody, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    }) as typeof globalThis.fetch;
+
     return new DefaultChatTransport({
       api: chatApi,
+      fetch: monitoredFetch,
       body: () => ({
         cwd: cwdRef.current,
         mode: modeRef.current,
@@ -993,18 +1092,14 @@ export function useCodingSessionChat({
       return;
     }
 
-    if (
-      pendingApprovals.length > 0 ||
-      pendingUserPrompts.length > 0 ||
-      hasUnresolvedToolParts(messages)
-    ) {
+    if (pendingApprovals.length > 0 || pendingUserPrompts.length > 0) {
       setToolExecutionError(
         "Resolve pending tool approvals or user prompts before retrying.",
       );
       return;
     }
 
-    const retryMessages = trimIncompleteTrailingAssistantMessages(messages);
+    const retryMessages = sanitizeMessagesForRetry(messages);
     setMessages(retryMessages);
     clearError();
     setToolExecutionError(null);
@@ -1019,12 +1114,14 @@ export function useCodingSessionChat({
     setMessages,
   ]);
 
-  // A new stream starting means the previous error episode is over.
+  // The error episode is over only when a response actually completes.
+  // Resetting as soon as a retry briefly reaches "streaming" used to defeat
+  // the retry cap and allow an infinite abort/resend loop.
   useEffect(() => {
-    if (status === "streaming") {
+    if (status === "ready" && !error) {
       errorRetriesRef.current = 0;
     }
-  }, [status]);
+  }, [error, status]);
 
   // Any messages update while a request is active counts as stream activity.
   useEffect(() => {
@@ -1069,9 +1166,10 @@ export function useCodingSessionChat({
       void (async () => {
         try {
           await stop();
-          setMessages((current) =>
-            trimIncompleteTrailingAssistantMessages(current),
-          );
+          // Sanitize, don't just trim: an aborted stream can leave a complete
+          // tool call without a result, and resending that history makes the
+          // provider reject every retry with HTTP 400.
+          setMessages((current) => sanitizeMessagesForRetry(current));
           clearError();
           setToolExecutionError(null);
           await sendMessage();
@@ -1172,10 +1270,7 @@ export function useCodingSessionChat({
       return;
     }
 
-    const retryMessages = trimIncompleteTrailingAssistantMessages(messages);
-    if (hasUnresolvedToolParts(retryMessages)) {
-      return;
-    }
+    const retryMessages = sanitizeMessagesForRetry(messages);
 
     const attempt = errorRetriesRef.current + 1;
     const delay = Math.min(

@@ -15,6 +15,7 @@ const baseConfig = {
   context: defaultContextOptimizerConfig,
   maxOutputTokens: 10000,
   maxSteps: 5,
+  maxRetries: 5,
   autoContinue: defaultAutoContinueConfig,
 } as const;
 

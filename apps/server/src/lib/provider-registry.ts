@@ -14,6 +14,13 @@ import {
   type StoredCredentials,
 } from "@lightcode/ai";
 
+export interface ProviderModelCapabilities {
+  /** True when the model handles native function/tool calls itself. */
+  supportsNativeTools?: boolean;
+  /** Context window in tokens from live provider metadata. */
+  contextLength?: number;
+}
+
 export interface ResolvedProviderModel {
   provider: LightcodeResolvedConfig["provider"];
   configuredModel: string | null;
@@ -130,10 +137,12 @@ function resolveOpenAITransportModel({
   config,
   env,
   storedCredentials,
+  capabilities,
 }: {
   config: LightcodeResolvedConfig;
   env: Record<string, string | undefined>;
   storedCredentials: StoredCredentials;
+  capabilities?: ProviderModelCapabilities;
 }): ResolvedProviderModel {
   const isOpenCodeZen = config.provider === "opencode-zen";
   const isOpenRouter = config.provider === "openrouter";
@@ -198,16 +207,21 @@ function resolveOpenAITransportModel({
     headers,
   });
 
+  // The XML middleware stays on for every OpenAI-compatible model: it passes
+  // native function calls through untouched and only converts <tool_call>
+  // XML found in text. Models like MiniMax advertise native tools via the
+  // OpenRouter catalog yet still emit XML in practice, so capability data is
+  // NOT a safe signal to unwrap — it only improves the context window.
   return {
     provider: config.provider,
     configuredModel,
     resolvedModelId: configuredModel,
     baseUrl,
-    // Wrap with XML tool-call support for models (e.g. MiniMax via OpenRouter)
-    // that output <tool_call> XML instead of proper function-call responses.
     model: withXmlToolCallSupport(provider(configuredModel)),
     needsToolCallDiscipline: true,
-    contextWindow: getModelContextWindow(config.provider, configuredModel),
+    contextWindow:
+      capabilities?.contextLength ??
+      getModelContextWindow(config.provider, configuredModel),
     missingCredentialHints: apiKey
       ? []
       : isOpenCodeZen
@@ -223,9 +237,11 @@ function resolveOpenAITransportModel({
 export function resolveConfiguredProviderModel({
   config,
   env = Bun.env,
+  capabilities,
 }: {
   config: LightcodeResolvedConfig;
   env?: Record<string, string | undefined>;
+  capabilities?: ProviderModelCapabilities;
 }): ResolvedProviderModel {
   const storedCredentials = readStoredCredentials(env);
 
@@ -234,7 +250,12 @@ export function resolveConfiguredProviderModel({
     config.provider === "opencode-zen" ||
     config.provider === "openrouter"
   ) {
-    return resolveOpenAITransportModel({ config, env, storedCredentials });
+    return resolveOpenAITransportModel({
+      config,
+      env,
+      storedCredentials,
+      capabilities,
+    });
   }
 
   return resolveAnthropicModel({ config, env, storedCredentials });

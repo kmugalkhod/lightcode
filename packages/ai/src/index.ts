@@ -1,4 +1,5 @@
 export * from "./agent-tools";
+export * from "./chat-error";
 export * from "./chat-interaction-schemas";
 export * from "./common/plan-block";
 export * from "./chat-schemas";

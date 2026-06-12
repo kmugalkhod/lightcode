@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -49,7 +49,9 @@ export const defaultAutoContinueConfig: ResolvedAutoContinueConfig = {
   enabled: true,
   maxAutoContinues: 50,
   maxErrorRetries: 5,
-  stallTimeoutSeconds: 120,
+  // With 15s server heartbeats, 180s of byte silence means a dead connection
+  // rather than a slow reasoning model.
+  stallTimeoutSeconds: 180,
 };
 
 export const lightcodeConfigSchema = z
@@ -66,6 +68,8 @@ export const lightcodeConfigSchema = z
     context: contextOptimizerConfigSchema.optional(),
     maxOutputTokens: z.number().int().min(1).max(200_000).optional(),
     maxSteps: z.number().int().min(1).max(100).optional(),
+    /** Provider-call retries for transient errors (429/5xx/network). */
+    maxRetries: z.number().int().min(0).max(10).optional(),
     autoContinue: autoContinueConfigSchema.optional(),
   })
   .strict();
@@ -81,11 +85,19 @@ export const lightcodeConfigDefaults = {
   // far more than the text alone suggests.
   maxOutputTokens: 32_768,
   maxSteps: 30, // safety net only — the client-driven loop is budgeted by autoContinue
-
+  // claw-code retries 8 times against the same status whitelist; 5 keeps
+  // worst-case latency bounded while riding out provider blips.
+  maxRetries: 5,
   autoContinue: defaultAutoContinueConfig,
 } satisfies Pick<
   LightcodeResolvedConfig,
-  "provider" | "defaultMode" | "context" | "maxOutputTokens" | "maxSteps" | "autoContinue"
+  | "provider"
+  | "defaultMode"
+  | "context"
+  | "maxOutputTokens"
+  | "maxSteps"
+  | "maxRetries"
+  | "autoContinue"
 >;
 
 export const loadedConfigFileSchema = z.object({
@@ -102,6 +114,7 @@ export const lightcodeResolvedConfigSchema = lightcodeConfigSchema.extend({
   context: resolvedContextOptimizerConfigSchema,
   maxOutputTokens: z.number().int().min(1).max(200_000),
   maxSteps: z.number().int().min(1).max(100),
+  maxRetries: z.number().int().min(0).max(10),
   autoContinue: resolvedAutoContinueConfigSchema,
 });
 export type LightcodeResolvedConfig = z.infer<typeof lightcodeResolvedConfigSchema>;
@@ -302,6 +315,7 @@ function readEnvConfig(env: Record<string, string | undefined>): LightcodeConfig
       "LIGHTCODE_MAX_OUTPUT_TOKENS",
     ),
     maxSteps: parseNumberEnv(env.LIGHTCODE_MAX_STEPS, "LIGHTCODE_MAX_STEPS"),
+    maxRetries: parseNumberEnv(env.LIGHTCODE_MAX_RETRIES, "LIGHTCODE_MAX_RETRIES"),
     context:
       Object.keys(compactContextConfig).length > 0
         ? compactContextConfig
@@ -345,6 +359,45 @@ function mergeConfig(...configs: LightcodeConfig[]): LightcodeConfig {
     }),
     {},
   );
+}
+
+export type UserSettingsUpdate = Partial<
+  Pick<LightcodeConfig, "provider" | "model" | "baseUrl">
+>;
+
+/**
+ * Merges a partial update into the user settings file
+ * (~/.lightcode/settings.json by default), validating the result before
+ * writing. Unknown keys already in the file are rejected by the schema the
+ * same way loading rejects them — fail fast rather than persist garbage.
+ */
+export function updateUserSettings(
+  update: UserSettingsUpdate,
+  env: Record<string, string | undefined> = process.env,
+): { path: string; config: LightcodeConfig } {
+  const configPath = getDefaultUserConfigPath(env);
+  const existing = readConfigFile("user", configPath).config;
+
+  const merged: LightcodeConfig = { ...existing };
+  for (const [key, value] of Object.entries(update)) {
+    if (value === undefined || value === null) {
+      delete merged[key as keyof UserSettingsUpdate];
+    } else {
+      Reflect.set(merged, key, value);
+    }
+  }
+
+  const parsed = lightcodeConfigSchema.safeParse(merged);
+  if (!parsed.success) {
+    throw new LightcodeConfigError(
+      `Invalid settings update: ${parsed.error.message}`,
+    );
+  }
+
+  mkdirSync(path.dirname(configPath), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify(parsed.data, null, 2)}\n`, "utf8");
+
+  return { path: configPath, config: parsed.data };
 }
 
 export function loadLightcodeConfig({

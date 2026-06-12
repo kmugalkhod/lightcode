@@ -118,6 +118,7 @@ async function generateLlmSummary({
     system: COMPACTION_SYSTEM_PROMPT,
     prompt,
     maxOutputTokens: COMPACTION_MAX_OUTPUT_TOKENS,
+    maxRetries: 2,
     abortSignal: AbortSignal.timeout(COMPACTION_TIMEOUT_MS),
   });
 
@@ -170,6 +171,13 @@ async function buildPinnedSections({
   return sections;
 }
 
+// Appended after every compaction so the model resumes the task directly
+// instead of stalling on "shall I continue?" — the difference between a long
+// task surviving compaction and dying at it.
+export const compactionDirectResumeInstruction =
+  "Continue the task from where it left off using the summary above. " +
+  "Do not ask for confirmation, do not re-state the plan, and do not repeat completed work.";
+
 function composeSummary({
   body,
   pinnedSections,
@@ -186,7 +194,9 @@ function composeSummary({
   );
   const compressedBody = compressSummary(body, bodyBudget);
 
-  return [compressedBody, pinnedText].filter(Boolean).join("\n\n");
+  return [compressedBody, pinnedText, compactionDirectResumeInstruction]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export interface CompactSessionContextResult {

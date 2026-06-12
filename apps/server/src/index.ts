@@ -1,4 +1,8 @@
-import { createLogger, getErrorMessage } from "@lightcode/shared";
+import {
+  createLogger,
+  enableFileLogSink,
+  getErrorMessage,
+} from "@lightcode/shared";
 import type { app as appInstance } from "./app";
 
 export type AppType = typeof appInstance;
@@ -17,6 +21,11 @@ function isChatStreamingRoute(request: Request) {
 }
 
 async function startServer() {
+  const logDirectory = enableFileLogSink(Bun.env);
+  if (logDirectory) {
+    logger.info("file_log_sink_enabled", { directory: logDirectory });
+  }
+
   const port = Number(Bun.env.PORT ?? 3000);
   // Bind loopback-only by default: the server is a local companion process
   // with no authentication and must not be reachable from the network.
@@ -39,6 +48,16 @@ async function startServer() {
     );
     process.exit(1);
   }
+
+  // Best-effort: enrich the configured OpenRouter model with live catalog
+  // metadata (context window). Never blocks startup.
+  void import("./lib/runtime-config")
+    .then((runtime) => runtime.initializeModelCapabilities())
+    .catch((error) => {
+      logger.warn("model_capability_init_failed", {
+        error: getErrorMessage(error),
+      });
+    });
 
   const server = Bun.serve({
     idleTimeout: httpIdleTimeoutSeconds,

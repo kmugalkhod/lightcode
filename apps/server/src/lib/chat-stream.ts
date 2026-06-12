@@ -1,6 +1,7 @@
 import {
   buildProviderView,
   collectMessageText,
+  formatChatStreamError,
   selectCodingAgentIntentTools,
   type CodingAgentMode,
   type CodingAgentToolName,
@@ -23,11 +24,12 @@ import {
 } from "ai";
 import type { Context } from "hono";
 import {
+  chatFailureClassForErrorKind,
+  classifyChatError,
   incrementChatFailureCounter,
   isDisconnectOrTimeoutError,
-  isProviderBillingOrQuotaError,
-  isProviderSchemaRejectionError,
   logChatDisconnectEvent,
+  logChatStreamErrorEvent,
   logChatWriteEvent,
 } from "./chat-observability";
 import { mergeFinishedMessagesIntoFullHistory } from "./chat-history-merge";
@@ -38,6 +40,12 @@ import {
   SessionNotFoundError,
 } from "./chat-store";
 import { compactSessionContext } from "./context-compaction";
+import {
+  clearContextOverflowRounds,
+  getOverflowPreserveRecentMessages,
+  noteContextOverflow,
+} from "./overflow-recovery";
+import { withSseHeartbeat } from "./sse-heartbeat";
 import { getSessionContextState } from "./context-state-store";
 import { maybeScheduleSessionAutoTitle } from "./session-auto-title";
 import {
@@ -51,7 +59,6 @@ const logger = createLogger("chat-stream");
 
 const recoverableDisconnectMessage =
   "Connection interrupted. Please retry or regenerate your last message.";
-const genericRecoverableMessage = "The response stream was interrupted. Please retry.";
 const providerBillingOrQuotaMessage =
   "The configured model provider rejected this request due to billing or quota limits. " +
   "Update provider credits/quota and retry.";
@@ -268,7 +275,85 @@ export async function streamSessionChat(
     }
   }
 
+  // Forced overflow-recovery compaction: the previous attempt for this
+  // session was rejected as too large, so shrink the view harder than the
+  // automatic thresholds would before rebuilding the request.
+  const overflowPreserve = getOverflowPreserveRecentMessages(sessionId);
+  if (overflowPreserve !== null) {
+    const overflowConfig = {
+      ...contextConfig,
+      preserveRecentMessages: Math.min(
+        overflowPreserve,
+        contextConfig.preserveRecentMessages,
+      ),
+    };
+
+    try {
+      const overflowView = buildProviderView({
+        messages: validatedMessages,
+        contextState,
+        config: overflowConfig,
+        modelContextWindow: resolvedProviderModel.contextWindow,
+        pendingInteractionCount: 0,
+      });
+
+      if (overflowView.coveredMessages.length > 0) {
+        const compaction = await compactSessionContext({
+          sessionId,
+          coveredMessages: overflowView.coveredMessages,
+          previousState: contextState,
+          model: resolvedProviderModel.model,
+          modelId: chatModelId,
+          cwd,
+          config: overflowConfig,
+          estimatedTokens: overflowView.estimate.tokens,
+        });
+        contextState = compaction.state;
+      }
+
+      view = buildProviderView({
+        messages: validatedMessages,
+        contextState,
+        config: overflowConfig,
+        modelContextWindow: resolvedProviderModel.contextWindow,
+        pendingInteractionCount: 0,
+      });
+
+      // Health probe: a recovery round that did not actually shrink the view
+      // below the window will fail again — make that visible instead of
+      // silently burning the client's retry budget.
+      logger.info("context_overflow_recovery", {
+        sessionId,
+        preserveRecentMessages: overflowConfig.preserveRecentMessages,
+        estimatedTokens: view.estimate.tokens,
+        contextWindow: view.contextWindow,
+        withinWindow: view.estimate.tokens < view.contextWindow,
+        compactedMessages: view.coveredMessages.length,
+      });
+    } catch (error) {
+      logger.error("context_overflow_recovery_failed", {
+        sessionId,
+        error: getErrorMessage(error),
+      });
+    }
+  }
+
   const providerMessages = view.providerMessages;
+
+  // onFinish fires even when the stream ends with an error part, so track
+  // overflow within this request — otherwise the finish handler would clear
+  // the recovery round the error handler just recorded.
+  let overflowNotedThisRequest = false;
+  const noteOverflowForSession = () => {
+    // The stream layer can surface the same failure more than once; advance
+    // the progressive schedule a single step per request.
+    if (overflowNotedThisRequest) {
+      return;
+    }
+
+    overflowNotedThisRequest = true;
+    noteContextOverflow(sessionId);
+  };
 
   const persistFinishedMessages = async ({
     isAborted,
@@ -283,6 +368,12 @@ export async function streamSessionChat(
   }) => {
     if (isAborted) {
       return;
+    }
+
+    // The provider accepted the (possibly recovered) view; future overflow
+    // episodes start the progressive schedule from the top.
+    if (!overflowNotedThisRequest) {
+      clearContextOverflowRounds(sessionId);
     }
 
     const fullHistory = mergeFinishedMessagesIntoFullHistory({
@@ -397,6 +488,7 @@ export async function streamSessionChat(
           lightcodeConfigResult.config.maxOutputTokens,
           fastChatMaxOutputTokens,
         ),
+        maxRetries: lightcodeConfigResult.config.maxRetries,
         providerOptions: resolvedProviderModel.providerOptions,
         // Stop generating when the client disconnects.
         abortSignal: c.req.raw.signal,
@@ -418,56 +510,59 @@ export async function streamSessionChat(
         },
       });
 
-      return result.toUIMessageStreamResponse({
+      return withSseHeartbeat(result.toUIMessageStreamResponse({
         originalMessages: providerMessages,
         generateMessageId: generateId,
         sendReasoning: false,
         messageMetadata: buildUsageMessageMetadata,
         onError: (error) => {
-          if (isProviderSchemaRejectionError(error)) {
-            incrementChatFailureCounter("provider_schema_rejection", {
-              sessionId,
-            });
-          }
+          const classified = classifyChatError(error);
 
-          return genericRecoverableMessage;
+          if (classified.kind === "context_overflow") {
+            noteOverflowForSession();
+          }
+          incrementChatFailureCounter(
+            chatFailureClassForErrorKind(classified.kind),
+            { sessionId, statusCode: classified.statusCode },
+          );
+          logChatStreamErrorEvent({
+            sessionId,
+            phase: "stream",
+            classified,
+            error,
+          });
+
+          return formatChatStreamError(classified);
         },
         onFinish: persistFinishedMessages,
-      });
+      }));
     }
 
+    // NOTE: mid-stream provider drops cannot be resumed server-side —
+    // createAgentUIStreamResponse has already emitted UI parts, so replaying
+    // the step would duplicate part ids. The structured envelope below lets
+    // the client decide between a sanitized retry and surfacing the error.
     const mapStreamError = (error: unknown) => {
-      if (isProviderSchemaRejectionError(error)) {
-        incrementChatFailureCounter("provider_schema_rejection", {
-          sessionId,
-        });
-        return genericRecoverableMessage;
-      }
+      const classified = classifyChatError(error);
 
-      if (isProviderBillingOrQuotaError(error)) {
-        incrementChatFailureCounter("provider_billing_quota", {
-          sessionId,
-        });
-        return providerBillingOrQuotaMessage;
+      if (classified.kind === "context_overflow") {
+        noteOverflowForSession();
       }
+      incrementChatFailureCounter(chatFailureClassForErrorKind(classified.kind), {
+        sessionId,
+        statusCode: classified.statusCode,
+      });
+      logChatStreamErrorEvent({
+        sessionId,
+        phase: "stream",
+        classified,
+        error,
+      });
 
-      if (isDisconnectOrTimeoutError(error)) {
-        incrementChatFailureCounter("timeout_disconnect", {
-          sessionId,
-          phase: "stream",
-        });
-        logChatDisconnectEvent({
-          sessionId,
-          phase: "stream",
-          error,
-        });
-        return recoverableDisconnectMessage;
-      }
-
-      return genericRecoverableMessage;
+      return formatChatStreamError(classified);
     };
 
-    return await createAgentUIStreamResponse({
+    return withSseHeartbeat(await createAgentUIStreamResponse({
       agent: codingAgent,
       uiMessages: providerMessages,
       options: {
@@ -503,26 +598,30 @@ export async function streamSessionChat(
       },
       onError: mapStreamError,
       onFinish: persistFinishedMessages,
-    });
+    }));
   } catch (error) {
-    if (isProviderSchemaRejectionError(error)) {
-      incrementChatFailureCounter("provider_schema_rejection", {
-        sessionId,
-      });
-    }
+    const classified = classifyChatError(error);
 
-    if (isProviderBillingOrQuotaError(error)) {
-      incrementChatFailureCounter("provider_billing_quota", {
-        sessionId,
-      });
+    if (classified.kind === "context_overflow") {
+      noteContextOverflow(sessionId);
+    }
+    incrementChatFailureCounter(chatFailureClassForErrorKind(classified.kind), {
+      sessionId,
+      phase: "pre-stream",
+      statusCode: classified.statusCode,
+    });
+    logChatStreamErrorEvent({
+      sessionId,
+      phase: "pre-stream",
+      classified,
+      error,
+    });
+
+    if (classified.kind === "billing") {
       return c.json({ error: providerBillingOrQuotaMessage }, 402);
     }
 
-    if (isDisconnectOrTimeoutError(error)) {
-      incrementChatFailureCounter("timeout_disconnect", {
-        sessionId,
-        phase: "pre-stream",
-      });
+    if (classified.kind === "network" || classified.kind === "aborted") {
       logChatDisconnectEvent({
         sessionId,
         phase: "pre-stream",
@@ -533,7 +632,7 @@ export async function streamSessionChat(
 
     return c.json(
       {
-        error: "Unable to start chat stream.",
+        error: formatChatStreamError(classified),
         details: Bun.env.NODE_ENV === "production" ? undefined : getErrorMessage(error),
       },
       500

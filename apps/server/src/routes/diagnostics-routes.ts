@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import path from "node:path";
 import { Hono } from "hono";
 import {
   ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET,
@@ -19,7 +20,11 @@ import {
   type DiagnosticsTool,
   type DiagnosticsToolSummary,
 } from "@lightcode/ai";
-import { getErrorMessage, productName } from "@lightcode/shared";
+import {
+  getErrorMessage,
+  getLogDirectory,
+  productName,
+} from "@lightcode/shared";
 import { listChatSessions } from "../lib/chat-store";
 import { summarizePendingChatInteractions } from "../lib/chat-interaction-store";
 import { prisma } from "../lib/prisma-client";
@@ -350,8 +355,119 @@ async function buildPermissionsPayload() {
   });
 }
 
+const connectivityProbeTimeoutMs = 10_000;
+
+/**
+ * Probes the configured provider endpoint from the server process — the
+ * exact network path chat requests take — and reports the raw TLS/proxy/DNS
+ * error when it fails. Turns "it doesn't work on my work laptop" into a
+ * one-request diagnosis.
+ */
+async function buildConnectivityPayload() {
+  const baseUrl =
+    resolvedProviderModel.baseUrl ??
+    (resolvedProviderModel.provider === "anthropic"
+      ? "https://api.anthropic.com/v1"
+      : null);
+
+  const proxyEnvironment = {
+    httpsProxy: Boolean(Bun.env.HTTPS_PROXY ?? Bun.env.https_proxy),
+    httpProxy: Boolean(Bun.env.HTTP_PROXY ?? Bun.env.http_proxy),
+    noProxy: Boolean(Bun.env.NO_PROXY ?? Bun.env.no_proxy),
+    extraCaCerts: Boolean(Bun.env.NODE_EXTRA_CA_CERTS),
+  };
+
+  if (!baseUrl) {
+    return {
+      generatedAt: new Date().toISOString(),
+      provider: resolvedProviderModel.provider,
+      target: null,
+      reachable: false,
+      statusCode: null,
+      latencyMs: null,
+      error: "No provider base URL is configured.",
+      proxyEnvironment,
+    };
+  }
+
+  const target = new URL("models", baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
+  const startedAt = performance.now();
+
+  try {
+    const response = await fetch(target, {
+      signal: AbortSignal.timeout(connectivityProbeTimeoutMs),
+    });
+
+    return {
+      generatedAt: new Date().toISOString(),
+      provider: resolvedProviderModel.provider,
+      target: target.toString(),
+      // Any HTTP status proves TLS + proxy + DNS all work; auth failures
+      // (401/403) are still "reachable".
+      reachable: true,
+      statusCode: response.status,
+      latencyMs: Math.round(performance.now() - startedAt),
+      error: null,
+      proxyEnvironment,
+    };
+  } catch (error) {
+    return {
+      generatedAt: new Date().toISOString(),
+      provider: resolvedProviderModel.provider,
+      target: target.toString(),
+      reachable: false,
+      statusCode: null,
+      latencyMs: Math.round(performance.now() - startedAt),
+      error: getErrorMessage(error),
+      proxyEnvironment,
+    };
+  }
+}
+
+const maxLogTailLines = 1000;
+
+async function buildLogsTailPayload(requestedLines: number) {
+  const directory = getLogDirectory();
+  const lineCount = Math.min(
+    Math.max(Number.isFinite(requestedLines) ? requestedLines : 200, 1),
+    maxLogTailLines,
+  );
+
+  let latestFile: string | null = null;
+  try {
+    const logFiles = readdirSync(directory)
+      .filter((name) => /^server-\d{4}-\d{2}-\d{2}\.log$/.test(name))
+      .sort();
+    latestFile = logFiles.at(-1) ?? null;
+  } catch {
+    latestFile = null;
+  }
+
+  if (!latestFile) {
+    return {
+      generatedAt: new Date().toISOString(),
+      file: null,
+      lines: [] as string[],
+    };
+  }
+
+  const filePath = path.join(directory, latestFile);
+  const content = await Bun.file(filePath).text();
+  const lines = content.split("\n").filter((line) => line.length > 0);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    file: filePath,
+    lines: lines.slice(-lineCount),
+  };
+}
+
 export const diagnosticsRoutes = new Hono()
   .get("/status", async (c) => c.json(await buildStatusPayload()))
+  .get("/logs/tail", async (c) =>
+    c.json(await buildLogsTailPayload(Number(c.req.query("lines") ?? 200))),
+  )
+  .get("/connectivity", async (c) => c.json(await buildConnectivityPayload()))
   .get("/doctor", async (c) => c.json(await buildDoctorPayload()))
   .get("/tools", (c) => {
     const toolDiagnostics = getToolDiagnostics();

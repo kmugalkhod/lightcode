@@ -139,6 +139,8 @@ export interface CreateCodingAgentOptions {
   promptOverride?: string | null;
   maxOutputTokens?: number;
   maxSteps?: number;
+  /** Provider-call retries for transient errors before surfacing them. */
+  maxRetries?: number;
   providerOptions?: SharedV3ProviderOptions;
   /** Append tool-calling discipline for models prone to XML/text tool calls. */
   includeToolDiscipline?: boolean;
@@ -149,6 +151,7 @@ export function createCodingAgent({
   promptOverride,
   maxOutputTokens = 16384,
   maxSteps = 30,
+  maxRetries = 5,
   providerOptions,
   includeToolDiscipline = false,
 }: CreateCodingAgentOptions) {
@@ -159,6 +162,7 @@ export function createCodingAgent({
     tools,
     stopWhen: stepCountIs(maxSteps),
     maxOutputTokens,
+    maxRetries,
     providerOptions,
     // Weak models misname tools or emit malformed argument JSON; repair
     // deterministically instead of failing the step.

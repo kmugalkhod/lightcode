@@ -99,7 +99,7 @@ describe("loadLightcodeConfig", () => {
       enabled: true,
       maxAutoContinues: 50,
       maxErrorRetries: 5,
-      stallTimeoutSeconds: 120,
+      stallTimeoutSeconds: 180,
     });
     expect(result.loadedFiles.every((file) => !file.exists && !file.loaded)).toBe(
       true,
@@ -121,7 +121,7 @@ describe("loadLightcodeConfig", () => {
       enabled: true,
       maxAutoContinues: 10,
       maxErrorRetries: 5,
-      stallTimeoutSeconds: 120,
+      stallTimeoutSeconds: 180,
     });
   });
 

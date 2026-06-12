@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { sessionRoutes } from "./routes/chat-routes";
+import { configRoutes } from "./routes/config-routes";
 import { diagnosticsRoutes } from "./routes/diagnostics-routes";
 import { extensionRoutes } from "./routes/extension-routes";
 import { rootRoutes } from "./routes/root-routes";
@@ -15,6 +16,7 @@ export const app = new Hono()
     }),
   )
   .route("/", rootRoutes)
+  .route("/config", configRoutes)
   .route("/diagnostics", diagnosticsRoutes)
   .route("/extensions", extensionRoutes)
   .route("/sessions", sessionRoutes);
