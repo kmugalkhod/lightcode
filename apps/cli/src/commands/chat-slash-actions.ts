@@ -171,17 +171,6 @@ export const chatSlashActions: ChatSlashActionDefinition[] = [
       // Placeholder - actual handling happens in chat-screen via requestedChatActionId
     },
   },
-  {
-    kind: "chat-action",
-    id: "model",
-    label: "Switch model",
-    description: "Pick any OpenRouter model; applies immediately and persists to settings.json",
-    shortcut: "/model",
-    // This action is handled specially by the chat screen to open the selector
-    run: async () => {
-      // Placeholder - actual handling happens in chat-screen via requestedChatActionId
-    },
-  },
 ];
 
 export function findChatSlashAction(

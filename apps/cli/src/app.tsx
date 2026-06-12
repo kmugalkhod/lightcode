@@ -13,6 +13,7 @@ import { ChatScreen } from "./screens/chat-screen";
 import { DiagnosticsScreen } from "./screens/diagnostics-screen";
 import { HomeScreen } from "./screens/home-screen";
 import { ModelScreen } from "./screens/model-screen";
+import { ModelSelectScreen } from "./screens/model-select-screen";
 import { OnboardingScreen } from "./screens/onboarding-screen";
 import { SessionListScreen } from "./screens/session-list-screen";
 import { AppStateProvider, useAppState } from "./state/app-state";
@@ -69,6 +70,10 @@ function getCurrentViewLabel(pathname: string): string {
 
   if (pathname === "/model-info") {
     return "model";
+  }
+
+  if (pathname === "/model") {
+    return "model-select";
   }
 
   return pathname;
@@ -333,6 +338,7 @@ function AppContent() {
           <Route path="/tools" element={<DiagnosticsScreen kind="tools" />} />
           <Route path="/config" element={<DiagnosticsScreen kind="config" />} />
           <Route path="/model-info" element={<ModelScreen />} />
+          <Route path="/model" element={<ModelSelectScreen />} />
           <Route path="/onboarding" element={<OnboardingScreen />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

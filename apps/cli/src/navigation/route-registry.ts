@@ -8,6 +8,7 @@ export interface RouteDefinition {
     | "tools"
     | "config"
     | "model"
+    | "model-select"
     | "latest-session";
   label: string;
   description: string;
@@ -69,11 +70,16 @@ export const routeRegistry: AnyRouteDefinition[] = [
     shortcut: "/config",
   },
   {
+    id: "model-select",
+    label: "Switch Model",
+    description: "Pick any OpenRouter model; applies immediately and persists to settings.json",
+    path: "/model",
+    shortcut: "/model",
+  },
+  {
     id: "model",
     label: "Model Info",
     description: "Show provider, model, base URL, and key hints",
-    // "/model" itself opens the model SELECTOR (chat slash action); this
-    // read-only page moved to /model-info so the two stop colliding.
     path: "/model-info",
     shortcut: "/model-info",
   },

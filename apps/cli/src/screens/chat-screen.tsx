@@ -37,7 +37,6 @@ import {
 } from "../components/chat/chat-interaction-popup";
 import { ChatMessage } from "../components/chat/chat-message";
 import { ChatShell } from "../components/chat/chat-shell";
-import { ModelSelector } from "../components/chat/model-selector";
 import { PermissionModeSelector } from "../components/chat/permission-mode-selector";
 import { ChatTextArea } from "../components/chat/chat-text-area";
 import { ChatTodoStatusCard } from "../components/chat/chat-todo-status-card";
@@ -201,7 +200,6 @@ export function ChatScreen() {
     tone: ChatActionTone;
   } | null>(null);
   const [permissionSelectorOpen, setPermissionSelectorOpen] = useState(false);
-  const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const slashRoutes = getSlashMenuItems(slashMenuQuery, {
     includeChatActions: true,
   });
@@ -512,10 +510,6 @@ export function ChatScreen() {
         setPermissionSelectorOpen(true);
         return;
       }
-      if (action.id === "model") {
-        setModelSelectorOpen(true);
-        return;
-      }
       runChatSlashAction(action);
     }
   }, [clearRequestedChatAction, requestedChatActionId, runChatSlashAction]);
@@ -588,10 +582,6 @@ export function ChatScreen() {
         // Selector actions open an overlay; their run() is a placeholder.
         if (action.id === "permission") {
           setPermissionSelectorOpen(true);
-          return;
-        }
-        if (action.id === "model") {
-          setModelSelectorOpen(true);
           return;
         }
         runChatSlashAction(action);
@@ -978,12 +968,6 @@ export function ChatScreen() {
             currentMode={permissionMode}
             onSelect={updatePermissionMode}
             onClose={() => setPermissionSelectorOpen(false)}
-          />
-        ) : null}
-        {modelSelectorOpen ? (
-          <ModelSelector
-            notify={notifyChatAction}
-            onClose={() => setModelSelectorOpen(false)}
           />
         ) : null}
       </ChatShell>
