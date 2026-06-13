@@ -13,16 +13,18 @@ import {
   sessionPathParamsSchema,
 } from "@lightcode/ai";
 import { useCodingSessionChat } from "@lightcode/ai/react";
-import { useKeyboard } from "@opentui/react";
+import { useKeyboard, useRenderer } from "@opentui/react";
 import type { UIMessage } from "ai";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import {
   findChatSlashAction,
   getChatSlashActionById,
+  parseChatSlashArgs,
   type ChatActionTone,
   type ChatSlashActionDefinition,
 } from "../commands/chat-slash-actions";
+import { copyText } from "../lib/clipboard";
 import { getSlashMenuItems } from "../commands/slash-menu-items";
 import { SlashPageMenu } from "../commands/slash-page-menu";
 import {
@@ -42,6 +44,7 @@ import { ChatTextArea } from "../components/chat/chat-text-area";
 import { ChatTodoStatusCard } from "../components/chat/chat-todo-status-card";
 import { ChatToolApprovalCard } from "../components/chat/chat-tool-approval-card";
 import { LoadingTimer } from "../components/chat/loading-timer";
+import { CopyModeOverlay } from "../components/chat/copy-mode-overlay";
 import { useAutoContinueConfig } from "../hooks/use-auto-continue-config";
 import { useContextWindow } from "../hooks/use-context-window";
 import { useLoadingTimer } from "../hooks/use-loading-timer";
@@ -55,6 +58,8 @@ import { useAppState } from "../state/app-state";
 import { cliTheme } from "../ui/cli-theme";
 import { estimateContextUsage } from "../utils/chat-context-utils";
 import { appendMentionAttachments } from "../utils/file-mentions";
+import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../utils/key-utils";
+import { extractCodeBlocks } from "../utils/markdown-code";
 
 const autoImplementationInstruction =
   "Please implement the approved plan now. Execute the work end-to-end and summarize completed changes.";
@@ -458,16 +463,68 @@ export function ChatScreen() {
     [],
   );
 
+  const renderer = useRenderer();
+
+  const [copyModeOpen, setCopyModeOpen] = useState(false);
+  const [copyModeIndex, setCopyModeIndex] = useState(0);
+
+  // User + assistant messages that actually have text — the copyable targets.
+  const copyableMessages = useMemo(
+    () =>
+      messages.filter(
+        (message) =>
+          (message.role === "user" || message.role === "assistant") &&
+          collectMessageText(message).trim().length > 0,
+      ),
+    [messages],
+  );
+
+  const copySelectedMessage = useCallback(
+    async (kind: "text" | "code") => {
+      const message = copyableMessages[copyModeIndex];
+      if (!message) {
+        return;
+      }
+
+      const fullText = collectMessageText(message);
+      let payload = fullText;
+      let label = "message";
+
+      if (kind === "code") {
+        const blocks = extractCodeBlocks(fullText);
+        if (blocks.length === 0) {
+          notifyChatAction("No code blocks in this message.", "error");
+          return;
+        }
+        payload = blocks.map((block) => block.code).join("\n\n");
+        label = blocks.length === 1 ? "code block" : "code blocks";
+      }
+
+      const copied = await copyText(renderer, payload);
+      notifyChatAction(
+        copied
+          ? `Copied ${label} to clipboard (${payload.length} chars).`
+          : "Copy failed: clipboard unavailable in this terminal.",
+        copied ? "info" : "error",
+      );
+      setCopyModeOpen(false);
+    },
+    [copyModeIndex, copyableMessages, notifyChatAction, renderer],
+  );
+
   const runChatSlashAction = useCallback(
-    (action: ChatSlashActionDefinition) => {
+    (action: ChatSlashActionDefinition, args = "") => {
       void action.run({
         sessionId,
+        args,
+        messages,
         setContextState,
         notify: notifyChatAction,
         setPermissionMode: setPermissionModeToState,
+        copyToClipboard: (text: string) => copyText(renderer, text),
       });
     },
-    [notifyChatAction, sessionId],
+    [messages, notifyChatAction, renderer, sessionId],
   );
 
   const updatePermissionMode = useCallback(
@@ -584,7 +641,7 @@ export function ChatScreen() {
           setPermissionSelectorOpen(true);
           return;
         }
-        runChatSlashAction(action);
+        runChatSlashAction(action, parseChatSlashArgs(text));
         return;
       }
 
@@ -688,6 +745,68 @@ export function ChatScreen() {
 
   useKeyboard((keyEvent) => {
     const keyName = keyEvent.name.toLowerCase();
+
+    // While copy mode is open it owns the keyboard.
+    if (copyModeOpen) {
+      if (isEscapeKey(keyName)) {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        setCopyModeOpen(false);
+        return;
+      }
+      if (isUpKey(keyName, { vim: true })) {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        setCopyModeIndex((index) => Math.max(0, index - 1));
+        return;
+      }
+      if (isDownKey(keyName, { vim: true })) {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        setCopyModeIndex((index) =>
+          Math.min(copyableMessages.length - 1, index + 1),
+        );
+        return;
+      }
+      if (isEnterKey(keyName) || keyName === "y") {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        void copySelectedMessage("text");
+        return;
+      }
+      if (keyName === "c") {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        void copySelectedMessage("code");
+        return;
+      }
+      // Swallow other keys so they don't leak into the transcript/input.
+      return;
+    }
+
+    const isCtrlY =
+      keyName === "y" &&
+      keyEvent.ctrl &&
+      !keyEvent.meta &&
+      !keyEvent.super &&
+      !keyEvent.hyper &&
+      !keyEvent.shift;
+    if (isCtrlY) {
+      if (
+        !isSessionIdValid ||
+        hasBlockingPopup ||
+        slashMenuOpen ||
+        copyableMessages.length === 0
+      ) {
+        return;
+      }
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+      setCopyModeIndex(copyableMessages.length - 1);
+      setCopyModeOpen(true);
+      return;
+    }
+
     const isPlainTab =
       (keyName === "tab" || keyEvent.sequence === "\t") &&
       !keyEvent.ctrl &&
@@ -731,8 +850,8 @@ export function ChatScreen() {
         inputArea={
           <ChatTextArea
             placeholder={isLoading ? "Waiting for response..." : "Reply... (@ to attach files)"}
-            focused={canTypeInChat}
-            disabled={!canTypeInChat}
+            focused={canTypeInChat && !copyModeOpen}
+            disabled={!canTypeInChat || copyModeOpen}
             slashMenuOpen={slashMenuOpen}
             mentionCandidates={mentionCandidates}
             onTextChange={syncSlashMenuFromInput}
@@ -745,7 +864,9 @@ export function ChatScreen() {
             ) : null}
             footer={
               <box flexDirection="row" justifyContent="space-between">
-                {canRetryRecoverableResponse ? (
+                {copyModeOpen ? (
+                  <text fg={cliTheme.text.muted}>Copy mode: ↑/↓ select · Enter copy · c code · Esc exit</text>
+                ) : canRetryRecoverableResponse ? (
                   <text fg={cliTheme.text.muted}>Type retry or regenerate to try again</text>
                 ) : pendingApprovals.length > 0 ? (
                   <text fg={cliTheme.text.muted}>Use approval card or approve/deny commands</text>
@@ -754,7 +875,7 @@ export function ChatScreen() {
                 ) : slashMenuOpen ? (
                   <text fg={cliTheme.text.muted}>Choose a page or press Esc</text>
                 ) : (
-                  <text fg={cliTheme.text.muted}>Tab/Ctrl+T switch mode | Ctrl+P commands</text>
+                  <text fg={cliTheme.text.muted}>Tab/Ctrl+T mode | Ctrl+Y copy | Ctrl+P commands</text>
                 )}
                 <box flexDirection="row" gap={1} alignItems="center">
                   <text fg={contextMeterColor}>
@@ -968,6 +1089,15 @@ export function ChatScreen() {
             currentMode={permissionMode}
             onSelect={updatePermissionMode}
             onClose={() => setPermissionSelectorOpen(false)}
+          />
+        ) : null}
+        {copyModeOpen ? (
+          <CopyModeOverlay
+            messages={copyableMessages}
+            selectedIndex={Math.min(
+              copyModeIndex,
+              Math.max(copyableMessages.length - 1, 0),
+            )}
           />
         ) : null}
       </ChatShell>

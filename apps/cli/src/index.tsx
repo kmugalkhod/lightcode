@@ -20,7 +20,9 @@ const { createRoot } = await import("@opentui/react");
 const { App } = await import("./app");
 
 const renderer = await createCliRenderer({
-  exitOnCtrlC: true,
+  // We own Ctrl+C in app.tsx (copy selection / "press again to exit"); the
+  // renderer must not hard-quit on it. Ctrl+Q remains an immediate quit.
+  exitOnCtrlC: false,
 });
 
 if (serverLaunch.ownedProcess) {

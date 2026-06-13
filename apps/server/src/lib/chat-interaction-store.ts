@@ -31,20 +31,18 @@ export class ChatInteractionNotFoundError extends Error {
 
 // Singleton database instance — initialized once and closed on process exit
 let _db: Database | null = null;
-let _initialized = false;
 
 function getDatabase(): Database {
-  if (!_initialized) {
+  if (!_db) {
+    // Derive the path from the single resolved store URL so interactions always
+    // open the same SQLite file as the Prisma client. Never read the ambient
+    // DATABASE_URL here — see resolveDatabaseUrl() for why that would scatter
+    // the store across the user's projects.
     const dbUrl = resolveDatabaseUrl();
     initializeLocalDatabase(dbUrl);
-    _initialized = true;
-  }
+    const dbPath = filePathFromDatabaseUrl(dbUrl) ?? getDefaultDatabasePath();
 
-  if (!_db) {
-    const dbUrl = process.env.DATABASE_URL ?? getDefaultDatabasePath();
-    const dbPath = filePathFromDatabaseUrl(dbUrl) ?? (dbUrl.startsWith("file:") ? dbUrl.slice(5) : dbUrl);
-
-    _db = new Database(dbPath as string);
+    _db = new Database(dbPath);
   }
 
   return _db;

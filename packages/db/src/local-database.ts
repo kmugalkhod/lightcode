@@ -34,21 +34,36 @@ export function getDefaultDatabaseUrl() {
   return pathToFileURL(getDefaultDatabasePath()).href;
 }
 
+/**
+ * Resolves the Lightcode session-store URL.
+ *
+ * Lightcode is a coding agent that runs *inside* the user's projects, and the
+ * runtime (Bun) auto-loads a `.env` from the launch directory. That means the
+ * ambient `DATABASE_URL` belongs to the user's project — not to Lightcode — so
+ * we must never use it: doing so scattered Lightcode's sessions into whatever
+ * database the current project pointed at (e.g. a project with
+ * `DATABASE_URL="file:./prisma/dev.db"` had Lightcode write its sessions into
+ * that project's own SQLite file), making previously saved sessions vanish from
+ * `/sessions` whenever the launch directory changed.
+ *
+ * The store is therefore a fixed per-user location, overridable only via
+ * Lightcode-namespaced inputs that cannot collide with a project's env:
+ *   1. `LIGHTCODE_DATABASE_URL` — opt-in for a libsql/Turso or alternate file URL
+ *   2. `LIGHTCODE_DATABASE_PATH` — opt-in file path (via {@link getDefaultDatabaseUrl})
+ *   3. the default `~/.lightcode/lightcode.db` (or `%APPDATA%\lightcode` on Windows)
+ */
 export function resolveDatabaseUrl() {
-  const configuredUrl = process.env.DATABASE_URL?.trim();
+  const configuredUrl = process.env.LIGHTCODE_DATABASE_URL?.trim();
   const supportedConfiguredUrl =
-    configuredUrl?.startsWith("file:") ||
-    configuredUrl?.startsWith("libsql:") ||
-    configuredUrl?.startsWith("http://") ||
-    configuredUrl?.startsWith("https://")
+    configuredUrl &&
+    (configuredUrl.startsWith("file:") ||
+      configuredUrl.startsWith("libsql:") ||
+      configuredUrl.startsWith("http://") ||
+      configuredUrl.startsWith("https://"))
       ? configuredUrl
       : null;
-  const databaseUrl = supportedConfiguredUrl && supportedConfiguredUrl.length > 0
-    ? supportedConfiguredUrl
-    : getDefaultDatabaseUrl();
 
-  process.env.DATABASE_URL = databaseUrl;
-  return databaseUrl;
+  return supportedConfiguredUrl ?? getDefaultDatabaseUrl();
 }
 
 export function filePathFromDatabaseUrl(databaseUrl: string) {

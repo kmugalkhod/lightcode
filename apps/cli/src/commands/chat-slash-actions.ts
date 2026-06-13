@@ -1,11 +1,14 @@
 import {
+  collectMessageText,
   permissionModeSchema,
   sessionCompactResponseSchema,
   sessionExportJsonSchema,
   type PermissionMode,
   type SessionContextState,
 } from "@lightcode/ai";
+import type { UIMessage } from "ai";
 import { client } from "../lib/client";
+import { extractCodeBlocks } from "../utils/markdown-code";
 import {
   getExportPath,
   sessionToMarkdown,
@@ -15,9 +18,14 @@ export type ChatActionTone = "info" | "error";
 
 export interface ChatSlashActionContext {
   sessionId: string;
+  /** Text after the command token, e.g. "all" for "/copy all". */
+  args: string;
+  /** Current conversation, newest last. */
+  messages: UIMessage[];
   setContextState: (state: SessionContextState | null) => void;
   notify: (message: string, tone?: ChatActionTone) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+  copyToClipboard: (text: string) => Promise<boolean>;
 }
 
 export interface ChatSlashActionDefinition {
@@ -135,7 +143,91 @@ async function runExportAction({
   }
 }
 
+function latestAssistantText(messages: UIMessage[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "assistant") {
+      const text = collectMessageText(message);
+      if (text.trim()) {
+        return text;
+      }
+    }
+  }
+  return null;
+}
+
+function conversationTranscript(messages: UIMessage[]): string {
+  return messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => {
+      const text = collectMessageText(message);
+      if (!text.trim()) {
+        return null;
+      }
+      const label = message.role === "user" ? "You" : "Assistant";
+      return `## ${label}\n\n${text}`;
+    })
+    .filter((entry): entry is string => entry !== null)
+    .join("\n\n");
+}
+
+/** /copy [last|code|all] — copy chat content to the system clipboard. */
+async function runCopyAction({
+  args,
+  messages,
+  notify,
+  copyToClipboard,
+}: ChatSlashActionContext): Promise<void> {
+  const scope = args.trim().toLowerCase() || "last";
+
+  let payload: string | null = null;
+  let label: string;
+
+  if (scope === "all") {
+    const transcript = conversationTranscript(messages);
+    payload = transcript.trim() ? transcript : null;
+    label = "conversation";
+  } else if (scope === "code") {
+    const lastText = latestAssistantText(messages);
+    const blocks = lastText ? extractCodeBlocks(lastText) : [];
+    payload = blocks.length > 0 ? blocks.map((block) => block.code).join("\n\n") : null;
+    label = blocks.length === 1 ? "code block" : "code blocks";
+  } else if (scope === "last") {
+    payload = latestAssistantText(messages);
+    label = "last reply";
+  } else {
+    notify("Usage: /copy [last|code|all]", "error");
+    return;
+  }
+
+  if (!payload) {
+    notify(
+      scope === "code"
+        ? "No code blocks found in the last reply."
+        : "Nothing to copy yet.",
+      "error",
+    );
+    return;
+  }
+
+  const copied = await copyToClipboard(payload);
+  notify(
+    copied
+      ? `Copied ${label} to clipboard (${payload.length} chars).`
+      : "Copy failed: clipboard unavailable in this terminal.",
+    copied ? "info" : "error",
+  );
+}
+
 export const chatSlashActions: ChatSlashActionDefinition[] = [
+  {
+    kind: "chat-action",
+    id: "copy",
+    label: "Copy",
+    description: "Copy chat content to the clipboard: /copy [last|code|all]",
+    shortcut: "/copy",
+    run: runCopyAction,
+  },
   {
     kind: "chat-action",
     id: "export",
@@ -176,10 +268,19 @@ export const chatSlashActions: ChatSlashActionDefinition[] = [
 export function findChatSlashAction(
   text: string,
 ): ChatSlashActionDefinition | null {
-  const normalized = text.trim().toLowerCase();
+  // Match on the command token only so actions can take arguments
+  // (e.g. "/copy all" still resolves to the "/copy" action).
+  const command = text.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
   return (
-    chatSlashActions.find((action) => action.shortcut === normalized) ?? null
+    chatSlashActions.find((action) => action.shortcut === command) ?? null
   );
+}
+
+/** Returns the text after the command token, e.g. "all" for "/copy all". */
+export function parseChatSlashArgs(text: string): string {
+  const trimmed = text.trim();
+  const firstSpace = trimmed.search(/\s/);
+  return firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
 }
 
 export function getChatSlashActionById(

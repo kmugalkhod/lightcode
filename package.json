@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Lightcode — a personal AI coding agent with a terminal UI and local session storage.",
   "type": "module",
+  "license": "MIT",
   "packageManager": "bun@1.3.13",
   "workspaces": [
     "apps/*",

@@ -5,7 +5,8 @@ import { cliTheme } from "../ui/cli-theme";
 const screenHints: Array<{ context: string; hint: string }> = [
   { context: "Chat", hint: "Tab/Ctrl+T switch mode | @ attach files | /compact, /undo actions" },
   { context: "Chat", hint: "Ctrl+O expand tool output | Enter send | Ctrl+Enter newline" },
-  { context: "Sessions", hint: "Enter resume | r rename | f fork | / filter | e export | d delete" },
+  { context: "Copy", hint: "Ctrl+Y copy mode (↑/↓ pick, Enter copy, c code) | /copy [last|code|all]" },
+  { context: "Sessions", hint: "Enter resume | r rename | f fork | / filter | e export (.md) | d delete" },
 ];
 
 function formatSequence(binding: KeyBinding): string {

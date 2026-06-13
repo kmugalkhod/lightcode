@@ -259,9 +259,10 @@ writeFileSync(
       description:
         "Lightcode — a personal AI coding agent with a terminal UI and local session storage.",
       type: "module",
+      license: "MIT",
       bin: { lightcode: "./lightcode.cjs" },
       engines: { bun: ">=1.3.0" },
-      files: ["cli.js", "lightcode.cjs", "server.js", "README.md"],
+      files: ["cli.js", "lightcode.cjs", "server.js", "README.md", "LICENSE"],
       dependencies: externalDependencies,
     },
     null,
@@ -274,6 +275,14 @@ if (existsSync(path.join(repoRoot, "README.md"))) {
   writeFileSync(
     path.join(distDir, "README.md"),
     readFileSync(path.join(repoRoot, "README.md"), "utf8"),
+    "utf8",
+  );
+}
+
+if (existsSync(path.join(repoRoot, "LICENSE"))) {
+  writeFileSync(
+    path.join(distDir, "LICENSE"),
+    readFileSync(path.join(repoRoot, "LICENSE"), "utf8"),
     "utf8",
   );
 }

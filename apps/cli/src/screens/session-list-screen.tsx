@@ -5,13 +5,17 @@ import {
   sessionExportJsonSchema,
   sessionForkResponseSchema,
   sessionListResponseSchema,
+  sessionSummarySchema,
   type SessionSummary,
 } from "@lightcode/ai";
-import path from "node:path";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { client } from "../lib/client";
 import { BACK_SHORTCUT_LABEL } from "../commands/keymap";
+import {
+  getExportPath,
+  sessionToMarkdown,
+} from "../commands/export-session-markdown";
 import { ChatTextArea } from "../components/chat/chat-text-area";
 import { cliTheme, getOverlayRowColors } from "../ui/cli-theme";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../utils/key-utils";
@@ -57,6 +61,23 @@ export function SessionListScreen() {
   const selectedSession = visibleSessions[safeSelectedIndex] ?? null;
   const inputActive = filterOpen || renamingSessionId !== null;
 
+  const applyLoadedSessions = useCallback(
+    (loadedSessions: SessionSummary[], droppedCount: number) => {
+      setSessions(loadedSessions);
+      setSelectedIndex((currentIndex) =>
+        Math.min(currentIndex, Math.max(loadedSessions.length - 1, 0)),
+      );
+      setErrorMessage(
+        droppedCount > 0
+          ? `${droppedCount} session${droppedCount === 1 ? "" : "s"} could not be read and ${
+              droppedCount === 1 ? "was" : "were"
+            } skipped.`
+          : null,
+      );
+    },
+    [],
+  );
+
   const loadSessions = useCallback(async () => {
     setIsLoading(true);
     setErrorMessage(null);
@@ -69,20 +90,41 @@ export function SessionListScreen() {
 
       const rawPayload = await response.json();
       const parsedPayload = sessionListResponseSchema.safeParse(rawPayload);
-      if (!parsedPayload.success) {
+      if (parsedPayload.success) {
+        applyLoadedSessions(parsedPayload.data.sessions, 0);
+        return;
+      }
+
+      // A single malformed/legacy row must not blank the whole list — salvage
+      // the rows that do parse and report how many were skipped.
+      const rawSessions =
+        rawPayload &&
+        typeof rawPayload === "object" &&
+        Array.isArray((rawPayload as { sessions?: unknown }).sessions)
+          ? (rawPayload as { sessions: unknown[] }).sessions
+          : null;
+      if (!rawSessions) {
         throw new Error("Server returned an invalid session list response.");
       }
 
-      setSessions(parsedPayload.data.sessions);
-      setSelectedIndex((currentIndex) =>
-        Math.min(currentIndex, Math.max(parsedPayload.data.sessions.length - 1, 0)),
-      );
+      const validSessions: SessionSummary[] = [];
+      let droppedCount = 0;
+      for (const rawSession of rawSessions) {
+        const parsedSession = sessionSummarySchema.safeParse(rawSession);
+        if (parsedSession.success) {
+          validSessions.push(parsedSession.data);
+        } else {
+          droppedCount += 1;
+        }
+      }
+
+      applyLoadedSessions(validSessions, droppedCount);
     } catch (error) {
-      setErrorMessage(getErrorMessage(error, "Unable to list sessions."));
+      setErrorMessage(getErrorMessage(error, "Unable to reach the Lightcode server."));
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [applyLoadedSessions]);
 
   const resumeSelectedSession = useCallback(() => {
     if (!selectedSession) {
@@ -156,15 +198,12 @@ export function SessionListScreen() {
         throw new Error("Server returned an invalid export response.");
       }
 
-      const exportPath = path.join(
-        process.cwd(),
-        `lightcode-session-${selectedSession.id}.json`,
+      const exportPath = getExportPath(
+        parsedPayload.data.session.title,
+        parsedPayload.data.session.id,
       );
-      await Bun.write(
-        exportPath,
-        JSON.stringify(parsedPayload.data, null, 2),
-      );
-      setActionMessage(`Exported JSON to ${exportPath}`);
+      await Bun.write(exportPath, sessionToMarkdown(parsedPayload.data));
+      setActionMessage(`Exported Markdown to ${exportPath.replace(/\\/g, "/")}`);
     } catch (error) {
       setActionMessage(getErrorMessage(error, "Unable to export session."));
     }

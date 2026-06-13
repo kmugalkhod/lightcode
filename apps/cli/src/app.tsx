@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MemoryRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import { HelpOverlay } from "./components/help-overlay";
 import { CommandPalette } from "./commands/command-palette";
@@ -19,6 +19,7 @@ import { SessionListScreen } from "./screens/session-list-screen";
 import { AppStateProvider, useAppState } from "./state/app-state";
 import { useConfigBadge } from "./hooks/use-config-badge";
 import { cliTheme } from "./ui/cli-theme";
+import { copyText } from "./lib/clipboard";
 import {
   isBackspaceKey as isBackspaceKeyName,
   isDownKey as isDownKeyName,
@@ -102,6 +103,53 @@ function AppContent() {
     toggleToolOutputExpansion,
   } = useAppState();
   const [helpOpen, setHelpOpen] = useState(false);
+
+  // Smart Ctrl+C: copy a selection if there is one, otherwise arm a
+  // "press again to exit" hint that quits on a second press within the window.
+  const [ctrlCNotice, setCtrlCNotice] = useState<string | null>(null);
+  const ctrlCArmedRef = useRef(false);
+  const ctrlCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showCtrlCNotice = (text: string) => {
+    setCtrlCNotice(text);
+    if (ctrlCTimerRef.current) {
+      clearTimeout(ctrlCTimerRef.current);
+    }
+    ctrlCTimerRef.current = setTimeout(() => {
+      setCtrlCNotice(null);
+      ctrlCArmedRef.current = false;
+      ctrlCTimerRef.current = null;
+    }, 2000);
+  };
+
+  const handleCtrlC = () => {
+    const selection = renderer.getSelection();
+    const selectedText = selection ? selection.getSelectedText() : "";
+
+    if (selectedText.trim().length > 0) {
+      void copyText(renderer, selectedText);
+      renderer.clearSelection();
+      ctrlCArmedRef.current = false;
+      showCtrlCNotice(`Copied ${selectedText.length} chars to clipboard`);
+      return;
+    }
+
+    if (ctrlCArmedRef.current) {
+      renderer.destroy();
+      return;
+    }
+
+    ctrlCArmedRef.current = true;
+    showCtrlCNotice("Press Ctrl+C again to exit");
+  };
+
+  useEffect(() => {
+    return () => {
+      if (ctrlCTimerRef.current) {
+        clearTimeout(ctrlCTimerRef.current);
+      }
+    };
+  }, []);
 
   const canGoBack = location.pathname !== "/" && location.pathname !== "/home";
   const currentView = getCurrentViewLabel(location.pathname);
@@ -240,6 +288,13 @@ function AppContent() {
   };
 
   useKeyboard((keyEvent) => {
+    // Ctrl+C is handled first, regardless of any open menu, so copy / quit
+    // always behaves consistently.
+    if (keyEvent.ctrl && keyEvent.name === "c") {
+      handleCtrlC();
+      return;
+    }
+
     if (slashMenuOpen) {
       handleSlashMenuKeyDown(keyEvent);
       return;
@@ -251,11 +306,6 @@ function AppContent() {
     }
 
     const normalizedKey = normalizeKeyName(keyEvent.name, keyEvent.ctrl, false, false);
-
-    if (keyEvent.ctrl && keyEvent.name === "c") {
-      handleAction("system:quit");
-      return;
-    }
 
     if (isEscapeKey(keyEvent)) {
       handleAction("system:cancel");
@@ -375,8 +425,8 @@ function AppContent() {
         border={["top"]}
         borderColor={cliTheme.borders.default}
       >
-        <text fg={cliTheme.text.muted}>
-          {getFooterStatus()}
+        <text fg={ctrlCNotice ? cliTheme.semantic.warning : cliTheme.text.muted}>
+          {ctrlCNotice ?? getFooterStatus()}
         </text>
       </box>
     </box>
