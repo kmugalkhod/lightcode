@@ -130,6 +130,23 @@ async function startServer() {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
+  // Parent-death watchdog: when the CLI that launched us is gone, exit too.
+  // process.on("exit") in the CLI cannot cover SIGKILL or terminal closes, and
+  // on macOS the spawned server otherwise survives — leaving a stale server on
+  // the port that a later run reuses with frozen config.
+  const parentPid = Number(Bun.env.LIGHTCODE_PARENT_PID);
+  if (Number.isInteger(parentPid) && parentPid > 0) {
+    const parentWatch = setInterval(() => {
+      try {
+        // Signal 0 performs existence/permission checks without delivering one.
+        process.kill(parentPid, 0);
+      } catch {
+        void shutdown("parent-exit");
+      }
+    }, 2_000);
+    parentWatch.unref();
+  }
+
   console.log(`Server listening on http://${hostname}:${port}`);
 }
 

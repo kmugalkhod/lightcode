@@ -6,6 +6,19 @@ permission-gated tool suite (files, shell, git, web, MCP), and tiered context
 optimization that keeps long sessions inside the model's context window
 without ever losing history.
 
+## Install
+
+```bash
+npm install -g @kmugalkhod/lightcode
+lightcode
+```
+
+Works on macOS (Apple Silicon and Intel), Linux, and Windows. Bun ships with
+the package, so there's nothing else to install — the first `lightcode` run
+uses the bundled runtime automatically (and reuses a system Bun if you already
+have one). The published package is scoped as `@kmugalkhod/lightcode`; the
+command it installs is `lightcode`.
+
 ## Quick start (from source)
 
 ```bash

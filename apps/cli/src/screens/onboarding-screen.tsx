@@ -7,6 +7,7 @@ import path from "node:path";
 import { useCallback, useState } from "react";
 import { useNavigate } from "react-router";
 import { ChatTextArea } from "../components/chat/chat-text-area";
+import { client } from "../lib/client";
 import { restartOwnedServer } from "../lib/server-launcher";
 import { useAppState } from "../state/app-state";
 import { cliTheme } from "../ui/cli-theme";
@@ -126,8 +127,21 @@ export function OnboardingScreen() {
           ...(finalBaseUrl ? { baseUrl: finalBaseUrl } : {}),
         });
 
+        // Best-effort restart for the owned-server case (also recovers a
+        // crashed server). When the server is not owned by this CLI (e.g. an
+        // orphaned server from a previous run still holding the port), restart
+        // is a no-op — so always ask the running server to reload config from
+        // disk, which applies the new credentials/settings without a restart.
         const restarted = await restartOwnedServer();
-        setServerRestarted(restarted);
+        let reloaded = false;
+        try {
+          const response = await client.config.reload.$post();
+          reloaded = response.ok;
+        } catch {
+          // Reload is best-effort; a successful restart already applied config.
+        }
+
+        setServerRestarted(restarted || reloaded);
         bumpConfigRefresh();
         setStep("done");
       } catch (error) {

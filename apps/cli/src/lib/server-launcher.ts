@@ -141,6 +141,10 @@ export async function ensureServerRunning(): Promise<ServerLaunchResult> {
     env: {
       ...process.env,
       PORT: port,
+      // Let the server self-exit if this CLI dies abruptly (SIGKILL, terminal
+      // close) — cases the process.on("exit") cleanup cannot cover. Without
+      // this the server orphans on macOS and a later run reuses a stale one.
+      LIGHTCODE_PARENT_PID: String(process.pid),
     },
   });
 
