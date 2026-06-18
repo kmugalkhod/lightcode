@@ -54,6 +54,38 @@ export const defaultAutoContinueConfig: ResolvedAutoContinueConfig = {
   stallTimeoutSeconds: 180,
 };
 
+// Optional facility for routing provider traffic through a headroom compressing
+// proxy (https://github.com/chopratejas/headroom). It works exactly like the
+// Claude Code recipe — point the provider base URL at a local proxy — so when
+// enabled the resolver swaps the effective baseURL to `proxyUrl`. Off by default
+// and failOpen by default so a dead Python sidecar never breaks the agent.
+export const headroomConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    proxyUrl: z.string().min(1).max(4096).optional(),
+    /** Providers to route through the proxy; omit/null = all providers. */
+    providers: z.array(lightcodeProviderSchema).optional(),
+    /** Fall back to the real provider when the proxy is unreachable. */
+    failOpen: z.boolean().optional(),
+  })
+  .strict();
+export type HeadroomConfig = z.infer<typeof headroomConfigSchema>;
+
+export const resolvedHeadroomConfigSchema = z.object({
+  enabled: z.boolean(),
+  proxyUrl: z.string().min(1).max(4096),
+  providers: z.array(lightcodeProviderSchema).nullable(),
+  failOpen: z.boolean(),
+});
+export type ResolvedHeadroomConfig = z.infer<typeof resolvedHeadroomConfigSchema>;
+
+export const defaultHeadroomConfig: ResolvedHeadroomConfig = {
+  enabled: false,
+  proxyUrl: "http://127.0.0.1:8787",
+  providers: null,
+  failOpen: true,
+};
+
 export const lightcodeConfigSchema = z
   .object({
     provider: lightcodeProviderSchema.optional(),
@@ -66,11 +98,12 @@ export const lightcodeConfigSchema = z
     sandbox: sandboxConfigSchema.optional(),
     mcp: mcpConfigSchema.optional(),
     context: contextOptimizerConfigSchema.optional(),
-    maxOutputTokens: z.number().int().min(1).max(200_000).optional(),
+    maxOutputTokens: z.number().int().min(1).max(1_000_000).optional(),
     maxSteps: z.number().int().min(1).max(100).optional(),
     /** Provider-call retries for transient errors (429/5xx/network). */
     maxRetries: z.number().int().min(0).max(10).optional(),
     autoContinue: autoContinueConfigSchema.optional(),
+    headroom: headroomConfigSchema.optional(),
   })
   .strict();
 
@@ -89,6 +122,7 @@ export const lightcodeConfigDefaults = {
   // worst-case latency bounded while riding out provider blips.
   maxRetries: 5,
   autoContinue: defaultAutoContinueConfig,
+  headroom: defaultHeadroomConfig,
 } satisfies Pick<
   LightcodeResolvedConfig,
   | "provider"
@@ -98,6 +132,7 @@ export const lightcodeConfigDefaults = {
   | "maxSteps"
   | "maxRetries"
   | "autoContinue"
+  | "headroom"
 >;
 
 export const loadedConfigFileSchema = z.object({
@@ -112,10 +147,11 @@ export const lightcodeResolvedConfigSchema = lightcodeConfigSchema.extend({
   provider: lightcodeProviderSchema,
   defaultMode: codingAgentModeSchema,
   context: resolvedContextOptimizerConfigSchema,
-  maxOutputTokens: z.number().int().min(1).max(200_000),
+  maxOutputTokens: z.number().int().min(1).max(1_000_000),
   maxSteps: z.number().int().min(1).max(100),
   maxRetries: z.number().int().min(0).max(10),
   autoContinue: resolvedAutoContinueConfigSchema,
+  headroom: resolvedHeadroomConfigSchema.optional(),
 });
 export type LightcodeResolvedConfig = z.infer<typeof lightcodeResolvedConfigSchema>;
 
@@ -135,11 +171,20 @@ export const lightcodeConfigStatusSchema = z.object({
   baseUrl: z.string().nullable(),
   defaultMode: codingAgentModeSchema,
   permissionMode: permissionModeSchema.nullable(),
-  maxOutputTokens: z.number().int().min(1).max(200_000),
+  // Effective per-model output ceiling (may be the model's full advertised
+  // max_completion_tokens, e.g. 512K for minimax-m3), not just the config value.
+  maxOutputTokens: z.number().int().min(1).max(1_000_000),
   maxSteps: z.number().int().min(1).max(100),
   autoContinue: resolvedAutoContinueConfigSchema,
   /** Effective context window in tokens (config override or model metadata). */
   contextWindow: z.number().int().positive(),
+  /** Headroom compressing-proxy facility status. */
+  headroom: z.object({
+    enabled: z.boolean(),
+    proxyUrl: z.string().nullable(),
+    /** True when traffic is actively routed through the proxy right now. */
+    routed: z.boolean(),
+  }),
   missingCredentialHints: z.array(z.string()),
 });
 export type LightcodeConfigStatus = z.infer<typeof lightcodeConfigStatusSchema>;
@@ -300,9 +345,39 @@ function readEnvConfig(env: Record<string, string | undefined>): LightcodeConfig
       env.LIGHTCODE_CONTEXT_SUMMARY_MAX_CHARS,
       "LIGHTCODE_CONTEXT_SUMMARY_MAX_CHARS",
     ),
+    aggressivePruneWhenUncached: parseBooleanEnv(
+      env.LIGHTCODE_CONTEXT_AGGRESSIVE_PRUNE_UNCACHED,
+      "LIGHTCODE_CONTEXT_AGGRESSIVE_PRUNE_UNCACHED",
+    ),
+    uncachedPruneAtFraction: parseNumberEnv(
+      env.LIGHTCODE_CONTEXT_UNCACHED_PRUNE_AT_FRACTION,
+      "LIGHTCODE_CONTEXT_UNCACHED_PRUNE_AT_FRACTION",
+    ),
+    uncachedPruneMinOutputChars: parseNumberEnv(
+      env.LIGHTCODE_CONTEXT_UNCACHED_PRUNE_MIN_OUTPUT_CHARS,
+      "LIGHTCODE_CONTEXT_UNCACHED_PRUNE_MIN_OUTPUT_CHARS",
+    ),
+    uncachedQuantizeUserTurns: parseNumberEnv(
+      env.LIGHTCODE_CONTEXT_UNCACHED_QUANTIZE_USER_TURNS,
+      "LIGHTCODE_CONTEXT_UNCACHED_QUANTIZE_USER_TURNS",
+    ),
   };
   const compactContextConfig = Object.fromEntries(
     Object.entries(contextConfig).filter(([, value]) => value !== undefined),
+  );
+  const headroomConfig = {
+    enabled: parseBooleanEnv(
+      env.LIGHTCODE_HEADROOM_ENABLED,
+      "LIGHTCODE_HEADROOM_ENABLED",
+    ),
+    proxyUrl: env.LIGHTCODE_HEADROOM_PROXY_URL?.trim() || undefined,
+    failOpen: parseBooleanEnv(
+      env.LIGHTCODE_HEADROOM_FAIL_OPEN,
+      "LIGHTCODE_HEADROOM_FAIL_OPEN",
+    ),
+  };
+  const compactHeadroomConfig = Object.fromEntries(
+    Object.entries(headroomConfig).filter(([, value]) => value !== undefined),
   );
   const rawConfig = {
     provider: env.LIGHTCODE_PROVIDER,
@@ -319,6 +394,10 @@ function readEnvConfig(env: Record<string, string | undefined>): LightcodeConfig
     context:
       Object.keys(compactContextConfig).length > 0
         ? compactContextConfig
+        : undefined,
+    headroom:
+      Object.keys(compactHeadroomConfig).length > 0
+        ? compactHeadroomConfig
         : undefined,
   };
   const compactConfig = Object.fromEntries(
@@ -355,6 +434,12 @@ function mergeConfig(...configs: LightcodeConfig[]): LightcodeConfig {
             ...config.autoContinue,
           }
         : mergedConfig.autoContinue,
+      headroom: config.headroom
+        ? {
+            ...mergedConfig.headroom,
+            ...config.headroom,
+          }
+        : mergedConfig.headroom,
       allowedTools: config.allowedTools ?? mergedConfig.allowedTools,
     }),
     {},
@@ -417,6 +502,10 @@ export function loadLightcodeConfig({
     autoContinue: {
       ...defaultAutoContinueConfig,
       ...mergedConfig.autoContinue,
+    },
+    headroom: {
+      ...defaultHeadroomConfig,
+      ...mergedConfig.headroom,
     },
   };
 

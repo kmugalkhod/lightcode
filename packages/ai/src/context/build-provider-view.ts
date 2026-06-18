@@ -27,6 +27,12 @@ export interface BuildProviderViewOptions {
   /** Context window of the active model in tokens, when known. */
   modelContextWindow?: number | null;
   pendingInteractionCount?: number;
+  /**
+   * Whether the active provider benefits from prompt caching. When false (e.g.
+   * OpenRouter), Tier-1 prunes more aggressively — there is no byte-stable
+   * prefix to protect. Defaults to true, preserving the conservative behavior.
+   */
+  cacheActive?: boolean;
 }
 
 export interface ProviderViewResult {
@@ -107,9 +113,23 @@ export function buildProviderView(
   let estimate = estimateContextTokens(providerMessages);
   let tier1: Tier1PruneResult | null = null;
 
-  if (estimate.tokens > config.pruneAtFraction * contextWindow) {
+  // With no prompt cache to protect, prune sooner and harder: the cache-warming
+  // quantization and high char threshold only cost tokens here.
+  const uncachedActive =
+    options.cacheActive === false && config.aggressivePruneWhenUncached;
+  const pruneFraction = uncachedActive
+    ? config.uncachedPruneAtFraction
+    : config.pruneAtFraction;
+
+  if (estimate.tokens > pruneFraction * contextWindow) {
     tier1 = pruneToolOutputs(providerMessages, {
       preserveRecentMessages: config.preserveRecentMessages,
+      minOutputChars: uncachedActive
+        ? config.uncachedPruneMinOutputChars
+        : undefined,
+      quantizeUserTurns: uncachedActive
+        ? config.uncachedQuantizeUserTurns
+        : undefined,
     });
 
     if (tier1.savedChars > 0) {

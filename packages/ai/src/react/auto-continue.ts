@@ -15,7 +15,7 @@ export interface AutoContinueDecision {
   kind: AutoContinueKind;
   prompt?: string;
   /** Set when a loop guard stopped continuation that would otherwise fire. */
-  guardTripped?: "max-continues" | "doom-loop";
+  guardTripped?: "max-continues" | "doom-loop" | "no-progress";
 }
 
 export interface AutoContinueLimits {

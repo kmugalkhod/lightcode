@@ -17,6 +17,15 @@ export const contextOptimizerConfigSchema = z
     /** Hard override of the model context window, in tokens. */
     contextWindowOverride: z.number().int().min(8_000).max(10_000_000).optional(),
     summaryMaxChars: z.number().int().min(200).max(50_000).optional(),
+    /**
+     * When the active provider has no prompt cache to protect (e.g. OpenRouter),
+     * prune more aggressively — the cache-warming conservatism below is pure
+     * waste there. These knobs only take effect when caching is inactive.
+     */
+    aggressivePruneWhenUncached: z.boolean().optional(),
+    uncachedPruneAtFraction: z.number().min(0.2).max(0.9).optional(),
+    uncachedPruneMinOutputChars: z.number().int().min(200).max(12_000).optional(),
+    uncachedQuantizeUserTurns: z.number().int().min(1).max(20).optional(),
     /** @deprecated Use contextWindowOverride. Kept so older configs still parse. */
     maxInputTokens: z.number().int().min(1).max(10_000_000).optional(),
   })
@@ -34,6 +43,10 @@ export const resolvedContextOptimizerConfigSchema = z.object({
     .max(10_000_000)
     .nullable(),
   summaryMaxChars: z.number().int().min(200).max(50_000),
+  aggressivePruneWhenUncached: z.boolean(),
+  uncachedPruneAtFraction: z.number().min(0.2).max(0.9),
+  uncachedPruneMinOutputChars: z.number().int().min(200).max(12_000),
+  uncachedQuantizeUserTurns: z.number().int().min(1).max(20),
 });
 
 export type ContextOptimizerConfig = z.infer<typeof contextOptimizerConfigSchema>;
@@ -43,11 +56,15 @@ export type ResolvedContextOptimizerConfig = z.infer<
 
 export const defaultContextOptimizerConfig = {
   autoCompact: true,
-  compactAtFraction: 0.8,
+  compactAtFraction: 0.7,
   pruneAtFraction: 0.6,
   preserveRecentMessages: 6,
   contextWindowOverride: null,
   summaryMaxChars: 4_000,
+  aggressivePruneWhenUncached: true,
+  uncachedPruneAtFraction: 0.45,
+  uncachedPruneMinOutputChars: 600,
+  uncachedQuantizeUserTurns: 1,
 } satisfies ResolvedContextOptimizerConfig;
 
 export function normalizeContextOptimizerConfig(

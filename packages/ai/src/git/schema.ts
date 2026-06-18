@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { MAX_TOOL_LIST_ENTRIES, MAX_TOOL_TEXT_OUTPUT_CHARS } from "../constants";
+import {
+  DEFAULT_TOOL_TEXT_OUTPUT_CHARS,
+  MAX_TOOL_LIST_ENTRIES,
+  MAX_TOOL_TEXT_OUTPUT_CHARS,
+} from "../constants";
 import { boundedPathSchema, integerRangeSchema } from "../common/base-schemas";
 
 export const gitStatusDescription =
@@ -28,7 +32,7 @@ export const gitDiffInputSchema = z.object({
   statOnly: z.boolean().optional().default(false),
   maxChars: integerRangeSchema(200, MAX_TOOL_TEXT_OUTPUT_CHARS, "maxChars")
     .optional()
-    .default(MAX_TOOL_TEXT_OUTPUT_CHARS),
+    .default(DEFAULT_TOOL_TEXT_OUTPUT_CHARS),
 });
 
 export const gitDiffProviderInputSchema = z.object({
@@ -49,7 +53,7 @@ export const gitShowInputSchema = z.object({
   path: boundedPathSchema.optional(),
   maxChars: integerRangeSchema(200, MAX_TOOL_TEXT_OUTPUT_CHARS, "maxChars")
     .optional()
-    .default(MAX_TOOL_TEXT_OUTPUT_CHARS),
+    .default(DEFAULT_TOOL_TEXT_OUTPUT_CHARS),
 });
 
 export const gitShowProviderInputSchema = z.object({

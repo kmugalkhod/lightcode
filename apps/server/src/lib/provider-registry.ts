@@ -4,9 +4,11 @@ import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import type { LanguageModel } from "ai";
 import {
   getModelContextWindow,
+  lightcodeConfigDefaults,
   lightcodeConfigStatusSchema,
   readStoredCredentials,
   resolveContextWindowTokens,
+  resolveMaxOutputTokens,
   withXmlToolCallSupport,
   type LightcodeConfigStatus,
   type LightcodeResolvedConfig,
@@ -19,13 +21,20 @@ export interface ProviderModelCapabilities {
   supportsNativeTools?: boolean;
   /** Context window in tokens from live provider metadata. */
   contextLength?: number;
+  /** Max completion tokens the routed provider accepts, when advertised. */
+  maxCompletionTokens?: number | null;
 }
 
 export interface ResolvedProviderModel {
   provider: LightcodeResolvedConfig["provider"];
   configuredModel: string | null;
   resolvedModelId: string;
+  /** The REAL upstream provider URL (never the proxy) — used by diagnostics. */
   baseUrl: string | null;
+  /** The base URL actually handed to the SDK (the proxy when headroom routes). */
+  effectiveBaseUrl: string | null;
+  /** True when traffic is routed through the headroom compressing proxy. */
+  headroomRouted: boolean;
   model: LanguageModel;
   providerOptions?: SharedV3ProviderOptions;
   /** Context window of the resolved model in tokens (model metadata). */
@@ -36,6 +45,8 @@ export interface ResolvedProviderModel {
    * system prompt should include tool-calling discipline for it.
    */
   needsToolCallDiscipline?: boolean;
+  /** Max completion tokens the model accepts, for clamping maxOutputTokens. */
+  maxCompletionTokens?: number | null;
 }
 
 const anthropicModelAliases = {
@@ -91,6 +102,31 @@ function getAnthropicProviderOptions(
   };
 }
 
+/**
+ * Decides the base URL actually sent to the provider SDK. When the headroom
+ * facility is enabled (and covers this provider), traffic is redirected to the
+ * local compressing proxy — the same mechanism `headroom wrap claude` uses. The
+ * real upstream URL is returned separately so diagnostics keep probing it.
+ */
+function resolveHeadroomRouting(
+  config: LightcodeResolvedConfig,
+  realBaseUrl: string | null,
+): { effectiveBaseUrl: string | null; headroomRouted: boolean } {
+  const headroom = config.headroom;
+  if (!headroom?.enabled) {
+    return { effectiveBaseUrl: realBaseUrl, headroomRouted: false };
+  }
+
+  // A null `providers` list means "route every provider"; a concrete list
+  // scopes routing (e.g. only OpenRouter, where there is no prompt cache to
+  // disturb) and leaves the others talking to the real upstream.
+  if (headroom.providers && !headroom.providers.includes(config.provider)) {
+    return { effectiveBaseUrl: realBaseUrl, headroomRouted: false };
+  }
+
+  return { effectiveBaseUrl: headroom.proxyUrl, headroomRouted: true };
+}
+
 function resolveAnthropicModel({
   config,
   env,
@@ -109,6 +145,10 @@ function resolveAnthropicModel({
     getEnvValue(env, "ANTHROPIC_API_KEY") ?? storedCredentials.anthropicApiKey;
   const authToken = getEnvValue(env, "ANTHROPIC_AUTH_TOKEN");
   const baseUrl = config.baseUrl ?? getEnvValue(env, "ANTHROPIC_BASE_URL") ?? null;
+  const { effectiveBaseUrl, headroomRouted } = resolveHeadroomRouting(
+    config,
+    baseUrl,
+  );
   const missingCredentialHints =
     apiKey || authToken
       ? []
@@ -118,7 +158,7 @@ function resolveAnthropicModel({
   const provider = createAnthropic({
     apiKey,
     authToken,
-    baseURL: baseUrl ?? undefined,
+    baseURL: effectiveBaseUrl ?? undefined,
   });
 
   return {
@@ -126,6 +166,8 @@ function resolveAnthropicModel({
     configuredModel,
     resolvedModelId: modelId,
     baseUrl,
+    effectiveBaseUrl,
+    headroomRouted,
     model: provider(modelId),
     providerOptions: getAnthropicProviderOptions(modelId),
     contextWindow: getModelContextWindow("anthropic", modelId),
@@ -169,6 +211,10 @@ function resolveOpenAITransportModel({
       'OpenAI-compatible provider requires "baseUrl" in config or LIGHTCODE_OPENAI_COMPATIBLE_BASE_URL.',
     );
   }
+  const { effectiveBaseUrl, headroomRouted } = resolveHeadroomRouting(
+    config,
+    baseUrl,
+  );
 
   const apiKey = isOpenCodeZen
     ? getEnvValue(
@@ -202,7 +248,7 @@ function resolveOpenAITransportModel({
   }
   const provider = createOpenAICompatible({
     name: config.provider,
-    baseURL: baseUrl,
+    baseURL: effectiveBaseUrl ?? baseUrl,
     apiKey,
     headers,
   });
@@ -217,6 +263,8 @@ function resolveOpenAITransportModel({
     configuredModel,
     resolvedModelId: configuredModel,
     baseUrl,
+    effectiveBaseUrl,
+    headroomRouted,
     model: withXmlToolCallSupport(provider(configuredModel)),
     needsToolCallDiscipline: true,
     contextWindow:
@@ -231,6 +279,7 @@ function resolveOpenAITransportModel({
         : [
             "Set LIGHTCODE_OPENAI_COMPATIBLE_API_KEY or OPENAI_API_KEY if your OpenAI-compatible endpoint requires authentication.",
           ],
+    maxCompletionTokens: capabilities?.maxCompletionTokens ?? null,
   };
 }
 
@@ -278,13 +327,26 @@ export function createConfigStatus({
     baseUrl: resolvedProviderModel.baseUrl,
     defaultMode: config.defaultMode,
     permissionMode: config.permissionMode ?? null,
-    maxOutputTokens: config.maxOutputTokens,
+    // Report the effective per-model ceiling actually sent to the provider, not
+    // the raw config default — so /config shows e.g. 512000 for minimax-m3.
+    maxOutputTokens: resolveMaxOutputTokens(
+      config.maxOutputTokens,
+      lightcodeConfigDefaults.maxOutputTokens,
+      resolvedProviderModel.maxCompletionTokens,
+    ),
     maxSteps: config.maxSteps,
     autoContinue: config.autoContinue,
     contextWindow: resolveContextWindowTokens({
       config: config.context,
       modelContextWindow: resolvedProviderModel.contextWindow,
     }),
+    headroom: {
+      enabled: config.headroom?.enabled ?? false,
+      proxyUrl: config.headroom?.proxyUrl ?? null,
+      // `routed` reflects the resolved model, so when the startup health gate
+      // fails open it re-resolves with routing off and this drops to false.
+      routed: resolvedProviderModel.headroomRouted,
+    },
     missingCredentialHints: resolvedProviderModel.missingCredentialHints,
   });
 }

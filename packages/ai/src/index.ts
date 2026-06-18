@@ -16,6 +16,7 @@ export * from "./mcp/manager";
 export * from "./mcp/runtime";
 export * from "./mcp/schema";
 export * from "./permissions";
+export * from "./providers/clamp-output-tokens";
 export * from "./providers/model-metadata";
 export * from "./providers/xml-tool-call-middleware";
 export * from "./plugins/runtime";

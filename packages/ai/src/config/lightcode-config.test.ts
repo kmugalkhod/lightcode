@@ -88,7 +88,7 @@ describe("loadLightcodeConfig", () => {
     expect(result.config.provider).toBe("anthropic");
     expect(result.config.defaultMode).toBe("build");
     expect(result.config.context.autoCompact).toBe(true);
-    expect(result.config.context.compactAtFraction).toBe(0.8);
+    expect(result.config.context.compactAtFraction).toBe(0.7);
     expect(result.config.context.pruneAtFraction).toBe(0.6);
     expect(result.config.context.contextWindowOverride).toBeNull();
     expect(result.config.context.preserveRecentMessages).toBe(6);
@@ -140,11 +140,15 @@ describe("loadLightcodeConfig", () => {
 
     expect(result.config.context).toEqual({
       autoCompact: false,
-      compactAtFraction: 0.8,
+      compactAtFraction: 0.7,
       pruneAtFraction: 0.6,
       contextWindowOverride: 12345,
       preserveRecentMessages: 7,
       summaryMaxChars: 1600,
+      aggressivePruneWhenUncached: true,
+      uncachedPruneAtFraction: 0.45,
+      uncachedPruneMinOutputChars: 600,
+      uncachedQuantizeUserTurns: 1,
     });
   });
 

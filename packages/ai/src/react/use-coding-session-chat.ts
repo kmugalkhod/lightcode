@@ -62,6 +62,7 @@ import {
   type AutoContinueDecision,
   type AutoContinueKind,
 } from "./auto-continue";
+import { resolveDanglingToolParts } from "../context/normalize-provider-messages";
 
 export type ToolApprovalAction = "approve" | "deny";
 
@@ -303,38 +304,65 @@ function queueToolOutput(outputResult: void | PromiseLike<void>) {
   });
 }
 
-function isIncompleteAssistantMessage(message: UIMessage) {
-  if (message.role !== "assistant") {
-    return false;
-  }
-
-  if (message.parts.length === 0) {
+/**
+ * True for a single part that was still streaming when the turn was cut off:
+ * partially-generated text/reasoning, or a tool call whose input never finished
+ * arriving. Such parts are unsafe to resend and carry no completed work.
+ */
+function isIncompletePart(part: UIMessage["parts"][number]): boolean {
+  if (
+    (part.type === "text" || part.type === "reasoning") &&
+    Reflect.get(part, "state") === "streaming"
+  ) {
     return true;
   }
 
-  return message.parts.some((part) => {
-    if (
-      (part.type === "text" || part.type === "reasoning") &&
-      Reflect.get(part, "state") === "streaming"
-    ) {
-      return true;
-    }
-
-    return isToolUIPart(part) && part.state === "input-streaming";
-  });
+  return isToolUIPart(part) && part.state === "input-streaming";
 }
 
-function trimIncompleteTrailingAssistantMessages(messages: UIMessage[]) {
-  let endIndex = messages.length;
+/**
+ * Prunes only the incomplete (still-streaming) parts from the trailing
+ * assistant message(s), preserving every completed part. A multi-step agent
+ * turn is a single assistant message holding all of its steps' parts, so the
+ * previous behaviour — dropping the whole message when any part was mid-stream
+ * — discarded every finished step (tool calls + results) of a long turn and
+ * forced the model to redo the entire turn on each retry. Pruning at the part
+ * level instead lets a resend resume from the last finished step.
+ *
+ * A trailing assistant message whose parts are *all* incomplete carries no
+ * salvageable work and is dropped entirely (then the new tail is re-checked).
+ */
+function pruneIncompleteTrailingAssistantParts(
+  messages: UIMessage[],
+): UIMessage[] {
+  let result = messages;
 
-  while (
-    endIndex > 0 &&
-    isIncompleteAssistantMessage(messages[endIndex - 1])
-  ) {
-    endIndex -= 1;
+  while (result.length > 0) {
+    const lastIndex = result.length - 1;
+    const last = result[lastIndex];
+    if (last.role !== "assistant") {
+      break;
+    }
+
+    const completeParts = last.parts.filter((part) => !isIncompletePart(part));
+    if (completeParts.length === last.parts.length) {
+      // The trailing assistant message has no incomplete parts; nothing to do.
+      break;
+    }
+
+    if (completeParts.length === 0) {
+      // Nothing finished in this message; drop it and re-check the new tail.
+      result = result.slice(0, lastIndex);
+      continue;
+    }
+
+    const next = result.slice();
+    next[lastIndex] = { ...last, parts: completeParts };
+    result = next;
+    break;
   }
 
-  return endIndex === messages.length ? messages : messages.slice(0, endIndex);
+  return result;
 }
 
 function hasUnresolvedToolParts(messages: UIMessage[]) {
@@ -353,14 +381,34 @@ function hasUnresolvedToolParts(messages: UIMessage[]) {
   );
 }
 
-const interruptedToolRetryErrorText =
-  "Tool call was interrupted by a connection retry. Re-issue the tool call if it is still needed.";
-
 const terminalToolPartStates = new Set([
   "output-available",
   "output-error",
   "output-denied",
 ]);
+
+/**
+ * Counts finished units of work in a history: completed (non-streaming) text /
+ * reasoning parts and tool calls that reached a terminal state. Used as a
+ * monotonic forward-progress marker so repeated transport retries that produce
+ * nothing new can be bounded instead of cascading forever.
+ */
+export function countCompletedWork(messages: UIMessage[]): number {
+  let total = 0;
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (
+        (part.type === "text" || part.type === "reasoning") &&
+        Reflect.get(part, "state") !== "streaming"
+      ) {
+        total += 1;
+      } else if (isToolUIPart(part) && terminalToolPartStates.has(part.state)) {
+        total += 1;
+      }
+    }
+  }
+  return total;
+}
 
 /**
  * Prepares a message history for an automatic resend after an abort or
@@ -377,29 +425,10 @@ const terminalToolPartStates = new Set([
  * Postcondition: hasUnresolvedToolParts(result) === false.
  */
 export function sanitizeMessagesForRetry(messages: UIMessage[]): UIMessage[] {
-  const trimmed = trimIncompleteTrailingAssistantMessages(messages);
-
-  return trimmed.map((message) => {
-    if (message.role !== "assistant") {
-      return message;
-    }
-
-    let changed = false;
-    const parts = message.parts.map((part) => {
-      if (!isToolUIPart(part) || terminalToolPartStates.has(part.state)) {
-        return part;
-      }
-
-      changed = true;
-      return {
-        ...part,
-        state: "output-error",
-        errorText: interruptedToolRetryErrorText,
-      } as unknown as typeof part;
-    });
-
-    return changed ? { ...message, parts } : message;
-  });
+  // Drop only the incomplete trailing parts (preserving finished steps), then
+  // resolve any remaining dangling tool call via the shared server/client
+  // normalizer so retry and first-send produce identical, valid histories.
+  return resolveDanglingToolParts(pruneIncompleteTrailingAssistantParts(messages));
 }
 
 function hasActiveClientToolWork({
@@ -599,6 +628,11 @@ export function useCodingSessionChat({
   autoContinueLimitsRef.current = autoContinueLimits;
   const maxErrorRetriesRef = useRef(maxErrorRetries);
   maxErrorRetriesRef.current = maxErrorRetries;
+  // Let a full error episode play out (maxErrorRetries), plus a small
+  // cross-episode budget, before declaring the task stuck with no new work.
+  const maxNoProgressRetries = maxErrorRetries + 3;
+  const maxNoProgressRetriesRef = useRef(maxNoProgressRetries);
+  maxNoProgressRetriesRef.current = maxNoProgressRetries;
   const stallTimeoutMsRef = useRef(stallTimeoutMs);
   stallTimeoutMsRef.current = stallTimeoutMs;
   // Timestamp of the most recent streaming activity (any messages update).
@@ -613,18 +647,51 @@ export function useCodingSessionChat({
   // Message id of the assistant response we already decided on, so the
   // ready-state effect fires once per response.
   const lastDecidedAssistantIdRef = useRef<string | null>(null);
+  // Forward-progress guard: bounds retries that add no finished work so a
+  // provider that keeps dropping mid-stream cannot cascade indefinitely. The
+  // per-episode error cap resets on every "ready", so this cross-episode
+  // marker is what actually stops the loop.
+  const lastProgressMarkerRef = useRef(0);
+  const noProgressRetriesRef = useRef(0);
+  // Latched once the task is declared stuck; halts auto-retry and
+  // auto-continue until the user sends a new message.
+  const taskStuckRef = useRef(false);
+  // Latest messages, mirrored for the stall watchdog, which cannot depend on
+  // `messages` without resetting its interval on every streamed chunk.
+  const messagesRef = useRef<UIMessage[]>([]);
 
   const advanceTurnKey = useCallback(() => {
     turnCounterRef.current += 1;
     turnKeyRef.current = `turn-${Date.now()}-${turnCounterRef.current}`;
     autoContinuesRef.current = 0;
     errorRetriesRef.current = 0;
+    lastProgressMarkerRef.current = 0;
+    noProgressRetriesRef.current = 0;
+    taskStuckRef.current = false;
     lastDecidedAssistantIdRef.current = null;
     if (errorRetryTimerRef.current) {
       clearTimeout(errorRetryTimerRef.current);
       errorRetryTimerRef.current = null;
     }
     setAutoContinueState(null);
+  }, []);
+
+  // Records a retry attempt and reports whether the agent may keep retrying.
+  // Returns false once too many consecutive retries have produced no newly
+  // finished work, which latches the stuck guard.
+  const registerRetryProgress = useCallback((currentMessages: UIMessage[]) => {
+    const marker = countCompletedWork(currentMessages);
+    if (marker > lastProgressMarkerRef.current) {
+      lastProgressMarkerRef.current = marker;
+      noProgressRetriesRef.current = 0;
+      return true;
+    }
+    noProgressRetriesRef.current += 1;
+    if (noProgressRetriesRef.current > maxNoProgressRetriesRef.current) {
+      taskStuckRef.current = true;
+      return false;
+    }
+    return true;
   }, []);
 
   modeRef.current = mode;
@@ -1130,6 +1197,12 @@ export function useCodingSessionChat({
     }
   }, [messages, status]);
 
+  // Mirror the latest messages so the stall watchdog can read them without
+  // taking a `messages` dependency (which would reset its interval per chunk).
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   // Stall watchdog: a request that produces no chunks for stallTimeoutMs is
   // dead (provider/network hang) — abort it and retry automatically instead
   // of waiting minutes for a fetch timeout.
@@ -1150,9 +1223,20 @@ export function useCodingSessionChat({
       }
 
       if (
+        taskStuckRef.current ||
         stallRecoveryInFlightRef.current ||
         errorRetriesRef.current >= maxErrorRetriesRef.current
       ) {
+        return;
+      }
+
+      // Stop retrying a connection that keeps dying without producing new work.
+      if (!registerRetryProgress(messagesRef.current)) {
+        setAutoContinueState({
+          attempt: errorRetriesRef.current,
+          kind: "none",
+          guardTripped: "no-progress",
+        });
         return;
       }
 
@@ -1180,7 +1264,7 @@ export function useCodingSessionChat({
     }, 15_000);
 
     return () => clearInterval(intervalId);
-  }, [clearError, sendMessage, setMessages, status, stop]);
+  }, [clearError, registerRetryProgress, sendMessage, setMessages, status, stop]);
 
   // Fully automatic continuation: when a response ends but the task is not
   // done (output truncated, unparsed tool intent, unfinished todos, or text
@@ -1191,6 +1275,7 @@ export function useCodingSessionChat({
     }
 
     if (
+      taskStuckRef.current ||
       isHistoryLoading ||
       pendingApprovals.length > 0 ||
       pendingUserPrompts.length > 0 ||
@@ -1258,6 +1343,7 @@ export function useCodingSessionChat({
     }
 
     if (
+      taskStuckRef.current ||
       pendingApprovals.length > 0 ||
       pendingUserPrompts.length > 0 ||
       errorRetryTimerRef.current ||
@@ -1280,6 +1366,16 @@ export function useCodingSessionChat({
 
     errorRetryTimerRef.current = setTimeout(() => {
       errorRetryTimerRef.current = null;
+      // Evaluate progress when the retry actually fires (once per attempt),
+      // not at schedule time, which can run repeatedly as deps change.
+      if (!registerRetryProgress(messagesRef.current)) {
+        setAutoContinueState({
+          attempt: errorRetriesRef.current,
+          kind: "none",
+          guardTripped: "no-progress",
+        });
+        return;
+      }
       errorRetriesRef.current = attempt;
       setAutoContinueState({ attempt, kind: "retry-error" });
       setMessages(retryMessages);
@@ -1300,6 +1396,7 @@ export function useCodingSessionChat({
     messages,
     pendingApprovals.length,
     pendingUserPrompts.length,
+    registerRetryProgress,
     sendMessage,
     setMessages,
   ]);
@@ -1410,11 +1507,12 @@ export function useCodingSessionChat({
         }
 
         // A session that crashed mid-stream may end with an incomplete
-        // assistant message; trim it so resume starts from a clean state.
-        // Keep it when pending interactions reference its tool calls.
+        // assistant message; prune the incomplete trailing parts so resume
+        // starts from a clean state while keeping every finished step.
+        // Keep everything when pending interactions reference its tool calls.
         const resumableMessages =
           restoredApprovals.length === 0 && restoredPrompts.length === 0
-            ? trimIncompleteTrailingAssistantMessages(validatedMessages)
+            ? pruneIncompleteTrailingAssistantParts(validatedMessages)
             : validatedMessages;
 
         setMessagesRef.current(resumableMessages);

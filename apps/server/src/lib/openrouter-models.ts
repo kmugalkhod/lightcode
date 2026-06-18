@@ -14,6 +14,8 @@ export const openRouterModelSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
   contextLength: z.number().int().positive().nullable(),
+  // .default(null) keeps older on-disk caches (written before this field) valid.
+  maxCompletionTokens: z.number().int().positive().nullable().default(null),
   supportsTools: z.boolean(),
   supportsReasoning: z.boolean(),
   pricing: z
@@ -72,6 +74,17 @@ function summarizeRawModel(raw: unknown): OpenRouterModelSummary | null {
 
   const name = Reflect.get(raw, "name");
   const contextLength = Reflect.get(raw, "context_length");
+  // OpenRouter exposes the completion cap on top_provider (and sometimes at the
+  // top level); prefer the provider-specific value.
+  const topProvider = Reflect.get(raw, "top_provider");
+  const topProviderMaxCompletion =
+    typeof topProvider === "object" && topProvider !== null
+      ? Reflect.get(topProvider, "max_completion_tokens")
+      : undefined;
+  const rawMaxCompletion =
+    typeof topProviderMaxCompletion === "number"
+      ? topProviderMaxCompletion
+      : Reflect.get(raw, "max_completion_tokens");
   const supportedParameters = Reflect.get(raw, "supported_parameters");
   const parameterList = Array.isArray(supportedParameters)
     ? supportedParameters.filter((entry): entry is string => typeof entry === "string")
@@ -97,6 +110,10 @@ function summarizeRawModel(raw: unknown): OpenRouterModelSummary | null {
     contextLength:
       typeof contextLength === "number" && contextLength > 0
         ? Math.round(contextLength)
+        : null,
+    maxCompletionTokens:
+      typeof rawMaxCompletion === "number" && rawMaxCompletion > 0
+        ? Math.round(rawMaxCompletion)
         : null,
     supportsTools: parameterList.includes("tools"),
     supportsReasoning: parameterList.includes("reasoning"),
@@ -174,6 +191,7 @@ export async function getOpenRouterModelCapabilities(
     return {
       supportsNativeTools: model.supportsTools,
       contextLength: model.contextLength ?? undefined,
+      maxCompletionTokens: model.maxCompletionTokens,
     };
   } catch {
     return undefined;

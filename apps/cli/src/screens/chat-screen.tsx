@@ -961,7 +961,9 @@ export function ChatScreen() {
             <text fg={cliTheme.semantic.warning}>
               {autoContinueState.guardTripped === "doom-loop"
                 ? "Agent appears stuck repeating itself — automatic continuation stopped. Send a message to resume."
-                : `Reached the automatic continuation limit (${autoContinueState.attempt}). Send a message to resume.`}
+                : autoContinueState.guardTripped === "no-progress"
+                  ? "The connection keeps dropping without making progress — automatic retry stopped. Send a message to resume."
+                  : `Reached the automatic continuation limit (${autoContinueState.attempt}). Send a message to resume.`}
             </text>
           </box>
         ) : autoContinueState ? (

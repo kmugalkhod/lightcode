@@ -61,6 +61,17 @@ async function startServer() {
       });
     });
 
+  // Best-effort: when the headroom compressing-proxy facility is enabled, probe
+  // it and fail open to the real provider if it is unreachable. Never blocks
+  // startup or chat requests.
+  void import("./lib/headroom-proxy")
+    .then((headroom) => headroom.ensureHeadroomRouting())
+    .catch((error) => {
+      logger.warn("headroom_init_failed", {
+        error: getErrorMessage(error),
+      });
+    });
+
   let server: ReturnType<typeof Bun.serve>;
   try {
     server = Bun.serve({

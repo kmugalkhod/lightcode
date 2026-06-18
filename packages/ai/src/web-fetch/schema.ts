@@ -1,15 +1,18 @@
 import { z } from "zod";
-import { MAX_TOOL_TEXT_OUTPUT_CHARS } from "../constants";
+import {
+  DEFAULT_TOOL_TEXT_OUTPUT_CHARS,
+  MAX_TOOL_TEXT_OUTPUT_CHARS,
+} from "../constants";
 import { integerRangeSchema } from "../common/base-schemas";
 
 export const webFetchDescription =
-  "Fetch a URL and return normalized, bounded text with source metadata. Requires network permission.";
+  "Fetch a URL and return normalized, bounded text with source metadata. Keep maxChars modest and request more only if the answer wasn't in the returned text. Requires network permission.";
 
 export const webFetchInputSchema = z.object({
   url: z.string().url().max(4096),
   maxChars: integerRangeSchema(200, MAX_TOOL_TEXT_OUTPUT_CHARS, "maxChars")
     .optional()
-    .default(MAX_TOOL_TEXT_OUTPUT_CHARS),
+    .default(DEFAULT_TOOL_TEXT_OUTPUT_CHARS),
   timeoutMs: integerRangeSchema(1_000, 30_000, "timeoutMs")
     .optional()
     .default(10_000),

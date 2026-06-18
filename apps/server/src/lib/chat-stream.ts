@@ -2,6 +2,7 @@ import {
   buildProviderView,
   collectMessageText,
   formatChatStreamError,
+  normalizeProviderMessages,
   selectCodingAgentIntentTools,
   type CodingAgentMode,
   type CodingAgentToolName,
@@ -227,6 +228,10 @@ export async function streamSessionChat(
   }
 
   const contextConfig = lightcodeConfigResult.config.context;
+  // Only Anthropic benefits from prompt caching; elsewhere (OpenRouter, generic
+  // OpenAI-compatible) there is no byte-stable prefix to protect, so Tier-1 may
+  // prune more aggressively.
+  const cacheActive = resolvedProviderModel.provider === "anthropic";
   const pendingInteractionCount = await countPendingChatInteractions(sessionId);
   let contextState = await loadSessionContextStateSafe(sessionId);
   let view = buildProviderView({
@@ -235,6 +240,7 @@ export async function streamSessionChat(
     config: contextConfig,
     modelContextWindow: resolvedProviderModel.contextWindow,
     pendingInteractionCount,
+    cacheActive,
   });
 
   if (view.needsCompaction && contextConfig.autoCompact) {
@@ -257,6 +263,7 @@ export async function streamSessionChat(
         config: contextConfig,
         modelContextWindow: resolvedProviderModel.contextWindow,
         pendingInteractionCount,
+        cacheActive,
       });
       logger.info("context_auto_compacted", {
         sessionId,
@@ -295,6 +302,7 @@ export async function streamSessionChat(
         config: overflowConfig,
         modelContextWindow: resolvedProviderModel.contextWindow,
         pendingInteractionCount: 0,
+        cacheActive,
       });
 
       if (overflowView.coveredMessages.length > 0) {
@@ -317,6 +325,7 @@ export async function streamSessionChat(
         config: overflowConfig,
         modelContextWindow: resolvedProviderModel.contextWindow,
         pendingInteractionCount: 0,
+        cacheActive,
       });
 
       // Health probe: a recovery round that did not actually shrink the view
@@ -338,7 +347,11 @@ export async function streamSessionChat(
     }
   }
 
-  const providerMessages = view.providerMessages;
+  // Final payload guard: whatever path built the view (compaction, tier1
+  // prune, overflow recovery, raw history), never hand the provider a dangling
+  // tool call. Count-preserving, so providerMessages.length stays valid for
+  // the finished-message merge below.
+  const providerMessages = normalizeProviderMessages(view.providerMessages);
 
   // onFinish fires even when the stream ends with an error part, so track
   // overflow within this request — otherwise the finish handler would clear

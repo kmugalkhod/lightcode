@@ -1,7 +1,9 @@
 import {
   assertProviderToolSchemaBudget,
   createCodingAgent,
+  lightcodeConfigDefaults,
   loadLightcodeConfig,
+  resolveMaxOutputTokens,
   updateUserSettings,
   type LightcodeConfigStatus,
   type LightcodeProvider,
@@ -32,7 +34,16 @@ function buildCodingAgent(
     providerOptions: model.providerOptions,
     maxSteps: config.maxSteps,
     maxRetries: config.maxRetries,
-    maxOutputTokens: config.maxOutputTokens,
+    // Per-model output budget: when left at the default, use the model's full
+    // advertised max_completion_tokens (e.g. 512K for minimax-m3) so the model
+    // finishes in one turn instead of truncating at a small fixed cap and
+    // forcing the fragile auto-continue path. An explicit user value is honored
+    // and clamped down to the model's real cap.
+    maxOutputTokens: resolveMaxOutputTokens(
+      config.maxOutputTokens,
+      lightcodeConfigDefaults.maxOutputTokens,
+      model.maxCompletionTokens,
+    ),
     includeToolDiscipline: model.needsToolCallDiscipline ?? false,
   });
 }
@@ -121,6 +132,50 @@ export function applyModelSelection({
   });
 
   return configStatus;
+}
+
+/**
+ * Fail-open switch for the headroom proxy facility: re-resolves the live model
+ * with headroom routing forced off and swaps it in atomically, so traffic goes
+ * straight to the real provider. Called by the startup health gate when the
+ * proxy is unreachable. No-op (and no persistence) when routing is already off.
+ */
+export function disableHeadroomRouting(): void {
+  if (!lightcodeConfigResult.config.headroom?.enabled) {
+    return;
+  }
+
+  const nextConfig: LightcodeResolvedConfig = {
+    ...lightcodeConfigResult.config,
+    headroom: {
+      ...(lightcodeConfigResult.config.headroom ?? lightcodeConfigDefaults.headroom),
+      enabled: false,
+    },
+  };
+
+  const nextResolved = resolveConfiguredProviderModel({
+    config: nextConfig,
+    env: Bun.env,
+  });
+  const nextAgent = buildCodingAgent(nextConfig, nextResolved);
+
+  lightcodeConfigResult = {
+    ...lightcodeConfigResult,
+    config: nextConfig,
+  };
+  resolvedProviderModel = nextResolved;
+  chatModelId = nextResolved.resolvedModelId;
+  codingAgent = nextAgent;
+  configStatus = createConfigStatus({
+    config: nextConfig,
+    loadedFiles: lightcodeConfigResult.loadedFiles,
+    resolvedProviderModel: nextResolved,
+  });
+
+  logger.info("headroom_routing_disabled", {
+    provider: nextResolved.provider,
+    model: nextResolved.resolvedModelId,
+  });
 }
 
 /**

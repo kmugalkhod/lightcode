@@ -158,6 +158,101 @@ describe("provider registry", () => {
     expect(resolved.baseUrl).toBe("https://example.test/api/v1");
   });
 
+  test("routes through the headroom proxy when enabled, keeping the real baseUrl", () => {
+    const resolved = resolveConfiguredProviderModel({
+      config: {
+        ...baseConfig,
+        provider: "openrouter",
+        model: "minimax/minimax-m2.7",
+        headroom: {
+          enabled: true,
+          proxyUrl: "http://127.0.0.1:8787",
+          providers: null,
+          failOpen: true,
+        },
+      },
+      env: {
+        OPENROUTER_API_KEY: "test-openrouter-key",
+      },
+    });
+
+    // Real upstream is preserved for diagnostics; the SDK is pointed at the proxy.
+    expect(resolved.baseUrl).toBe("https://openrouter.ai/api/v1");
+    expect(resolved.effectiveBaseUrl).toBe("http://127.0.0.1:8787");
+    expect(resolved.headroomRouted).toBe(true);
+  });
+
+  test("does not route providers outside the headroom providers list", () => {
+    const resolved = resolveConfiguredProviderModel({
+      config: {
+        ...baseConfig,
+        provider: "anthropic",
+        model: "sonnet",
+        headroom: {
+          enabled: true,
+          proxyUrl: "http://127.0.0.1:8787",
+          providers: ["openrouter"],
+          failOpen: true,
+        },
+      },
+      env: {
+        ANTHROPIC_API_KEY: "test-key",
+      },
+    });
+
+    expect(resolved.headroomRouted).toBe(false);
+    expect(resolved.effectiveBaseUrl).toBe(resolved.baseUrl);
+  });
+
+  test("leaves routing off when headroom is disabled", () => {
+    const resolved = resolveConfiguredProviderModel({
+      config: {
+        ...baseConfig,
+        provider: "openrouter",
+        model: "minimax/minimax-m2.7",
+        headroom: {
+          enabled: false,
+          proxyUrl: "http://127.0.0.1:8787",
+          providers: null,
+          failOpen: true,
+        },
+      },
+      env: {
+        OPENROUTER_API_KEY: "test-openrouter-key",
+      },
+    });
+
+    expect(resolved.headroomRouted).toBe(false);
+    expect(resolved.effectiveBaseUrl).toBe("https://openrouter.ai/api/v1");
+  });
+
+  test("reports headroom status in the config status payload", () => {
+    const config = {
+      ...baseConfig,
+      provider: "openrouter",
+      model: "minimax/minimax-m2.7",
+      headroom: {
+        enabled: true,
+        proxyUrl: "http://127.0.0.1:8787",
+        providers: null,
+        failOpen: true,
+      },
+    } as const;
+    const resolved = resolveConfiguredProviderModel({
+      config,
+      env: { OPENROUTER_API_KEY: "test-openrouter-key" },
+    });
+    const status = createConfigStatus({
+      config,
+      loadedFiles: [],
+      resolvedProviderModel: resolved,
+    });
+
+    expect(status.headroom.enabled).toBe(true);
+    expect(status.headroom.proxyUrl).toBe("http://127.0.0.1:8787");
+    expect(status.headroom.routed).toBe(true);
+  });
+
   test("builds config status from resolved provider details", () => {
     const resolved = resolveConfiguredProviderModel({
       config: {
