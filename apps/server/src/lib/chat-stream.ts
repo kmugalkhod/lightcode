@@ -17,6 +17,7 @@ import {
   createAgentUIStreamResponse,
   consumeStream,
   generateId,
+  isToolUIPart,
   safeValidateUIMessages,
   streamText,
   type TextStreamPart,
@@ -95,7 +96,14 @@ function buildFastChatModelMessages(messages: UIMessage[]) {
     .slice(-fastChatRecentMessageCount);
 }
 
-function shouldUseFastChatPath({
+/** True once the agent has produced any tool call/result in this session. */
+function messagesHaveToolActivity(messages: UIMessage[]): boolean {
+  return messages.some((message) =>
+    message.parts?.some((part) => isToolUIPart(part)),
+  );
+}
+
+export function shouldUseFastChatPath({
   messages,
   mode,
   allowedTools,
@@ -105,6 +113,15 @@ function shouldUseFastChatPath({
   allowedTools: CodingAgentToolName[] | undefined;
 }) {
   if (allowedTools && allowedTools.length > 0) {
+    return false;
+  }
+
+  // Once the agent has used tools in this session, a follow-up — even a terse
+  // "continue" — is almost certainly resuming that work and must run the full
+  // agent loop, not the tool-less fast path. The keyword-based intent selector
+  // only inspects the latest user message, so short continuations would
+  // otherwise misroute here and reply once without executing anything.
+  if (messagesHaveToolActivity(messages)) {
     return false;
   }
 

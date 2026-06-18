@@ -130,6 +130,18 @@ export function selectCodingAgentIntentTools({
   }
 
   const selectedTools: CodingAgentToolName[] = [];
+  // Terse continuations carry no code keywords but mean "keep doing the work".
+  const hasContinuationIntent = includesAny(normalizedText, [
+    "continue",
+    "proceed",
+    "go on",
+    "go ahead",
+    "keep going",
+    "carry on",
+    "resume",
+    "finish",
+    "next step",
+  ]);
   const hasCodeIntent = includesAny(normalizedText, [
     "file",
     "folder",
@@ -178,33 +190,35 @@ export function selectCodingAgentIntentTools({
   ]);
   const hasWriteIntent =
     mode === "build" &&
-    includesAny(normalizedText, [
-      "write",
-      "edit",
-      "change",
-      "create",
-      "implement",
-      "fix",
-      "update",
-      "delete",
-      "remove",
-      "rename",
-    ]);
+    (hasContinuationIntent ||
+      includesAny(normalizedText, [
+        "write",
+        "edit",
+        "change",
+        "create",
+        "implement",
+        "fix",
+        "update",
+        "delete",
+        "remove",
+        "rename",
+      ]));
   const hasShellIntent =
     mode === "build" &&
-    includesAny(normalizedText, [
-      "run",
-      "command",
-      "terminal",
-      "shell",
-      "bash",
-      "powershell",
-      "bun",
-      "tests",
-      "run test",
-      "run tests",
-      "typecheck",
-    ]);
+    (hasContinuationIntent ||
+      includesAny(normalizedText, [
+        "run",
+        "command",
+        "terminal",
+        "shell",
+        "bash",
+        "powershell",
+        "bun",
+        "tests",
+        "run test",
+        "run tests",
+        "typecheck",
+      ]));
   const hasGitIntent = includesAny(normalizedText, [
     "git",
     "diff",
@@ -255,6 +269,7 @@ export function selectCodingAgentIntentTools({
 
   if (
     hasCodeIntent ||
+    hasContinuationIntent ||
     (hasReadIntent && !hasGitIntent && !hasWebIntent && !explicitToolSearch)
   ) {
     for (const toolName of baseReadTools) {
