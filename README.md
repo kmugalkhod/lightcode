@@ -57,7 +57,8 @@ variables. Notable keys:
 | `context.pruneAtFraction` | Tool-output pruning threshold (default 0.6) |
 | `context.contextWindowOverride` | Override the model context window |
 | `maxRetries` | Provider-call retries for transient errors (default 5) |
-| `autoContinue.stallTimeoutSeconds` | Abort+retry a byte-silent stream (default 180) |
+| `autoContinue.stallTimeoutSeconds` | Abort+retry a byte-silent stream (default 300; raise for very slow reasoning models) |
+| `autoContinue.maxErrorRetries` | Auto-resends before surfacing a stream error (default 8) |
 
 The local companion server listens on `127.0.0.1:4983` (uncommon on purpose —
 port 3000 belongs to the apps you build). Override with `PORT` for the server

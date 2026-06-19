@@ -48,10 +48,12 @@ export type ResolvedAutoContinueConfig = z.infer<
 export const defaultAutoContinueConfig: ResolvedAutoContinueConfig = {
   enabled: true,
   maxAutoContinues: 50,
-  maxErrorRetries: 5,
-  // With 15s server heartbeats, 180s of byte silence means a dead connection
-  // rather than a slow reasoning model.
-  stallTimeoutSeconds: 180,
+  maxErrorRetries: 8,
+  // Even with 15s server heartbeats, a slow reasoning model on a large context
+  // (long sessions especially) can be legitimately byte-silent for minutes
+  // between steps. 180s was too tight and surfaced spurious "Request aborted"
+  // errors; 300s declares a dead connection without killing slow-but-live turns.
+  stallTimeoutSeconds: 300,
 };
 
 // Optional facility for routing provider traffic through a headroom compressing
