@@ -128,7 +128,6 @@ export function HomeTextArea() {
         placeholder={'Ask anything... "What is the tech stack of this project?"'}
         focused={!isCreatingSession}
         disabled={isCreatingSession}
-        modeToggleHint
         slashMenuOpen={slashMenuOpen}
         onTextChange={syncSlashMenuFromInput}
         beforeInput={slashMenuOpen ? (

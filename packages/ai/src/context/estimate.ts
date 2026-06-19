@@ -32,6 +32,18 @@ export const messageUsageMetadataSchema = z
     }),
     modelId: z.string().optional(),
     finishReason: languageModelFinishReasonSchema.optional(),
+    /**
+     * Server-measured context state for the assembled request. Authoritative
+     * for the client's context meter — the client's own estimate is calibration
+     * -blind when the summary anchor is lost.
+     */
+    context: z
+      .object({
+        inputTokens: z.number().nonnegative(),
+        contextWindow: z.number().positive(),
+        compactedMessages: z.number().nonnegative().optional(),
+      })
+      .optional(),
   })
   .loose();
 export type MessageUsageMetadata = z.infer<typeof messageUsageMetadataSchema>;

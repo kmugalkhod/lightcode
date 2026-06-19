@@ -144,6 +144,7 @@ describe("loadLightcodeConfig", () => {
       pruneAtFraction: 0.6,
       contextWindowOverride: 12345,
       preserveRecentMessages: 7,
+      maxCoverageTokensPerCompaction: 12_000,
       summaryMaxChars: 1600,
       aggressivePruneWhenUncached: true,
       uncachedPruneAtFraction: 0.45,

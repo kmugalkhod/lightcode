@@ -407,11 +407,20 @@ export function SessionListScreen() {
 
       <box flexDirection="column" flexGrow={1}>
         {visibleSessions.length === 0 && !isLoading ? (
-          <box paddingX={1}>
+          <box
+            flexGrow={1}
+            flexDirection="column"
+            alignItems="center"
+            justifyContent="center"
+            gap={1}
+          >
+            <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>
+              {sessions.length === 0 ? "◆ No sessions yet" : "No matches"}
+            </text>
             <text fg={cliTheme.text.muted}>
               {sessions.length === 0
-                ? "No saved sessions yet."
-                : "No sessions match the filter."}
+                ? "Go Home and send a message to start your first session."
+                : "No sessions match the filter — clear it to see all."}
             </text>
           </box>
         ) : null}

@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core";
 import type { SessionContextState } from "@lightcode/ai";
 import type { UIMessage } from "ai";
-import { cliTheme } from "../../ui/cli-theme";
+import { borderStyleFor, cliTheme } from "../../ui/cli-theme";
 import { stripTrailingPeriod, truncateInline } from "../../utils/text-utils";
 
 interface ParsedContextSummary {
@@ -80,7 +80,7 @@ function ContextSummaryFrame({ children }: { children: React.ReactNode }) {
     <box
       width="100%"
       flexDirection="column"
-      borderStyle="single"
+      borderStyle={borderStyleFor.card}
       borderColor={cliTheme.semantic.info}
       backgroundColor={cliTheme.surfaces.panel}
       paddingX={1}

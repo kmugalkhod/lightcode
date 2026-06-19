@@ -4,7 +4,8 @@ import { ChatMessageErrorPart } from "./chat-message-error-part";
 import { ChatMessageReasoningPart } from "./chat-message-reasoning-part";
 import { ChatMessageTextPart } from "./chat-message-text-part";
 import { ChatMessageToolInvocationPart } from "./chat-message-tool-invocation-part";
-import { getMessageRoleTheme } from "../../ui/cli-theme";
+import { getMessageRoleTheme, space } from "../../ui/cli-theme";
+import { activeGlyphs } from "../../ui/cli-theme-capabilities";
 
 interface ChatMessageProps {
   message: UIMessage;
@@ -12,9 +13,15 @@ interface ChatMessageProps {
 }
 
 const ROLE_LABELS = {
-  user: "You",
-  assistant: "Assistant",
-  system: "System",
+  user: "you",
+  assistant: "assistant",
+  system: "system",
+} satisfies Record<UIMessage["role"], string>;
+
+const ROLE_GLYPHS = {
+  user: activeGlyphs.roleUser,
+  assistant: activeGlyphs.roleAssistant,
+  system: activeGlyphs.roleSystem,
 } satisfies Record<UIMessage["role"], string>;
 
 export function ChatMessage({ message, pendingApprovalIds }: ChatMessageProps) {
@@ -59,21 +66,20 @@ export function ChatMessage({ message, pendingApprovalIds }: ChatMessageProps) {
     return null;
   }
 
+  // Sleek-minimal turn: no box or background — a role glyph + label header, with
+  // the message body indented beneath it. Hierarchy comes from the role color,
+  // bold label, and indentation rather than a border around every message.
   return (
-    <box
-      width="100%"
-      flexDirection="column"
-      borderStyle="single"
-      borderColor={roleStyle.borderColor}
-      backgroundColor={roleStyle.backgroundColor}
-      paddingX={1}
-      paddingY={1}
-      gap={1}
-    >
+    <box width="100%" flexDirection="column" gap={space.xs}>
       <text fg={roleStyle.labelColor} attributes={TextAttributes.BOLD}>
-        {ROLE_LABELS[message.role]}
+        {`${ROLE_GLYPHS[message.role]} ${ROLE_LABELS[message.role]}`}
       </text>
-      <box width="100%" flexDirection="column" gap={1}>
+      <box
+        width="100%"
+        flexDirection="column"
+        gap={space.xs}
+        paddingLeft={space.md}
+      >
         {renderedParts}
       </box>
     </box>

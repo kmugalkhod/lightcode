@@ -29,6 +29,9 @@ export interface AppStateValue {
   /** Global toggle (Ctrl+O): show full tool outputs in chat. */
   expandedToolOutput: boolean;
   toggleToolOutputExpansion: () => void;
+  /** Global toggle (Ctrl+R): show the model's reasoning in chat. */
+  expandedReasoning: boolean;
+  toggleReasoningExpansion: () => void;
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null);
@@ -89,6 +92,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setExpandedToolOutput((expanded) => !expanded);
   }, []);
 
+  const [expandedReasoning, setExpandedReasoning] = useState(false);
+
+  const toggleReasoningExpansion = useCallback(() => {
+    setExpandedReasoning((expanded) => !expanded);
+  }, []);
+
   const value = useMemo<AppStateValue>(() => ({
     paletteOpen,
     paletteQuery,
@@ -111,6 +120,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     bumpConfigRefresh,
     expandedToolOutput,
     toggleToolOutputExpansion,
+    expandedReasoning,
+    toggleReasoningExpansion,
   }), [
     paletteOpen,
     paletteQuery,
@@ -129,6 +140,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     bumpConfigRefresh,
     expandedToolOutput,
     toggleToolOutputExpansion,
+    expandedReasoning,
+    toggleReasoningExpansion,
   ]);
 
   return (

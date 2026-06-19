@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { TextAttributes } from "@opentui/core";
 import { ChatMessageErrorPart } from "./chat-message-error-part";
-import { cliTheme } from "../../ui/cli-theme";
+import { cliTheme, space } from "../../ui/cli-theme";
 
 interface ChatShellProps {
   title?: string;
@@ -51,7 +51,7 @@ export function ChatShell({
           contentOptions={{
             width: "100%",
             flexDirection: "column",
-            gap: 1,
+            gap: space.md,
           }}
           scrollbarOptions={{
             trackOptions: {
@@ -66,7 +66,26 @@ export function ChatShell({
             },
           }}
         >
-          {hasMessages ? children : <text fg={cliTheme.text.muted}>{emptyStateLabel}</text>}
+          {hasMessages ? (
+            children
+          ) : (
+            <box
+              width="100%"
+              height="100%"
+              flexDirection="column"
+              alignItems="center"
+              justifyContent="center"
+              gap={space.xs}
+            >
+              <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>
+                ◆ ready
+              </text>
+              <text fg={cliTheme.text.secondary}>{emptyStateLabel}</text>
+              <text fg={cliTheme.text.muted}>
+                Type a message · / for commands · @ to attach files
+              </text>
+            </box>
+          )}
         </scrollbox>
       </box>
       {errorMessage ? <ChatMessageErrorPart label="Chat error" text={errorMessage} /> : null}

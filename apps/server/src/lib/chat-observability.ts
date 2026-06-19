@@ -100,6 +100,23 @@ function isContextOverflowMessage(message: string) {
   return contextOverflowPattern.test(message);
 }
 
+// Providers report the real ceiling in the overflow body, e.g. "This endpoint's
+// maximum context length is 1048576 tokens." Capturing it lets the server size
+// the next request against the true serving limit instead of an optimistic
+// catalog window, so recovery succeeds on the first retry.
+const contextLimitPattern =
+  /(?:maximum context (?:length|window)|max(?:imum)? input (?:length|tokens)|context (?:length|window) of)\D{0,40}?(\d{4,})/i;
+
+export function extractContextLimitTokens(message: string): number | undefined {
+  const match = contextLimitPattern.exec(message);
+  if (!match) {
+    return undefined;
+  }
+
+  const value = Number.parseInt(match[1], 10);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 function isAbortError(error: unknown) {
   return (
     (error instanceof Error && error.name === "AbortError") ||
@@ -171,6 +188,10 @@ export function classifyChatError(error: unknown): ChatStreamErrorInfo {
         statusCode: error.statusCode,
         retryable,
         message,
+        contextLimitTokens:
+          kind === "context_overflow"
+            ? extractContextLimitTokens(message)
+            : undefined,
       };
     }
 
@@ -188,7 +209,12 @@ export function classifyChatError(error: unknown): ChatStreamErrorInfo {
   }
 
   if (isContextOverflowMessage(message)) {
-    return { kind: "context_overflow", retryable: true, message };
+    return {
+      kind: "context_overflow",
+      retryable: true,
+      message,
+      contextLimitTokens: extractContextLimitTokens(message),
+    };
   }
 
   if (isProviderBillingOrQuotaError(error)) {

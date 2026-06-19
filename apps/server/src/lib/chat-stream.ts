@@ -1,8 +1,12 @@
 import {
   buildProviderView,
   collectMessageText,
+  estimateStructuralTokens,
+  fitMessagesToBudget,
   formatChatStreamError,
+  lightcodeConfigDefaults,
   normalizeProviderMessages,
+  resolveMaxOutputTokens,
   selectCodingAgentIntentTools,
   type CodingAgentMode,
   type CodingAgentToolName,
@@ -47,6 +51,10 @@ import {
   getOverflowPreserveRecentMessages,
   noteContextOverflow,
 } from "./overflow-recovery";
+import {
+  getLearnedContextLimit,
+  noteLearnedContextLimit,
+} from "./learned-context-limit";
 import { withSseHeartbeat } from "./sse-heartbeat";
 import { getSessionContextState } from "./context-state-store";
 import { maybeScheduleSessionAutoTitle } from "./session-auto-title";
@@ -72,6 +80,10 @@ const fastChatSystemPrompt =
   "If the user asks about or wants work on their code, do not ask them to paste it — you can read the project files directly; offer to look and proceed.";
 const fastChatMaxOutputTokens = 512;
 const fastChatRecentMessageCount = 6;
+// Upper bound on iterative Tier-2 compaction rounds per turn. The anchor
+// advances each round so compaction terminates on its own; this only caps
+// worst-case latency from repeated summarizer calls.
+const MAX_COMPACTION_ROUNDS = 3;
 
 function isEmptyAssistantMessage(message: UIMessage) {
   return message.role === "assistant" && message.parts.length === 0;
@@ -251,6 +263,17 @@ export async function streamSessionChat(
   // OpenAI-compatible) there is no byte-stable prefix to protect, so Tier-1 may
   // prune more aggressively.
   const cacheActive = resolvedProviderModel.provider === "anthropic";
+  // The provider counts input + output against the same window, so the input
+  // budget must subtract what we reserve for output (resolveMaxOutputTokens
+  // grants the model's full advertised cap when the user left the default).
+  const reservedOutputTokens = resolveMaxOutputTokens(
+    lightcodeConfigResult.config.maxOutputTokens,
+    lightcodeConfigDefaults.maxOutputTokens,
+    resolvedProviderModel.maxCompletionTokens,
+  );
+  // A hard limit learned from a prior overflow on this model, clamping an
+  // optimistic catalog window down to the real serving limit.
+  const endpointLimitTokens = getLearnedContextLimit(chatModelId);
   const pendingInteractionCount = await countPendingChatInteractions(sessionId);
   let contextState = await loadSessionContextStateSafe(sessionId);
   let view = buildProviderView({
@@ -258,46 +281,65 @@ export async function streamSessionChat(
     contextState,
     config: contextConfig,
     modelContextWindow: resolvedProviderModel.contextWindow,
+    reservedOutputTokens,
+    endpointLimitTokens,
     pendingInteractionCount,
     cacheActive,
   });
 
-  if (view.needsCompaction && contextConfig.autoCompact) {
-    try {
-      const estimatedTokensBefore = view.estimate.tokens;
-      const compaction = await compactSessionContext({
-        sessionId,
-        coveredMessages: view.coveredMessages,
-        previousState: contextState,
-        model: resolvedProviderModel.model,
-        modelId: chatModelId,
-        cwd,
-        config: contextConfig,
-        estimatedTokens: estimatedTokensBefore,
-      });
-      contextState = compaction.state;
-      view = buildProviderView({
-        messages: validatedMessages,
-        contextState,
-        config: contextConfig,
-        modelContextWindow: resolvedProviderModel.contextWindow,
-        pendingInteractionCount,
-        cacheActive,
-      });
-      logger.info("context_auto_compacted", {
-        sessionId,
-        tier: compaction.state.tier,
-        usedFallback: compaction.usedFallback,
-        coveredMessageCount: compaction.state.coveredMessageCount,
-        estimatedTokensBefore,
-        estimatedTokensAfter: view.estimate.tokens,
-      });
-    } catch (error) {
-      // Compaction failures must never block the chat; stream uncompacted.
-      logger.error("context_compaction_failed", {
-        sessionId,
-        error: getErrorMessage(error),
-      });
+  // Iterative compaction: each round folds a bounded chunk (capped by
+  // maxCoverageTokensPerCompaction) into the summary and advances the anchor, so
+  // a very long session shrinks gracefully over a few rounds instead of handing
+  // the summarizer one enormous slice. The anchor advances monotonically so this
+  // terminates; MAX_COMPACTION_ROUNDS just bounds per-turn latency, and the
+  // fit-to-budget clamp below is the unconditional backstop for whatever remains.
+  if (contextConfig.autoCompact) {
+    let compactionRound = 0;
+    while (view.needsCompaction && compactionRound < MAX_COMPACTION_ROUNDS) {
+      compactionRound += 1;
+      try {
+        const estimatedTokensBefore = view.estimate.tokens;
+        const compaction = await compactSessionContext({
+          sessionId,
+          coveredMessages: view.coveredMessages,
+          previousState: contextState,
+          model: resolvedProviderModel.model,
+          modelId: chatModelId,
+          cwd,
+          config: contextConfig,
+          estimatedTokens: estimatedTokensBefore,
+        });
+        contextState = compaction.state;
+        view = buildProviderView({
+          messages: validatedMessages,
+          contextState,
+          config: contextConfig,
+          modelContextWindow: resolvedProviderModel.contextWindow,
+          reservedOutputTokens,
+          endpointLimitTokens,
+          pendingInteractionCount,
+          cacheActive,
+        });
+        logger.info("context_auto_compacted", {
+          sessionId,
+          round: compactionRound,
+          tier: compaction.state.tier,
+          usedFallback: compaction.usedFallback,
+          coveredMessageCount: compaction.state.coveredMessageCount,
+          estimatedTokensBefore,
+          estimatedTokensAfter: view.estimate.tokens,
+          stillNeedsCompaction: view.needsCompaction,
+        });
+      } catch (error) {
+        // Compaction failures must never block the chat; stream uncompacted and
+        // let the fit-to-budget clamp guarantee the request still fits.
+        logger.error("context_compaction_failed", {
+          sessionId,
+          round: compactionRound,
+          error: getErrorMessage(error),
+        });
+        break;
+      }
     }
   }
 
@@ -320,6 +362,8 @@ export async function streamSessionChat(
         contextState,
         config: overflowConfig,
         modelContextWindow: resolvedProviderModel.contextWindow,
+        reservedOutputTokens,
+        endpointLimitTokens,
         pendingInteractionCount: 0,
         cacheActive,
       });
@@ -343,6 +387,8 @@ export async function streamSessionChat(
         contextState,
         config: overflowConfig,
         modelContextWindow: resolvedProviderModel.contextWindow,
+        reservedOutputTokens,
+        endpointLimitTokens,
         pendingInteractionCount: 0,
         cacheActive,
       });
@@ -366,11 +412,35 @@ export async function streamSessionChat(
     }
   }
 
+  // Hard ceiling: whatever the tiered optimizer produced (compaction can be
+  // blocked or fail, Tier-1 only touches large tool outputs), deterministically
+  // shrink the view until it fits the input budget. This is the unconditional
+  // backstop that makes "request exceeds the context window" structurally
+  // impossible, even when every soft tier was bypassed. Only the provider view
+  // shrinks; the full history on disk is untouched.
+  const fitted = fitMessagesToBudget(view.providerMessages, {
+    inputBudgetTokens: view.inputBudgetTokens,
+    preserveRecentMessages: contextConfig.preserveRecentMessages,
+  });
+  if (fitted.fitted) {
+    logger.warn("context_fit_to_budget", {
+      sessionId,
+      inputBudgetTokens: view.inputBudgetTokens,
+      contextWindow: view.contextWindow,
+      estimatedTokensBefore: estimateStructuralTokens(view.providerMessages),
+      estimatedTokensAfter: fitted.estimatedTokens,
+      elidedToolOutputs: fitted.elidedToolOutputs,
+      droppedMessages: fitted.droppedMessages,
+      truncatedTextParts: fitted.truncatedTextParts,
+      withinBudget: fitted.withinBudget,
+    });
+  }
+
   // Final payload guard: whatever path built the view (compaction, tier1
-  // prune, overflow recovery, raw history), never hand the provider a dangling
-  // tool call. Count-preserving, so providerMessages.length stays valid for
-  // the finished-message merge below.
-  const providerMessages = normalizeProviderMessages(view.providerMessages);
+  // prune, overflow recovery, the fit clamp above, or raw history), never hand
+  // the provider a dangling tool call. Count-preserving, so
+  // providerMessages.length stays valid for the finished-message merge below.
+  const providerMessages = normalizeProviderMessages(fitted.messages);
 
   // onFinish fires even when the stream ends with an error part, so track
   // overflow within this request — otherwise the finish handler would clear
@@ -496,6 +566,13 @@ export async function streamSessionChat(
       },
       modelId: chatModelId,
       finishReason: part.finishReason,
+      // Server-measured context state so the client meter is authoritative
+      // instead of re-deriving from its own (calibration-blind) heuristic.
+      context: {
+        inputTokens: view.estimate.tokens,
+        contextWindow: view.contextWindow,
+        compactedMessages: contextState?.coveredMessageCount ?? 0,
+      },
     };
   };
 
@@ -556,6 +633,7 @@ export async function streamSessionChat(
           const classified = classifyChatError(error);
 
           if (classified.kind === "context_overflow") {
+            noteLearnedContextLimit(chatModelId, classified.contextLimitTokens);
             noteOverflowForSession();
           }
           incrementChatFailureCounter(
@@ -583,6 +661,7 @@ export async function streamSessionChat(
       const classified = classifyChatError(error);
 
       if (classified.kind === "context_overflow") {
+        noteLearnedContextLimit(chatModelId, classified.contextLimitTokens);
         noteOverflowForSession();
       }
       incrementChatFailureCounter(chatFailureClassForErrorKind(classified.kind), {
@@ -641,6 +720,7 @@ export async function streamSessionChat(
     const classified = classifyChatError(error);
 
     if (classified.kind === "context_overflow") {
+      noteLearnedContextLimit(chatModelId, classified.contextLimitTokens);
       noteContextOverflow(sessionId);
     }
     incrementChatFailureCounter(chatFailureClassForErrorKind(classified.kind), {

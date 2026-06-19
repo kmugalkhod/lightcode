@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core";
 import type { TodoItem } from "@lightcode/ai";
-import { cliTheme } from "../../ui/cli-theme";
+import { borderStyleFor, cliTheme } from "../../ui/cli-theme";
 import { truncateInline } from "../../utils/text-utils";
 
 interface ChatTodoStatusCardProps {
@@ -41,7 +41,7 @@ export function ChatTodoStatusCard({ todos }: ChatTodoStatusCardProps) {
     <box
       width="100%"
       flexDirection="column"
-      borderStyle="single"
+      borderStyle={borderStyleFor.card}
       borderColor={cliTheme.semantic.info}
       backgroundColor={cliTheme.surfaces.panel}
       paddingX={1}

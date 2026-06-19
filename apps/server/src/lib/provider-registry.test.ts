@@ -88,6 +88,44 @@ describe("provider registry", () => {
     expect(resolved.missingCredentialHints).toEqual([]);
   });
 
+  test("sets OpenRouter provider routing and attribution headers", () => {
+    const resolved = resolveConfiguredProviderModel({
+      config: {
+        ...baseConfig,
+        provider: "openrouter",
+        model: "z-ai/glm-5.2",
+      },
+      env: {
+        OPENROUTER_API_KEY: "test-openrouter-key",
+      },
+    });
+
+    expect(resolved.provider).toBe("openrouter");
+    // Routing lets OpenRouter fail over when one upstream drops a stream.
+    expect(resolved.providerOptions).toEqual({
+      openrouter: {
+        provider: {
+          allow_fallbacks: true,
+          require_parameters: true,
+        },
+      },
+    });
+  });
+
+  test("does not set provider routing for non-OpenRouter OpenAI-compatible providers", () => {
+    const resolved = resolveConfiguredProviderModel({
+      config: {
+        ...baseConfig,
+        provider: "openai-compatible",
+        model: "local-model",
+        baseUrl: "http://localhost:11434/v1",
+      },
+      env: { LIGHTCODE_OPENAI_COMPATIBLE_API_KEY: "k" },
+    });
+
+    expect(resolved.providerOptions).toBeUndefined();
+  });
+
   test("resolves OpenCode Zen as a first-class provider", () => {
     const resolved = resolveConfiguredProviderModel({
       config: {

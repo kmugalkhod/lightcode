@@ -32,6 +32,20 @@ describe("classifyChatError", () => {
     // Retryable: each overflow round triggers a harder server-side compaction.
     expect(classified.kind).toBe("context_overflow");
     expect(classified.retryable).toBe(true);
+    expect(classified.contextLimitTokens).toBe(196608);
+  });
+
+  test("captures the real endpoint limit from an OpenRouter overflow", () => {
+    const classified = classifyChatError(
+      apiError(
+        400,
+        '{"error":{"message":"This endpoint\'s maximum context length is 1048576 tokens. However, you requested about 2193278 tokens (2061342 of text input, 864 of tool input, 131072 in the output)."}}',
+      ),
+    );
+
+    expect(classified.kind).toBe("context_overflow");
+    // The first number is the limit, not the (larger) requested amount.
+    expect(classified.contextLimitTokens).toBe(1048576);
   });
 
   test.each([

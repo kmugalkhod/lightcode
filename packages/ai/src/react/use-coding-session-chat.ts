@@ -18,6 +18,7 @@ import {
 import {
   describeChatStreamError,
   parseChatStreamError,
+  type ChatErrorKind,
 } from "../chat-error";
 import type { SessionMessagesResponse } from "../chat-schemas";
 import {
@@ -115,6 +116,14 @@ export interface AutoContinueOptions {
   stallTimeoutSeconds?: number;
 }
 
+/**
+ * Why an automatic retry fired. `"stall"` is local (the stream produced no
+ * bytes for stallTimeoutMs, so the upstream cause is unknown); everything else
+ * is the server's classification of the failure. Lets the UI name the true
+ * cause instead of always saying "Connection dropped".
+ */
+export type RetryReason = ChatErrorKind | "stall";
+
 export interface AutoContinueState {
   /** Continuations sent automatically since the last user message. */
   attempt: number;
@@ -122,10 +131,71 @@ export interface AutoContinueState {
   kind: AutoContinueKind | "retry-error";
   /** Set when continuation stopped because a loop guard tripped. */
   guardTripped?: AutoContinueDecision["guardTripped"];
+  /** Set when kind === "retry-error": why the retry happened. */
+  retryReason?: RetryReason;
+  /** Epoch ms when the scheduled retry will fire, for a live countdown. */
+  retryAtMs?: number;
 }
 
 const errorRetryBaseDelayMs = 1_000;
 const errorRetryMaxDelayMs = 8_000;
+/**
+ * Rate limits get a modestly-bounded cap so a sustained free-tier throttle can't
+ * loop forever — but it must be high enough to RIDE OUT the brief 429s a paid
+ * provider throws mid-task, otherwise long tasks stop early and ask the user to
+ * resume. Connection drops / network errors keep the full maxErrorRetries.
+ */
+const rateLimitMaxRetries = 6;
+/**
+ * Backstop on total auto-retry wall-clock per error episode (resets on every
+ * successful step). Generous so a multi-step task riding out provider blips
+ * completes on its own; it only bounds a truly stuck infinite loop.
+ */
+const errorRetryTimeBudgetMs = 180_000;
+
+export interface ErrorRetryDecision {
+  retry: boolean;
+  delayMs: number;
+}
+
+/**
+ * Pure retry policy: given the next attempt number, the failure kind, how long
+ * we've already spent retrying this episode, and the user's max, decide whether
+ * to retry and after what backoff. Rate limits cap lower; the cumulative time
+ * budget is a backstop for every kind.
+ */
+export function decideErrorRetry({
+  attempt,
+  kind,
+  elapsedMs,
+  maxErrorRetries,
+}: {
+  attempt: number;
+  kind: RetryReason | undefined;
+  elapsedMs: number;
+  maxErrorRetries: number;
+}): ErrorRetryDecision {
+  const cap =
+    kind === "rate_limit"
+      ? Math.min(rateLimitMaxRetries, maxErrorRetries)
+      : maxErrorRetries;
+
+  if (attempt > cap) {
+    return { retry: false, delayMs: 0 };
+  }
+
+  const delayMs = Math.min(
+    errorRetryBaseDelayMs * 2 ** (attempt - 1),
+    errorRetryMaxDelayMs,
+  );
+
+  // Stop if waiting out this backoff would blow the episode time budget.
+  if (elapsedMs + delayMs > errorRetryTimeBudgetMs) {
+    return { retry: false, delayMs: 0 };
+  }
+
+  return { retry: true, delayMs };
+}
 
 export interface UseCodingSessionChatOptions {
   chatApi: string;
@@ -644,6 +714,8 @@ export function useCodingSessionChat({
   // Transport-error retries in the current error episode.
   const errorRetriesRef = useRef(0);
   const errorRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // When the current error episode began, for the cumulative retry-time budget.
+  const errorEpisodeStartRef = useRef<number | null>(null);
   // Message id of the assistant response we already decided on, so the
   // ready-state effect fires once per response.
   const lastDecidedAssistantIdRef = useRef<string | null>(null);
@@ -665,6 +737,7 @@ export function useCodingSessionChat({
     turnKeyRef.current = `turn-${Date.now()}-${turnCounterRef.current}`;
     autoContinuesRef.current = 0;
     errorRetriesRef.current = 0;
+    errorEpisodeStartRef.current = null;
     lastProgressMarkerRef.current = 0;
     noProgressRetriesRef.current = 0;
     taskStuckRef.current = false;
@@ -1187,6 +1260,7 @@ export function useCodingSessionChat({
   useEffect(() => {
     if (status === "ready" && !error) {
       errorRetriesRef.current = 0;
+      errorEpisodeStartRef.current = null;
     }
   }, [error, status]);
 
@@ -1242,9 +1316,12 @@ export function useCodingSessionChat({
 
       stallRecoveryInFlightRef.current = true;
       errorRetriesRef.current += 1;
+      // The watchdog fires on no bytes, not on a classified error, so the
+      // upstream cause is genuinely unknown here.
       setAutoContinueState({
         attempt: errorRetriesRef.current,
         kind: "retry-error",
+        retryReason: "stall",
       });
 
       void (async () => {
@@ -1352,17 +1429,39 @@ export function useCodingSessionChat({
       return;
     }
 
-    if (errorRetriesRef.current >= maxErrorRetriesRef.current) {
+    const retryMessages = sanitizeMessagesForRetry(messages);
+    // The server already classified the failure; surface its real cause instead
+    // of always saying "Connection dropped". Plain transport errors with no
+    // structured envelope fall back to "network".
+    const retryReason: RetryReason =
+      parseChatStreamError(error.message)?.kind ?? "network";
+
+    if (errorEpisodeStartRef.current === null) {
+      errorEpisodeStartRef.current = Date.now();
+    }
+    const attempt = errorRetriesRef.current + 1;
+    const decision = decideErrorRetry({
+      attempt,
+      kind: retryReason,
+      elapsedMs: Date.now() - errorEpisodeStartRef.current,
+      maxErrorRetries: maxErrorRetriesRef.current,
+    });
+
+    // Give up auto-retrying (rate-limit cap or time budget hit): leave the error
+    // surfaced so the user can act. Nothing is lost — full history is persisted.
+    if (!decision.retry) {
       return;
     }
 
-    const retryMessages = sanitizeMessagesForRetry(messages);
-
-    const attempt = errorRetriesRef.current + 1;
-    const delay = Math.min(
-      errorRetryBaseDelayMs * 2 ** (attempt - 1),
-      errorRetryMaxDelayMs,
-    );
+    const delay = decision.delayMs;
+    // Show the wait immediately with a deadline so the UI can count down rather
+    // than appear frozen during backoff.
+    setAutoContinueState({
+      attempt,
+      kind: "retry-error",
+      retryReason,
+      retryAtMs: Date.now() + delay,
+    });
 
     errorRetryTimerRef.current = setTimeout(() => {
       errorRetryTimerRef.current = null;
@@ -1377,7 +1476,7 @@ export function useCodingSessionChat({
         return;
       }
       errorRetriesRef.current = attempt;
-      setAutoContinueState({ attempt, kind: "retry-error" });
+      setAutoContinueState({ attempt, kind: "retry-error", retryReason });
       setMessages(retryMessages);
       clearError();
       setToolExecutionError(null);

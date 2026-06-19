@@ -9,7 +9,7 @@ import {
   isUpKey,
 } from "../../utils/key-utils";
 import { client } from "../../lib/client";
-import { cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
+import { borderStyleFor, cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
 
 interface ModelSelectorProps {
   onClose: () => void;
@@ -210,7 +210,7 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
     <box
       width="100%"
       flexDirection="column"
-      borderStyle="single"
+      borderStyle={borderStyleFor.modal}
       borderColor={cliTheme.overlay.border}
       backgroundColor={cliTheme.overlay.surface}
     >

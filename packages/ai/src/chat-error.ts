@@ -25,6 +25,13 @@ export interface ChatStreamErrorInfo {
   retryable: boolean;
   /** Provider/transport message, truncated for transport. */
   message: string;
+  /**
+   * The hard context limit the provider reported on an overflow ("maximum
+   * context length is N tokens"), when parseable. Lets the server size future
+   * requests against the real serving limit instead of an optimistic catalog
+   * window.
+   */
+  contextLimitTokens?: number;
 }
 
 const chatStreamErrorPrefix = "LIGHTCODE_ERROR:";
@@ -77,6 +84,10 @@ export function parseChatStreamError(
         typeof parsed.statusCode === "number" ? parsed.statusCode : undefined,
       retryable: parsed.retryable,
       message: parsed.message,
+      contextLimitTokens:
+        typeof parsed.contextLimitTokens === "number"
+          ? parsed.contextLimitTokens
+          : undefined,
     };
   } catch {
     return null;
@@ -99,4 +110,25 @@ const chatErrorKindLabels: Record<ChatErrorKind, string> = {
 export function describeChatStreamError(info: ChatStreamErrorInfo): string {
   const status = info.statusCode ? ` (HTTP ${info.statusCode})` : "";
   return `${chatErrorKindLabels[info.kind]}${status}: ${info.message}`;
+}
+
+/**
+ * Short cause phrase for an automatic-retry notice (e.g. "Provider unavailable",
+ * "Rate limited", "Stalled"). `"stall"` means the stream went silent with no
+ * classified error; `network`/undefined keep the familiar "Connection dropped"
+ * wording. Centralized here so the retry notice never drifts from the canonical
+ * error labels.
+ */
+export function retryReasonLabel(
+  reason: ChatErrorKind | "stall" | undefined,
+): string {
+  if (reason === "stall") {
+    return "Stalled";
+  }
+  // A real transport drop (or an unknown cause) keeps the familiar phrasing;
+  // "Connection error" would be less clear here than "Connection dropped".
+  if (reason === undefined || reason === "network") {
+    return "Connection dropped";
+  }
+  return chatErrorKindLabels[reason];
 }

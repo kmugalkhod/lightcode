@@ -11,6 +11,9 @@ import { client } from "../lib/client";
 import { restartOwnedServer } from "../lib/server-launcher";
 import { useAppState } from "../state/app-state";
 import { cliTheme } from "../ui/cli-theme";
+import { activeGlyphs } from "../ui/cli-theme-capabilities";
+
+const ONBOARDING_STEP_SEQUENCE = ["provider", "apiKey", "model", "done"] as const;
 import { getErrorMessage } from "../utils/text-utils";
 import { isDownKey, isEnterKey, isUpKey } from "../utils/key-utils";
 
@@ -173,6 +176,12 @@ export function OnboardingScreen() {
     }
   });
 
+  const totalSteps = ONBOARDING_STEP_SEQUENCE.length;
+  const currentStepNumber =
+    step === "baseUrl" || step === "saving"
+      ? ONBOARDING_STEP_SEQUENCE.indexOf("model") + 1
+      : Math.max(1, ONBOARDING_STEP_SEQUENCE.indexOf(step) + 1);
+
   return (
     <box width="100%" height="100%" flexDirection="column" alignItems="center" paddingTop={2}>
       <box width={72} flexDirection="column" gap={1}>
@@ -182,6 +191,22 @@ export function OnboardingScreen() {
         <text fg={cliTheme.text.secondary}>
           One-time setup: pick a model provider and store an API key.
         </text>
+        <box flexDirection="row" gap={1} alignItems="center">
+          <text fg={cliTheme.text.muted}>
+            Step {currentStepNumber} of {totalSteps}
+          </text>
+          <text>
+            <span fg={cliTheme.accent.primary}>
+              {Array.from({ length: currentStepNumber }, () => activeGlyphs.statusDot).join(" ")}
+            </span>
+            <span fg={cliTheme.text.muted}>
+              {Array.from(
+                { length: Math.max(0, totalSteps - currentStepNumber) },
+                () => ` ${activeGlyphs.bullet}`,
+              ).join("")}
+            </span>
+          </text>
+        </box>
         <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
           Keys are stored in ~/.lightcode/credentials.json (environment
           variables always take precedence).

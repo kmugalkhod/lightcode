@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { useMemo, useState } from "react";
-import { cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
+import { borderStyleFor, cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../../utils/key-utils";
 
 interface InteractionOption {
@@ -168,7 +168,7 @@ export function ChatInteractionPopup({
     <box
       width="100%"
       flexDirection="column"
-      borderStyle="single"
+      borderStyle={borderStyleFor.modal}
       borderColor={cliTheme.borders.active}
       backgroundColor={cliTheme.surfaces.panel}
       paddingX={1}

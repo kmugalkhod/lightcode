@@ -120,9 +120,10 @@ export const lightcodeConfigDefaults = {
   // far more than the text alone suggests.
   maxOutputTokens: 32_768,
   maxSteps: 30, // safety net only — the client-driven loop is budgeted by autoContinue
-  // claw-code retries 8 times against the same status whitelist; 5 keeps
-  // worst-case latency bounded while riding out provider blips.
-  maxRetries: 5,
+  // SDK-level retries (Retry-After-aware exponential backoff). Moderate: enough
+  // to ride out transient blips so work isn't stopped to ask the user, without
+  // re-stacking the old 5x depth that compounded backoff under the client layer.
+  maxRetries: 3,
   autoContinue: defaultAutoContinueConfig,
   headroom: defaultHeadroomConfig,
 } satisfies Pick<

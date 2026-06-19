@@ -9,31 +9,11 @@ import {
 } from "../common/resolve-within-workspace";
 import { createUnifiedDiff } from "../common/unified-diff";
 import type { FileEditContext } from "../common/file-edit-context";
+import { applyEdit } from "./match";
 import { editFileInputSchema, editFileOutputSchema } from "./schema";
 
 type EditFileInput = z.input<typeof editFileInputSchema>;
 type EditFileOutput = z.infer<typeof editFileOutputSchema>;
-
-function countOccurrences(haystack: string, needle: string): number {
-  if (!needle) {
-    return 0;
-  }
-
-  let count = 0;
-  let startIndex = 0;
-
-  while (true) {
-    const index = haystack.indexOf(needle, startIndex);
-    if (index === -1) {
-      break;
-    }
-
-    count += 1;
-    startIndex = index + needle.length;
-  }
-
-  return count;
-}
 
 export async function executeEditFile(
   input: EditFileInput,
@@ -47,19 +27,15 @@ export async function executeEditFile(
   const relativePath = toWorkspaceRelativePath(resolvedPath, workspaceContext);
   const originalContent = await fs.readFile(resolvedPath, "utf8");
 
-  const replacements = parsedInput.replaceAll
-    ? countOccurrences(originalContent, parsedInput.search)
-    : originalContent.includes(parsedInput.search)
-      ? 1
-      : 0;
-
-  if (replacements === 0) {
-    throw new Error(`No matches found for the provided search text in "${parsedInput.path}".`);
-  }
-
-  const updatedContent = parsedInput.replaceAll
-    ? originalContent.split(parsedInput.search).join(parsedInput.replace)
-    : originalContent.replace(parsedInput.search, parsedInput.replace);
+  // Tolerant match: exact → line-ending-normalized → whitespace-flexible, with a
+  // uniqueness guard and original-EOL preservation. Throws a descriptive error
+  // on no/ambiguous match, which surfaces to the model as the tool result.
+  const { updatedContent, replacements } = applyEdit(
+    originalContent,
+    parsedInput.search,
+    parsedInput.replace,
+    parsedInput.replaceAll,
+  );
 
   if (editContext.sessionId && editContext.turnKey) {
     await recordFileCheckpoint({
