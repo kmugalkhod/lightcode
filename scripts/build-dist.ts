@@ -61,6 +61,25 @@ function resolveLatestVersions(
   return dependencies;
 }
 
+/**
+ * The Bun version to ship as a dependency of the published package, so that
+ * `npm install -g` pulls in a runtime instead of requiring a separate Bun
+ * install. Pinned to the repo's own Bun (root packageManager / engines.bun).
+ */
+function resolveBunVersion(): string {
+  const rootManifest = JSON.parse(
+    readFileSync(path.join(repoRoot, "package.json"), "utf8"),
+  ) as { packageManager?: string; engines?: { bun?: string } };
+
+  const fromPackageManager = rootManifest.packageManager?.match(/^bun@(.+)$/);
+  if (fromPackageManager?.[1]) {
+    return fromPackageManager[1];
+  }
+
+  const fromEngines = rootManifest.engines?.bun?.replace(/[^0-9.]/g, "");
+  return fromEngines && fromEngines.length > 0 ? fromEngines : "1.3.13";
+}
+
 function collectExternalDependencies(): Record<string, string> {
   const dependencies: Record<string, string> = {};
 
@@ -111,6 +130,7 @@ async function buildEntry({
 }
 
 const externalDependencies = collectExternalDependencies();
+const bunVersion = resolveBunVersion();
 const externalNames = Object.keys(externalDependencies).flatMap((name) => [
   name,
   `${name}/*`,
@@ -148,22 +168,67 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 
-// Check if Bun is available
-try {
-  const result = spawnSync("bun", ["--version"], { encoding: "utf8" });
-  if (result.status !== 0) {
-    throw new Error("Bun not found");
+// Resolve a usable Bun (>= 1.3.0). Prefer the Bun bundled as a dependency of
+// this package (so a plain \`npm install -g\` works with no separate Bun
+// install), then fall back to a Bun already on PATH.
+function isUsableBun(bunCmd) {
+  try {
+    const result = spawnSync(bunCmd, ["--version"], { encoding: "utf8" });
+    if (result.status !== 0 || !result.stdout) {
+      return false;
+    }
+    const [major, minor] = result.stdout.trim().split(".").map(Number);
+    return major > 1 || (major === 1 && minor >= 3);
+  } catch {
+    return false;
   }
-  const version = result.stdout.trim();
-  const [major, minor] = version.split(".").map(Number);
-  // Accept Bun >= 1.3.0
-  if (major < 1 || (major === 1 && minor < 3)) {
-    console.error("Lightcode requires Bun >= 1.3.0. Found: " + version);
-    console.error("Install the latest Bun from https://bun.sh");
-    process.exit(1);
+}
+
+function resolveBun() {
+  // __dirname is the realpath of this launcher even when invoked via npm's
+  // global bin symlink (process.argv[1] would be the symlink path on macOS/Linux).
+  const launcherDir = __dirname;
+  const candidates = [];
+
+  // Bun shipped as a dependency, inside this package's own node_modules. The
+  // npm "bun" package names its executable bin/bun.exe on EVERY platform
+  // (macOS and Linux included), so read the real path from its "bin" field
+  // rather than guessing a filename.
+  try {
+    const bunPkgPath = require.resolve("bun/package.json", {
+      paths: [launcherDir],
+    });
+    const bunDir = path.dirname(bunPkgPath);
+    const bin = JSON.parse(fs.readFileSync(bunPkgPath, "utf8")).bin;
+    const rel = typeof bin === "string" ? bin : bin && bin.bun;
+    if (rel) {
+      candidates.push(path.join(bunDir, rel));
+    }
+  } catch {}
+
+  // npm's bin shim (symlink) and conventional names, as fallbacks.
+  const shim = process.platform === "win32" ? "bun.exe" : "bun";
+  candidates.push(path.join(launcherDir, "node_modules", ".bin", shim));
+  candidates.push(path.join(launcherDir, "node_modules", "bun", "bin", "bun.exe"));
+  candidates.push(path.join(launcherDir, "node_modules", "bun", "bin", "bun"));
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate) && isUsableBun(candidate)) {
+      return candidate;
+    }
   }
-} catch {
-  console.error("Lightcode requires Bun >= 1.3.0, which is not installed.");
+
+  // Fall back to a system Bun on PATH.
+  if (isUsableBun("bun")) {
+    return "bun";
+  }
+
+  return null;
+}
+
+const bunPath = resolveBun();
+if (!bunPath) {
+  console.error("Lightcode requires Bun >= 1.3.0, which could not be found.");
   console.error("Install Bun from https://bun.sh or:");
   console.error("  curl -fsSL https://bun.sh/install | bash");
   console.error("  # on Windows (PowerShell):");
@@ -224,9 +289,9 @@ if (process.platform === "win32" && !process.env.NODE_EXTRA_CA_CERTS) {
   }
 }
 
-// Get the directory of this launcher and find cli.js next to it
-const launcherDir = path.dirname(process.argv[1]);
-const cliPath = path.join(launcherDir, "cli.js");
+// Get the directory of this launcher and find cli.js next to it. Use __dirname
+// (realpath-resolved) so this works when run via npm's global bin symlink.
+const cliPath = path.join(__dirname, "cli.js");
 
 // Ensure cli.js exists
 if (!fs.existsSync(cliPath)) {
@@ -237,7 +302,7 @@ if (!fs.existsSync(cliPath)) {
 // Exec Bun with the cli.js script using spawnSync for proper argument handling
 try {
   const args = process.argv.slice(2);
-  const result = spawnSync("bun", [cliPath, ...args], {
+  const result = spawnSync(bunPath, [cliPath, ...args], {
     stdio: "inherit",
     env: process.env,
   });
@@ -263,7 +328,10 @@ writeFileSync(
       bin: { lightcode: "./lightcode.cjs" },
       engines: { bun: ">=1.3.0" },
       files: ["cli.js", "lightcode.cjs", "server.js", "README.md", "LICENSE"],
-      dependencies: externalDependencies,
+      // Ship Bun itself so `npm install -g` is self-contained (the npm "bun"
+      // package vendors the right native binary per platform). The launcher
+      // prefers this bundled Bun and falls back to a system Bun on PATH.
+      dependencies: { bun: bunVersion, ...externalDependencies },
     },
     null,
     2,

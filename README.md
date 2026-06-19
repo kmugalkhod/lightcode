@@ -6,12 +6,30 @@ permission-gated tool suite (files, shell, git, web, MCP), and tiered context
 optimization that keeps long sessions inside the model's context window
 without ever losing history.
 
+## Install
+
+```bash
+npm install -g @kmugalkhod/lightcode
+lightcode
+```
+
+Works on macOS (Apple Silicon and Intel), Linux, and Windows. Bun ships with
+the package, so there's nothing else to install — the first `lightcode` run
+uses the bundled runtime automatically (and reuses a system Bun if you already
+have one). The published package is scoped as `@kmugalkhod/lightcode`; the
+command it installs is `lightcode`.
+
 ## Quick start (from source)
 
 ```bash
 bun install
 bun run cli:dev        # starts the TUI; it boots the server automatically
 ```
+
+Lightcode is aware of the directory you launch it in: each turn it reads the
+project's shape (top-level files, git branch/status) and any `AGENTS.md` /
+`CLAUDE.md` / `README.md`, so "review my code" or "explain this" inspects your
+actual files instead of asking you to paste them.
 
 On first run Lightcode walks you through provider setup (Anthropic,
 OpenRouter, OpenCode Zen, or any OpenAI-compatible endpoint) and stores the
@@ -44,7 +62,8 @@ variables. Notable keys:
 | `context.pruneAtFraction` | Tool-output pruning threshold (default 0.6) |
 | `context.contextWindowOverride` | Override the model context window |
 | `maxRetries` | Provider-call retries for transient errors (default 5) |
-| `autoContinue.stallTimeoutSeconds` | Abort+retry a byte-silent stream (default 180) |
+| `autoContinue.stallTimeoutSeconds` | Abort+retry a byte-silent stream (default 300; raise for very slow reasoning models) |
+| `autoContinue.maxErrorRetries` | Auto-resends before surfacing a stream error (default 8) |
 
 The local companion server listens on `127.0.0.1:4983` (uncommon on purpose —
 port 3000 belongs to the apps you build). Override with `PORT` for the server

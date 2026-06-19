@@ -17,6 +17,7 @@ import {
   createAgentUIStreamResponse,
   consumeStream,
   generateId,
+  isToolUIPart,
   safeValidateUIMessages,
   streamText,
   type TextStreamPart,
@@ -49,6 +50,7 @@ import {
 import { withSseHeartbeat } from "./sse-heartbeat";
 import { getSessionContextState } from "./context-state-store";
 import { maybeScheduleSessionAutoTitle } from "./session-auto-title";
+import { buildWorkspaceContext } from "./workspace-context";
 import {
   chatModelId,
   codingAgent,
@@ -65,8 +67,9 @@ const providerBillingOrQuotaMessage =
   "Update provider credits/quota and retry.";
 
 const fastChatSystemPrompt =
-  "You are Lightcode's friendly coding assistant. For casual conversation, reply briefly and naturally. " +
-  "If the user asks for coding work, say you can help and ask them what they want to change.";
+  "You are Lightcode's coding assistant, running inside the user's project. " +
+  "For casual conversation, reply briefly and naturally. " +
+  "If the user asks about or wants work on their code, do not ask them to paste it — you can read the project files directly; offer to look and proceed.";
 const fastChatMaxOutputTokens = 512;
 const fastChatRecentMessageCount = 6;
 
@@ -95,7 +98,14 @@ function buildFastChatModelMessages(messages: UIMessage[]) {
     .slice(-fastChatRecentMessageCount);
 }
 
-function shouldUseFastChatPath({
+/** True once the agent has produced any tool call/result in this session. */
+function messagesHaveToolActivity(messages: UIMessage[]): boolean {
+  return messages.some((message) =>
+    message.parts?.some((part) => isToolUIPart(part)),
+  );
+}
+
+export function shouldUseFastChatPath({
   messages,
   mode,
   allowedTools,
@@ -105,6 +115,15 @@ function shouldUseFastChatPath({
   allowedTools: CodingAgentToolName[] | undefined;
 }) {
   if (allowedTools && allowedTools.length > 0) {
+    return false;
+  }
+
+  // Once the agent has used tools in this session, a follow-up — even a terse
+  // "continue" — is almost certainly resuming that work and must run the full
+  // agent loop, not the tool-less fast path. The keyword-based intent selector
+  // only inspects the latest user message, so short continuations would
+  // otherwise misroute here and reply once without executing anything.
+  if (messagesHaveToolActivity(messages)) {
     return false;
   }
 
@@ -480,6 +499,11 @@ export async function streamSessionChat(
     };
   };
 
+  // Snapshot the workspace once per turn so both paths can make the agent
+  // aware of the repo it is running in (reads the cwd instead of asking the
+  // user to paste code). Best-effort; never throws.
+  const environmentContext = await buildWorkspaceContext({ cwd });
+
   try {
     if (
       shouldUseFastChatPath({
@@ -495,7 +519,7 @@ export async function streamSessionChat(
 
       const result = streamText({
         model: resolvedProviderModel.model,
-        system: fastChatSystemPrompt,
+        system: `${fastChatSystemPrompt}\n\n${environmentContext}`,
         messages: buildFastChatModelMessages(providerMessages),
         maxOutputTokens: Math.min(
           lightcodeConfigResult.config.maxOutputTokens,
@@ -585,6 +609,7 @@ export async function streamSessionChat(
         allowedTools,
         permissionRules,
         sandbox,
+        environmentContext,
       },
       // Stop the agent loop (including pending tool turns) on disconnect.
       abortSignal: c.req.raw.signal,

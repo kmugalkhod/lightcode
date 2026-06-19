@@ -27,12 +27,24 @@ const renderer = await createCliRenderer({
 
 if (serverLaunch.ownedProcess) {
   const ownedProcess = serverLaunch.ownedProcess;
-  process.on("exit", () => {
+  const killOwnedServer = () => {
     try {
       ownedProcess.kill();
     } catch {
       // The server may already be gone.
     }
+  };
+  process.on("exit", killOwnedServer);
+  // process.on("exit") does not fire on signals; tear the server down on a
+  // clean Ctrl+C/terminate too (the server's parent-death watchdog is the
+  // backstop for SIGKILL/terminal-close).
+  process.on("SIGINT", () => {
+    killOwnedServer();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    killOwnedServer();
+    process.exit(0);
   });
 }
 

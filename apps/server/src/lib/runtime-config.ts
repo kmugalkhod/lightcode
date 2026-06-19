@@ -135,6 +135,42 @@ export function applyModelSelection({
 }
 
 /**
+ * Reloads config and credentials from disk and hot-swaps the live runtime, no
+ * server restart required. Used after onboarding writes settings.json /
+ * credentials.json so the change applies even when this server process was not
+ * spawned by the current CLI (e.g. an orphaned server still holding the port).
+ * Mirrors applyModelSelection's atomic swap of the live ESM bindings.
+ */
+export function reloadRuntimeConfig(): LightcodeConfigStatus {
+  const nextConfigResult = loadLightcodeConfig({
+    cwd: process.cwd(),
+    env: Bun.env,
+  });
+  const nextResolved = resolveConfiguredProviderModel({
+    config: nextConfigResult.config,
+    env: Bun.env,
+  });
+  const nextAgent = buildCodingAgent(nextConfigResult.config, nextResolved);
+
+  lightcodeConfigResult = nextConfigResult;
+  resolvedProviderModel = nextResolved;
+  chatModelId = nextResolved.resolvedModelId;
+  codingAgent = nextAgent;
+  configStatus = createConfigStatus({
+    config: nextConfigResult.config,
+    loadedFiles: nextConfigResult.loadedFiles,
+    resolvedProviderModel: nextResolved,
+  });
+
+  logger.info("runtime_config_reloaded", {
+    provider: nextConfigResult.config.provider,
+    model: nextConfigResult.config.model,
+  });
+
+  return configStatus;
+}
+
+/**
  * Fail-open switch for the headroom proxy facility: re-resolves the live model
  * with headroom routing forced off and swaps it in atomically, so traffic goes
  * straight to the real provider. Called by the startup health gate when the

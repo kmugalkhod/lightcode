@@ -98,8 +98,8 @@ describe("loadLightcodeConfig", () => {
     expect(result.config.autoContinue).toEqual({
       enabled: true,
       maxAutoContinues: 50,
-      maxErrorRetries: 5,
-      stallTimeoutSeconds: 180,
+      maxErrorRetries: 8,
+      stallTimeoutSeconds: 300,
     });
     expect(result.loadedFiles.every((file) => !file.exists && !file.loaded)).toBe(
       true,
@@ -120,8 +120,8 @@ describe("loadLightcodeConfig", () => {
     expect(result.config.autoContinue).toEqual({
       enabled: true,
       maxAutoContinues: 10,
-      maxErrorRetries: 5,
-      stallTimeoutSeconds: 180,
+      maxErrorRetries: 8,
+      stallTimeoutSeconds: 300,
     });
   });
 

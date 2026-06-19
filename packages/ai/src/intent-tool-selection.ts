@@ -130,6 +130,18 @@ export function selectCodingAgentIntentTools({
   }
 
   const selectedTools: CodingAgentToolName[] = [];
+  // Terse continuations carry no code keywords but mean "keep doing the work".
+  const hasContinuationIntent = includesAny(normalizedText, [
+    "continue",
+    "proceed",
+    "go on",
+    "go ahead",
+    "keep going",
+    "carry on",
+    "resume",
+    "finish",
+    "next step",
+  ]);
   const hasCodeIntent = includesAny(normalizedText, [
     "file",
     "folder",
@@ -176,35 +188,80 @@ export function selectCodingAgentIntentTools({
     "analyze",
     "check",
   ]);
+  // Exploration/review requests carry no code keyword but should still read the
+  // workspace ("review this", "explain the code", "look at this project").
+  // "review"/"audit"/"walk through" imply the codebase on their own; softer
+  // verbs ("explain", "summarize", ...) only do so when paired with a workspace
+  // referent, so "explain recursion in simple words" stays a plain Q&A.
+  const workspaceReferents = [
+    "this",
+    "these",
+    "that",
+    "here",
+    "code",
+    "codebase",
+    "repo",
+    "repository",
+    "project",
+    "file",
+    "files",
+    "directory",
+    "folder",
+    "app",
+    "application",
+    "module",
+    "my",
+  ];
+  const strongReviewIntent = includesAny(normalizedText, [
+    "review",
+    "audit",
+    "walk through",
+    "walkthrough",
+    "code review",
+  ]);
+  const softReviewIntent =
+    includesAny(normalizedText, [
+      "explain",
+      "understand",
+      "summarize",
+      "summarise",
+      "overview",
+      "describe",
+      "explore",
+      "look at",
+    ]) && includesAny(normalizedText, workspaceReferents);
+  const hasReviewIntent = strongReviewIntent || softReviewIntent;
   const hasWriteIntent =
     mode === "build" &&
-    includesAny(normalizedText, [
-      "write",
-      "edit",
-      "change",
-      "create",
-      "implement",
-      "fix",
-      "update",
-      "delete",
-      "remove",
-      "rename",
-    ]);
+    (hasContinuationIntent ||
+      includesAny(normalizedText, [
+        "write",
+        "edit",
+        "change",
+        "create",
+        "implement",
+        "fix",
+        "update",
+        "delete",
+        "remove",
+        "rename",
+      ]));
   const hasShellIntent =
     mode === "build" &&
-    includesAny(normalizedText, [
-      "run",
-      "command",
-      "terminal",
-      "shell",
-      "bash",
-      "powershell",
-      "bun",
-      "tests",
-      "run test",
-      "run tests",
-      "typecheck",
-    ]);
+    (hasContinuationIntent ||
+      includesAny(normalizedText, [
+        "run",
+        "command",
+        "terminal",
+        "shell",
+        "bash",
+        "powershell",
+        "bun",
+        "tests",
+        "run test",
+        "run tests",
+        "typecheck",
+      ]));
   const hasGitIntent = includesAny(normalizedText, [
     "git",
     "diff",
@@ -255,6 +312,8 @@ export function selectCodingAgentIntentTools({
 
   if (
     hasCodeIntent ||
+    hasContinuationIntent ||
+    hasReviewIntent ||
     (hasReadIntent && !hasGitIntent && !hasWebIntent && !explicitToolSearch)
   ) {
     for (const toolName of baseReadTools) {

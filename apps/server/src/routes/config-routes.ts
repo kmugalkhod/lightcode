@@ -6,7 +6,11 @@ import {
   getOpenRouterModelCapabilities,
   listOpenRouterModels,
 } from "../lib/openrouter-models";
-import { applyModelSelection, configStatus } from "../lib/runtime-config";
+import {
+  applyModelSelection,
+  configStatus,
+  reloadRuntimeConfig,
+} from "../lib/runtime-config";
 
 const selectModelRequestSchema = z.object({
   provider: lightcodeProviderSchema,
@@ -15,6 +19,9 @@ const selectModelRequestSchema = z.object({
 
 export const configRoutes = new Hono()
   .get("/status", (c) => c.json(configStatus))
+  .post("/reload", (c) =>
+    c.json({ ok: true, configStatus: reloadRuntimeConfig() }),
+  )
   .get("/models", async (c) => {
     const provider = c.req.query("provider") ?? "openrouter";
     if (provider !== "openrouter") {
