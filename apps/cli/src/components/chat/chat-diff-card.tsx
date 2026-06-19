@@ -1,12 +1,9 @@
 import { TextAttributes } from "@opentui/core";
-import { cliTheme } from "../../ui/cli-theme";
+import { borderStyleFor, cliTheme } from "../../ui/cli-theme";
 import { codeSyntaxStyle, inferFiletype } from "../../ui/code-syntax-style";
 
 const COLLAPSED_MAX_LINES = 20;
 const TRUNCATION_MARKER = "... diff truncated ...";
-
-const addedBg = "#13271B";
-const removedBg = "#2B1619";
 
 interface ChatDiffCardProps {
   path: string;
@@ -57,7 +54,7 @@ export function ChatDiffCard({ path, diff }: ChatDiffCardProps) {
     <box
       width="100%"
       flexDirection="column"
-      borderStyle="single"
+      borderStyle={borderStyleFor.card}
       borderColor={cliTheme.borders.subtle}
       backgroundColor={cliTheme.surfaces.inset}
     >
@@ -73,12 +70,12 @@ export function ChatDiffCard({ path, diff }: ChatDiffCardProps) {
         filetype={inferFiletype(path)}
         syntaxStyle={codeSyntaxStyle}
         showLineNumbers
-        addedBg={addedBg}
-        removedBg={removedBg}
+        addedBg={cliTheme.diff.addedBg}
+        removedBg={cliTheme.diff.removedBg}
         lineNumberFg={cliTheme.text.muted}
         lineNumberBg={cliTheme.surfaces.inset}
-        addedSignColor={cliTheme.semantic.success}
-        removedSignColor={cliTheme.semantic.error}
+        addedSignColor={cliTheme.diff.added}
+        removedSignColor={cliTheme.diff.removed}
       />
       {hiddenLines > 0 || wasPreTruncated ? (
         <box paddingX={1}>

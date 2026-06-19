@@ -3,7 +3,7 @@ import { useKeyboard } from "@opentui/react";
 import type { PermissionMode } from "@lightcode/ai";
 import { useEffect, useState } from "react";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../../utils/key-utils";
-import { cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
+import { borderStyleFor, cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
 
 interface PermissionModeSelectorProps {
   currentMode: PermissionMode | undefined;
@@ -95,7 +95,7 @@ export function PermissionModeSelector({
     <box
       width="100%"
       flexDirection="column"
-      borderStyle="single"
+      borderStyle={borderStyleFor.modal}
       borderColor={cliTheme.overlay.border}
       backgroundColor={cliTheme.overlay.surface}
     >

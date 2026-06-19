@@ -1,5 +1,5 @@
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
-import { cliTheme } from "../../ui/cli-theme";
+import { borderStyleFor, cliTheme } from "../../ui/cli-theme";
 
 const proposedPlanOpenTag = "<proposed_plan>";
 const proposedPlanCloseTag = "</proposed_plan>";
@@ -104,7 +104,7 @@ export function ChatProposedPlanCard({ content }: ChatProposedPlanCardProps) {
     <box
       width="100%"
       flexDirection="column"
-      borderStyle="single"
+      borderStyle={borderStyleFor.card}
       borderColor={cliTheme.borders.active}
       backgroundColor={cliTheme.surfaces.panel}
       paddingX={1}

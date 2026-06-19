@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core";
 import { commandRegistry, searchCommands, type Command } from "./command-registry";
-import { cliTheme } from "../ui/cli-theme";
+import { borderStyleFor, cliTheme } from "../ui/cli-theme";
 
 interface CommandPaletteProps {
   query: string;
@@ -24,7 +24,7 @@ export function CommandPalette({ query, setQuery, selectedIndex }: CommandPalett
       minHeight={20}
       flexDirection="column"
       backgroundColor={cliTheme.overlay.surface}
-      borderStyle="single"
+      borderStyle={borderStyleFor.modal}
       border={["top", "bottom", "left", "right"]}
       borderColor={cliTheme.overlay.border}
     >

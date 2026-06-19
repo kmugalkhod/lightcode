@@ -2,6 +2,7 @@ export * from "./build-provider-view";
 export * from "./config";
 export * from "./context-state";
 export * from "./estimate";
+export * from "./fit-to-budget";
 export * from "./heuristic-summary";
 export * from "./message-parts";
 export * from "./normalize-provider-messages";

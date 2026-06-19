@@ -22,7 +22,7 @@ describe("coding agent dynamic tool selection", () => {
     ).toEqual([]);
   });
 
-  test("selects compact git tools for git prompts", () => {
+  test("includes explicitly requested situational tools alongside the core set", () => {
     const tools = selectCodingAgentIntentTools({
       mode: "build",
       prompt: "Use tool_search to find git tools, then check git status.",
@@ -31,21 +31,27 @@ describe("coding agent dynamic tool selection", () => {
 
     expect(tools).toContain("tool_search");
     expect(tools).toContain("git_status");
-    expect(tools).not.toContain("git_diff");
-    expect(tools.length).toBeLessThan(4);
+    // Core read tools are always present so the agent can inspect the workspace.
+    expect(tools).toContain("read_file");
+    expect(tools).not.toContain("git_diff"); // not requested
+    expect(tools.length).toBeLessThanOrEqual(7);
   });
 
-  test("does not send tools for non-coding explanation prompts", () => {
-    expect(
-      selectCodingAgentIntentTools({
-        mode: "build",
-        prompt: "Explain recursion in simple words.",
-        messages: undefined,
-      }),
-    ).toEqual([]);
+  test("non-casual prompts always get tools (never an empty set)", () => {
+    // We cannot reliably tell "explain recursion" from "explain the auth code",
+    // so any non-greeting message gets the core tools; the model uses them only
+    // if needed. This is the fix for the 'No tools are available' failure.
+    const tools = selectCodingAgentIntentTools({
+      mode: "build",
+      prompt: "Explain recursion in simple words.",
+      messages: undefined,
+    });
+
+    expect(tools).toContain("read_file");
+    expect(tools.length).toBeGreaterThan(0);
   });
 
-  test("selects write tools for implementation prompts", () => {
+  test("build-mode tasks include write and shell tools by default", () => {
     const tools = selectCodingAgentIntentTools({
       mode: "build",
       prompt: "Create a file named plan-test.txt",
@@ -54,8 +60,8 @@ describe("coding agent dynamic tool selection", () => {
 
     expect(tools).toContain("write_file");
     expect(tools).toContain("edit_file");
-    expect(tools).not.toContain("todo_write");
-    expect(tools).not.toContain("bash");
+    expect(tools).toContain("bash"); // build mode can run commands without re-prompting
+    expect(tools).not.toContain("todo_write"); // situational, not requested
   });
 
   test("caps provider tools to Anthropic-safe compact sets", () => {

@@ -103,6 +103,28 @@ function getAnthropicProviderOptions(
 }
 
 /**
+ * OpenRouter provider-routing preferences, emitted as a top-level `provider`
+ * field in the request body (the OpenAI-compatible SDK spreads non-schema
+ * `providerOptions.openrouter` keys to the body root). `allow_fallbacks` lets
+ * OpenRouter fail over to another upstream when one drops a stream — turning a
+ * hard failure into a transparent reroute. `require_parameters` keeps
+ * tool/reasoning requests off providers that would silently drop those params.
+ *
+ * Deliberately no `sort`/`order`: pinning a sort disables OpenRouter's
+ * uptime-aware load balancing and would REDUCE reliability for slow models.
+ */
+function getOpenRouterProviderOptions(): SharedV3ProviderOptions {
+  return {
+    openrouter: {
+      provider: {
+        allow_fallbacks: true,
+        require_parameters: true,
+      },
+    },
+  };
+}
+
+/**
  * Decides the base URL actually sent to the provider SDK. When the headroom
  * facility is enabled (and covers this provider), traffic is redirected to the
  * local compressing proxy — the same mechanism `headroom wrap claude` uses. The
@@ -239,12 +261,11 @@ function resolveOpenAITransportModel({
   if (isOpenRouter) {
     const referer = getEnvValue(env, "OPENROUTER_HTTP_REFERER");
     const title = getEnvValue(env, "OPENROUTER_APP_TITLE", "LIGHTCODE_APP_TITLE");
-    if (referer) {
-      headers["HTTP-Referer"] = referer;
-    }
-    if (title) {
-      headers["X-OpenRouter-Title"] = title;
-    }
+    // OpenRouter's canonical attribution headers are `HTTP-Referer` and
+    // `X-Title`. Default them so requests are always attributed (analytics/
+    // ranking only — no reliability impact).
+    headers["HTTP-Referer"] = referer ?? "https://github.com/kmugalkhod/lightcode";
+    headers["X-Title"] = title ?? "Lightcode";
   }
   const provider = createOpenAICompatible({
     name: config.provider,
@@ -267,6 +288,8 @@ function resolveOpenAITransportModel({
     headroomRouted,
     model: withXmlToolCallSupport(provider(configuredModel)),
     needsToolCallDiscipline: true,
+    // Let OpenRouter fail over to a healthy upstream when one drops a stream.
+    providerOptions: isOpenRouter ? getOpenRouterProviderOptions() : undefined,
     contextWindow:
       capabilities?.contextLength ??
       getModelContextWindow(config.provider, configuredModel),

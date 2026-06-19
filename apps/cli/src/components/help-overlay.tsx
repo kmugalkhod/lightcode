@@ -1,10 +1,10 @@
 import { TextAttributes } from "@opentui/core";
 import { keymap, type KeyBinding } from "../commands/keymap";
-import { cliTheme } from "../ui/cli-theme";
+import { borderStyleFor, cliTheme } from "../ui/cli-theme";
 
 const screenHints: Array<{ context: string; hint: string }> = [
   { context: "Chat", hint: "Tab/Ctrl+T switch mode | @ attach files | /compact, /undo actions" },
-  { context: "Chat", hint: "Ctrl+O expand tool output | Enter send | Ctrl+Enter newline" },
+  { context: "Chat", hint: "Ctrl+O expand tool output | Ctrl+R show reasoning | Enter send | Ctrl+Enter newline" },
   { context: "Copy", hint: "Ctrl+Y copy mode (↑/↓ pick, Enter copy, c code) | /copy [last|code|all]" },
   { context: "Sessions", hint: "Enter resume | r rename | f fork | / filter | e export (.md) | d delete" },
 ];
@@ -20,7 +20,7 @@ export function HelpOverlay() {
     <box
       width="100%"
       flexDirection="column"
-      borderStyle="single"
+      borderStyle={borderStyleFor.modal}
       borderColor={cliTheme.accent.primary}
       backgroundColor={cliTheme.overlay.surface}
       paddingX={2}

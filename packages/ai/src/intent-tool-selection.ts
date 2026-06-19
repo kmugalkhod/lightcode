@@ -125,143 +125,20 @@ export function selectCodingAgentIntentTools({
   const userText = getLastUserText(messages, prompt);
   const normalizedText = userText.toLowerCase();
 
+  // Genuine chit-chat ("hi", "thanks") keeps the tool-less fast path. Every
+  // other message is a real task and MUST get tools — gating tool availability
+  // on keyword matches previously returned [] for prompts like "design a
+  // multiplayer system", leaving the model with no tools and a hard
+  // NoSuchToolError the moment it tried to read a file.
   if (!normalizedText || casualPromptPattern.test(normalizedText)) {
     return [];
   }
 
-  const selectedTools: CodingAgentToolName[] = [];
-  // Terse continuations carry no code keywords but mean "keep doing the work".
-  const hasContinuationIntent = includesAny(normalizedText, [
-    "continue",
-    "proceed",
-    "go on",
-    "go ahead",
-    "keep going",
-    "carry on",
-    "resume",
-    "finish",
-    "next step",
-  ]);
-  const hasCodeIntent = includesAny(normalizedText, [
-    "file",
-    "folder",
-    "code",
-    "repo",
-    "project",
-    "implement",
-    "fix",
-    "add",
-    "build",
-    "refactor",
-    "change",
-    "create",
-    "update",
-    "edit",
-    "delete",
-    "run",
-    "test",
-    "typecheck",
-    "debug",
-    "error",
-    "issue",
-    "problem",
-    "fails",
-    "failed",
-    "failing",
-    "bug",
-    "crash",
-    "slow",
-    "slowness",
-    "not working",
-    "epic",
-    "ticket",
-  ]);
-  const hasReadIntent = includesAny(normalizedText, [
-    "read",
-    "list",
-    "find",
-    "search",
-    "grep",
-    "glob",
-    "inspect",
-    "analyse",
-    "analyze",
-    "check",
-  ]);
-  // Exploration/review requests carry no code keyword but should still read the
-  // workspace ("review this", "explain the code", "look at this project").
-  // "review"/"audit"/"walk through" imply the codebase on their own; softer
-  // verbs ("explain", "summarize", ...) only do so when paired with a workspace
-  // referent, so "explain recursion in simple words" stays a plain Q&A.
-  const workspaceReferents = [
-    "this",
-    "these",
-    "that",
-    "here",
-    "code",
-    "codebase",
-    "repo",
-    "repository",
-    "project",
-    "file",
-    "files",
-    "directory",
-    "folder",
-    "app",
-    "application",
-    "module",
-    "my",
-  ];
-  const strongReviewIntent = includesAny(normalizedText, [
-    "review",
-    "audit",
-    "walk through",
-    "walkthrough",
-    "code review",
-  ]);
-  const softReviewIntent =
-    includesAny(normalizedText, [
-      "explain",
-      "understand",
-      "summarize",
-      "summarise",
-      "overview",
-      "describe",
-      "explore",
-      "look at",
-    ]) && includesAny(normalizedText, workspaceReferents);
-  const hasReviewIntent = strongReviewIntent || softReviewIntent;
-  const hasWriteIntent =
-    mode === "build" &&
-    (hasContinuationIntent ||
-      includesAny(normalizedText, [
-        "write",
-        "edit",
-        "change",
-        "create",
-        "implement",
-        "fix",
-        "update",
-        "delete",
-        "remove",
-        "rename",
-      ]));
-  const hasShellIntent =
-    mode === "build" &&
-    (hasContinuationIntent ||
-      includesAny(normalizedText, [
-        "run",
-        "command",
-        "terminal",
-        "shell",
-        "bash",
-        "powershell",
-        "bun",
-        "tests",
-        "run test",
-        "run tests",
-        "typecheck",
-      ]));
+  // Situational tools are niche and added only on explicit intent — they must
+  // not crowd the core set out from under the provider tool cap, so they are
+  // placed after the always-on read tools but before the build-mode defaults.
+  const situational: CodingAgentToolName[] = [];
+
   const hasGitIntent = includesAny(normalizedText, [
     "git",
     "diff",
@@ -272,117 +149,88 @@ export function selectCodingAgentIntentTools({
     "revision",
     "changes",
   ]);
-  const hasTodoIntent = includesAny(normalizedText, [
-    "todo",
-    "tasks",
-    "checklist",
-    "steps",
-    "epic",
-    "ticket",
-  ]);
-  const hasWebIntent = includesAny(normalizedText, [
-    "http://",
-    "https://",
-    "url",
-    "fetch",
-    "website",
-    "web",
-    "online",
-    "search internet",
-    "latest",
-  ]);
-  const explicitToolSearch = includesAny(normalizedText, [
-    "tool_search",
-    "tool search",
-    "find tool",
-    "available tool",
-  ]);
-  const hasSkillIntent = includesAny(normalizedText, [
-    "skill",
-    "skills",
-    "load skill",
-  ]);
-  const hasMcpIntent = includesAny(normalizedText, [
-    "mcp",
-    "resource",
-    "resources",
-    "mcp tool",
-    "mcp server",
-  ]);
-
-  if (
-    hasCodeIntent ||
-    hasContinuationIntent ||
-    hasReviewIntent ||
-    (hasReadIntent && !hasGitIntent && !hasWebIntent && !explicitToolSearch)
-  ) {
-    for (const toolName of baseReadTools) {
-      pushUniqueTool(selectedTools, toolName);
-    }
-  }
-
   if (hasGitIntent) {
     if (
       includesAny(normalizedText, ["status", "state", "dirty", "working tree"]) ||
       !includesAny(normalizedText, ["diff", "log", "show", "history", "commit"])
     ) {
-      pushUniqueTool(selectedTools, "git_status");
+      pushUniqueTool(situational, "git_status");
     }
-
     if (includesAny(normalizedText, ["diff", "changes", "patch"])) {
-      pushUniqueTool(selectedTools, "git_diff");
+      pushUniqueTool(situational, "git_diff");
     }
-
     if (includesAny(normalizedText, ["log", "history", "commits"])) {
-      pushUniqueTool(selectedTools, "git_log");
+      pushUniqueTool(situational, "git_log");
     }
-
     if (includesAny(normalizedText, ["show", "revision", "commit"])) {
-      pushUniqueTool(selectedTools, "git_show");
+      pushUniqueTool(situational, "git_show");
     }
   }
 
-  if (hasTodoIntent && mode === "build") {
-    pushUniqueTool(selectedTools, "todo_write");
+  if (
+    mode === "build" &&
+    includesAny(normalizedText, ["todo", "tasks", "checklist", "steps", "epic", "ticket"])
+  ) {
+    pushUniqueTool(situational, "todo_write");
   }
 
-  if (explicitToolSearch) {
-    pushUniqueTool(selectedTools, "tool_search");
+  if (includesAny(normalizedText, ["tool_search", "tool search", "find tool", "available tool"])) {
+    pushUniqueTool(situational, "tool_search");
   }
 
-  if (hasSkillIntent) {
-    pushUniqueTool(selectedTools, "skill");
+  if (includesAny(normalizedText, ["skill", "skills", "load skill"])) {
+    pushUniqueTool(situational, "skill");
   }
 
-  if (hasMcpIntent) {
-    pushUniqueTool(selectedTools, "list_mcp_resources");
+  if (includesAny(normalizedText, ["mcp", "resource", "resources", "mcp tool", "mcp server"])) {
+    pushUniqueTool(situational, "list_mcp_resources");
     if (includesAny(normalizedText, ["read", "resource", "resources"])) {
-      pushUniqueTool(selectedTools, "read_mcp_resource");
+      pushUniqueTool(situational, "read_mcp_resource");
     }
     if (mode === "build" && includesAny(normalizedText, ["call", "execute", "run"])) {
-      pushUniqueTool(selectedTools, "call_mcp_tool");
+      pushUniqueTool(situational, "call_mcp_tool");
     }
   }
 
-  if (hasWriteIntent) {
-    pushUniqueTool(selectedTools, "write_file");
-    pushUniqueTool(selectedTools, "edit_file");
-  }
-
-  if (hasShellIntent) {
-    pushUniqueTool(selectedTools, "bash");
-  }
-
-  if (hasWebIntent) {
-    pushUniqueTool(selectedTools, "web_fetch");
-    pushUniqueTool(selectedTools, "web_search");
+  if (
+    includesAny(normalizedText, [
+      "http://",
+      "https://",
+      "url",
+      "fetch",
+      "website",
+      "web",
+      "online",
+      "search internet",
+      "latest",
+    ])
+  ) {
+    pushUniqueTool(situational, "web_fetch");
+    pushUniqueTool(situational, "web_search");
   }
 
   if (mode === "plan" && includesAny(normalizedText, ["question", "ask", "clarify"])) {
-    pushUniqueTool(selectedTools, "request_user_input");
+    pushUniqueTool(situational, "request_user_input");
   }
 
-  return selectedTools;
+  // Compose the active set, ordered by what must survive the provider cap:
+  //   1. core read tools — every task can inspect the workspace (the fix);
+  //   2. explicit situational tools — honor what the user asked for;
+  //   3. build-mode write/run defaults — so a build task can edit and run
+  //      without the user re-phrasing (plan mode is read-only and skips these).
+  const ordered: CodingAgentToolName[] = [...baseReadTools, ...situational];
+  if (mode === "build") {
+    ordered.push("write_file", "edit_file", "bash");
+  }
+
+  const selected: CodingAgentToolName[] = [];
+  for (const toolName of ordered) {
+    pushUniqueTool(selected, toolName);
+  }
+
+  // Cap here (read-first order preserved) so the downstream priority-based cap
+  // can't reorder and drop the read tools or the explicitly-requested ones.
+  return selected.slice(0, maxProviderActiveTools);
 }
 
 export function limitProviderActiveTools(

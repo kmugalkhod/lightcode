@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { isToolUIPart, type UIMessage } from "ai";
-import { formatChatStreamError } from "../chat-error";
+import { formatChatStreamError, parseChatStreamError } from "../chat-error";
 import {
   countCompletedWork,
   isRecoverableChatErrorMessage,
@@ -255,6 +255,21 @@ describe("structured chat errors", () => {
     });
 
     expect(isRecoverableChatErrorMessage(message)).toBe(true);
+  });
+
+  test("retry reason can be recovered from the envelope for the notice", () => {
+    // The hook derives autoContinueState.retryReason via
+    // parseChatStreamError(error.message)?.kind — confirm the server's kind
+    // survives the round-trip so the notice names the true cause.
+    for (const kind of ["provider_unavailable", "rate_limit", "context_overflow"] as const) {
+      const message = formatChatStreamError({
+        kind,
+        statusCode: 503,
+        retryable: true,
+        message: "upstream hiccup",
+      });
+      expect(parseChatStreamError(message)?.kind).toBe(kind);
+    }
   });
 
   test("plain disconnect-looking messages still match heuristics", () => {

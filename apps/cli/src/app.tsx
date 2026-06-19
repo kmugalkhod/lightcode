@@ -19,6 +19,7 @@ import { SessionListScreen } from "./screens/session-list-screen";
 import { AppStateProvider, useAppState } from "./state/app-state";
 import { useConfigBadge } from "./hooks/use-config-badge";
 import { cliTheme } from "./ui/cli-theme";
+import { StatusDot } from "./ui/components/status-dot";
 import { copyText } from "./lib/clipboard";
 import {
   isBackspaceKey as isBackspaceKeyName,
@@ -101,6 +102,7 @@ function AppContent() {
     requestChatAction,
     configRefreshNonce,
     toggleToolOutputExpansion,
+    toggleReasoningExpansion,
   } = useAppState();
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -186,6 +188,9 @@ function AppContent() {
         break;
       case "system:toggleToolOutput":
         toggleToolOutputExpansion();
+        break;
+      case "system:toggleReasoning":
+        toggleReasoningExpansion();
         break;
       case "system:cancel":
         if (helpOpen) {
@@ -340,8 +345,8 @@ function AppContent() {
       return "Slash pages open | Enter Open | Backspace Close | Esc Cancel";
     }
 
-    const backHint = canGoBack ? ` | Esc/${BACK_SHORTCUT_LABEL} Back` : "";
-    return "/ Pages | Ctrl+P Cmd | F1 Help | Ctrl+C Quit" + backHint;
+    const backHint = canGoBack ? `Esc/${BACK_SHORTCUT_LABEL} Back | ` : "";
+    return backHint + "/ Pages | Ctrl+P Cmd | F1 Help | Ctrl+C Quit";
   };
 
   return (
@@ -355,20 +360,26 @@ function AppContent() {
         border={["bottom"]}
         borderColor={cliTheme.borders.default}
       >
-        <box flexDirection="row" gap={2} alignItems="center">
-          <text fg={cliTheme.text.primary} attributes={TextAttributes.BOLD}>Lightcode</text>
+        <box flexDirection="row" gap={1} alignItems="center">
+          <StatusDot
+            status={
+              configBadge.status === "available"
+                ? "online"
+                : configBadge.status === "loading"
+                  ? "loading"
+                  : "offline"
+            }
+          />
+          <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>Lightcode</text>
           {configBadge.status === "available" ? (
             <text fg={cliTheme.text.secondary}>
-              | {configBadge.provider} | {configBadge.model}
+              · {configBadge.provider} · {configBadge.model}
             </text>
           ) : configBadge.status === "loading" ? (
-            <text fg={cliTheme.text.muted}>
-              | loading...
-            </text>
+            <text fg={cliTheme.text.muted}>· loading…</text>
           ) : (
-            <text fg={cliTheme.text.muted}>
-              | provider unavailable
-            </text>
+            // Loud when the provider is misconfigured — broken setup shouldn't be quiet.
+            <text fg={cliTheme.semantic.error} attributes={TextAttributes.BOLD}>· provider unavailable</text>
           )}
         </box>
         <text fg={cliTheme.text.muted}>

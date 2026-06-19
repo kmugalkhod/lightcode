@@ -218,6 +218,10 @@ const CLOSED_BLOCK_RES = {
 } as const;
 
 const DEEPSEEK_WRAPPER_RE = /<｜tool▁calls▁(?:begin|end)｜>/g;
+// Anthropic-style models wrap one or more <invoke> blocks in a <function_calls>
+// container. The inner <invoke> is parsed on its own; the wrapper tags carry no
+// content and must be stripped so they don't leak into the visible transcript.
+const FUNCTION_CALLS_WRAPPER_RE = /<\/?function_calls\s*>/gi;
 
 function stripCodeFence(text: string): string {
   const trimmed = text.trim();
@@ -370,6 +374,12 @@ export async function extractToolCalls(
   // DeepSeek wrapper markers are noise either way.
   DEEPSEEK_WRAPPER_RE.lastIndex = 0;
   while ((match = DEEPSEEK_WRAPPER_RE.exec(text)) !== null) {
+    segments.push({ start: match.index, end: match.index + match[0].length, call: null });
+  }
+
+  // <function_calls>…</function_calls> wrapper tags around <invoke> blocks: noise.
+  FUNCTION_CALLS_WRAPPER_RE.lastIndex = 0;
+  while ((match = FUNCTION_CALLS_WRAPPER_RE.exec(text)) !== null) {
     segments.push({ start: match.index, end: match.index + match[0].length, call: null });
   }
 

@@ -1,5 +1,5 @@
 import { TextAttributes } from "@opentui/core";
-import { cliTheme } from "../ui/cli-theme";
+import { borderStyleFor, cliTheme } from "../ui/cli-theme";
 
 /** Minimal shape the menu needs; satisfied by routes and chat actions. */
 export interface SlashMenuDisplayItem {
@@ -28,7 +28,7 @@ export function SlashPageMenu({
       width="100%"
       flexDirection="column"
       backgroundColor={cliTheme.overlay.surface}
-      borderStyle="single"
+      borderStyle={borderStyleFor.modal}
       borderColor={cliTheme.overlay.border}
     >
       {/* Menu Items Section */}

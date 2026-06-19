@@ -4,6 +4,8 @@ import {
   collectMessageText,
   cycleCodingAgentMode,
   defaultCodingAgentMode,
+  getMessageUsageMetadata,
+  retryReasonLabel,
   type ChatInteractionResolveRequest,
   type ChatInteractionUpsertRequest,
   type PermissionMode,
@@ -60,6 +62,8 @@ import { estimateContextUsage } from "../utils/chat-context-utils";
 import { appendMentionAttachments } from "../utils/file-mentions";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../utils/key-utils";
 import { extractCodeBlocks } from "../utils/markdown-code";
+import { truncateInline } from "../utils/text-utils";
+import { Badge } from "../ui/components/badge";
 
 const autoImplementationInstruction =
   "Please implement the approved plan now. Execute the work end-to-end and summarize completed changes.";
@@ -398,6 +402,33 @@ export function ChatScreen() {
   const contextWindow = useContextWindow();
   const [mentionCandidates, setMentionCandidates] = useState<string[]>([]);
 
+  // Tick once a second while a retry is pending so the backoff notice can count
+  // down ("retrying in 4s") instead of looking frozen.
+  const [retryNowMs, setRetryNowMs] = useState(() => Date.now());
+  const retryAtMs =
+    autoContinueState?.kind === "retry-error"
+      ? autoContinueState.retryAtMs
+      : undefined;
+  useEffect(() => {
+    if (!retryAtMs) {
+      return;
+    }
+    const intervalId = setInterval(() => setRetryNowMs(Date.now()), 500);
+    return () => clearInterval(intervalId);
+  }, [retryAtMs]);
+
+  const retryNoticeText = (() => {
+    if (autoContinueState?.kind !== "retry-error") {
+      return "";
+    }
+    const label = retryReasonLabel(autoContinueState.retryReason);
+    const secondsLeft = retryAtMs
+      ? Math.max(0, Math.ceil((retryAtMs - retryNowMs) / 1000))
+      : 0;
+    const timing = secondsLeft > 0 ? `in ${secondsLeft}s` : "now";
+    return `${label} — retrying ${timing} (${autoContinueState.attempt})...`;
+  })();
+
   useEffect(() => {
     let cancelled = false;
 
@@ -671,6 +702,21 @@ export function ChatScreen() {
     messages.some((message) => message.id === contextState.anchorMessageId);
 
   const lastAssistantMessage = getLatestAssistantMessage(messages);
+  // Live output-token readout for the status line: prefer the provider's
+  // reported count once the turn finishes, otherwise a rough estimate from the
+  // streamed text so the number grows while generating.
+  const liveOutputTokens = (() => {
+    if (!lastAssistantMessage) {
+      return 0;
+    }
+    const reported = getMessageUsageMetadata(lastAssistantMessage)?.usage
+      ?.outputTokens;
+    if (typeof reported === "number" && reported > 0) {
+      return reported;
+    }
+    const text = collectMessageText(lastAssistantMessage);
+    return text ? Math.ceil(text.length / 4) : 0;
+  })();
   const modelHasToolCallXmlLeak =
     !isLoading && !isStreaming && lastAssistantMessage
       ? hasToolCallXmlLeak(lastAssistantMessage)
@@ -867,7 +913,11 @@ export function ChatScreen() {
                 {copyModeOpen ? (
                   <text fg={cliTheme.text.muted}>Copy mode: ↑/↓ select · Enter copy · c code · Esc exit</text>
                 ) : canRetryRecoverableResponse ? (
-                  <text fg={cliTheme.text.muted}>Type retry or regenerate to try again</text>
+                  <text fg={cliTheme.text.muted}>
+                    {errorMessage && /rate.?limit/i.test(errorMessage)
+                      ? "Rate-limited — wait a moment, /model to switch, or add provider credits"
+                      : "Type retry or regenerate to try again"}
+                  </text>
                 ) : pendingApprovals.length > 0 ? (
                   <text fg={cliTheme.text.muted}>Use approval card or approve/deny commands</text>
                 ) : hasBlockingPopup ? (
@@ -875,34 +925,32 @@ export function ChatScreen() {
                 ) : slashMenuOpen ? (
                   <text fg={cliTheme.text.muted}>Choose a page or press Esc</text>
                 ) : (
-                  <text fg={cliTheme.text.muted}>Tab/Ctrl+T mode | Ctrl+Y copy | Ctrl+P commands</text>
+                  <text fg={cliTheme.text.muted}>Enter send · Ctrl+Enter newline</text>
                 )}
                 <box flexDirection="row" gap={1} alignItems="center">
                   <text fg={contextMeterColor}>
-                    {contextEstimate.displayText}
+                    {truncateInline(contextEstimate.displayText, 24)}
                   </text>
                   <text>
                     <span fg={cliTheme.accent.primary}>{modeDefinition.label}</span>
                     <span fg={cliTheme.text.muted}> mode</span>
                   </text>
                   <text>
-                    <span fg={cliTheme.semantic.warning}>|</span>
+                    <span fg={cliTheme.text.muted}>·</span>
                   </text>
-                  <text>
-                    <span fg={
+                  <Badge
+                    tone={
                       permissionMode === "danger-full-access"
-                        ? cliTheme.semantic.error
+                        ? "error"
                         : permissionMode === "read-only"
-                          ? cliTheme.text.muted
-                          : cliTheme.text.primary
-                    }>
-                      {permissionMode ?? "default"}
-                    </span>
-                  </text>
+                          ? "neutral"
+                          : "accent"
+                    }
+                    label={permissionMode ?? "default"}
+                  />
                 </box>
               </box>
             }
-            modeToggleHint
             onSubmit={submitChatInput}
           />
         }
@@ -972,16 +1020,16 @@ export function ChatScreen() {
               {autoContinueState.kind === "continue-length"
                 ? `Output limit hit — continuing automatically (${autoContinueState.attempt})...`
                 : autoContinueState.kind === "retry-error"
-                  ? `Connection dropped — retrying automatically (${autoContinueState.attempt})...`
+                  ? retryNoticeText
                   : `Agent stopped early — continuing automatically (${autoContinueState.attempt})...`}
             </text>
           </box>
         ) : null}
-        {isLoading || isStreaming ? <LoadingTimer elapsedSeconds={elapsedSeconds} /> : null}
-        {isStreaming ? (
-          <box paddingX={1}>
-            <text fg={cliTheme.semantic.info}>Assistant is thinking...</text>
-          </box>
+        {isLoading || isStreaming ? (
+          <LoadingTimer
+            elapsedSeconds={elapsedSeconds}
+            outputTokens={liveOutputTokens}
+          />
         ) : null}
         {pendingApprovals.length > 0 ? (
           <ChatToolApprovalCard

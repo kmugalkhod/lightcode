@@ -20,7 +20,6 @@ interface ChatTextAreaProps {
   containerHeight?: number;
   beforeInput?: ReactNode;
   footer?: ReactNode;
-  modeToggleHint?: boolean;
   slashMenuOpen?: boolean;
   onTextChange?: (text: string) => void;
   /** Workspace file paths for the @-mention picker; enables it when set. */
@@ -56,7 +55,6 @@ export function ChatTextArea({
   containerHeight,
   beforeInput,
   footer,
-  modeToggleHint = false,
   slashMenuOpen = false,
   onTextChange,
   mentionCandidates,
@@ -67,9 +65,6 @@ export function ChatTextArea({
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionSelected, setMentionSelected] = useState(0);
   const isFocused = focused && !disabled;
-  const inputHint = modeToggleHint
-    ? "Enter to send | Ctrl+Enter for newline | Tab/Ctrl+T to switch mode"
-    : "Enter to send | Ctrl+Enter for newline";
 
   const mentionMatches =
     mentionQuery !== null && mentionCandidates && mentionCandidates.length > 0
@@ -257,7 +252,6 @@ export function ChatTextArea({
           placeholderColor={cliTheme.input.placeholder}
           focused={isFocused}
         />
-        <text fg={cliTheme.input.hint}>{inputHint}</text>
         {footer}
       </box>
     </box>
