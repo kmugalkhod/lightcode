@@ -31,4 +31,17 @@ describe("selectCodingAgentIntentTools", () => {
     expect(selected).toContain("edit_file");
     expect(selected).toContain("bash");
   });
+
+  test("review/explore phrasing selects read tools (agent path)", () => {
+    for (const phrase of [
+      "review this",
+      "explain the code",
+      "look at this project",
+      "audit the repo",
+    ]) {
+      const selected = tools(phrase);
+      expect(selected.length).toBeGreaterThan(0);
+      expect(selected).toContain("read_file");
+    }
+  });
 });

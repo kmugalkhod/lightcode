@@ -188,6 +188,49 @@ export function selectCodingAgentIntentTools({
     "analyze",
     "check",
   ]);
+  // Exploration/review requests carry no code keyword but should still read the
+  // workspace ("review this", "explain the code", "look at this project").
+  // "review"/"audit"/"walk through" imply the codebase on their own; softer
+  // verbs ("explain", "summarize", ...) only do so when paired with a workspace
+  // referent, so "explain recursion in simple words" stays a plain Q&A.
+  const workspaceReferents = [
+    "this",
+    "these",
+    "that",
+    "here",
+    "code",
+    "codebase",
+    "repo",
+    "repository",
+    "project",
+    "file",
+    "files",
+    "directory",
+    "folder",
+    "app",
+    "application",
+    "module",
+    "my",
+  ];
+  const strongReviewIntent = includesAny(normalizedText, [
+    "review",
+    "audit",
+    "walk through",
+    "walkthrough",
+    "code review",
+  ]);
+  const softReviewIntent =
+    includesAny(normalizedText, [
+      "explain",
+      "understand",
+      "summarize",
+      "summarise",
+      "overview",
+      "describe",
+      "explore",
+      "look at",
+    ]) && includesAny(normalizedText, workspaceReferents);
+  const hasReviewIntent = strongReviewIntent || softReviewIntent;
   const hasWriteIntent =
     mode === "build" &&
     (hasContinuationIntent ||
@@ -270,6 +313,7 @@ export function selectCodingAgentIntentTools({
   if (
     hasCodeIntent ||
     hasContinuationIntent ||
+    hasReviewIntent ||
     (hasReadIntent && !hasGitIntent && !hasWebIntent && !explicitToolSearch)
   ) {
     for (const toolName of baseReadTools) {

@@ -26,6 +26,11 @@ bun install
 bun run cli:dev        # starts the TUI; it boots the server automatically
 ```
 
+Lightcode is aware of the directory you launch it in: each turn it reads the
+project's shape (top-level files, git branch/status) and any `AGENTS.md` /
+`CLAUDE.md` / `README.md`, so "review my code" or "explain this" inspects your
+actual files instead of asking you to paste them.
+
 On first run Lightcode walks you through provider setup (Anthropic,
 OpenRouter, OpenCode Zen, or any OpenAI-compatible endpoint) and stores the
 API key in `~/.lightcode/credentials.json`. Environment variables such as

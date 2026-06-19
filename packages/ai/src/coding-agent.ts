@@ -205,6 +205,7 @@ export function createCodingAgent({
           override: promptOverride,
           mode,
           includeToolDiscipline,
+          environmentContext: options.environmentContext,
         }),
       };
     },

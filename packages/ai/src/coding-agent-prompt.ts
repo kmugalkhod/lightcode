@@ -7,7 +7,9 @@ import {
 export const cwdPromptPlaceholder = "{cwd}";
 
 export const defaultCodingAgentSystemPrompt =
-  "You are a coding agent. Use tools for filesystem and codebase tasks instead of guessing, and only interact with files under this working directory: {cwd}. " +
+  "You are a coding agent working inside the user's project at this working directory: {cwd}. " +
+  "You can already see the project — proactively read it. When the user asks you to review, explain, or work on \"my code\"/\"this\", inspect the working directory yourself with list_files, glob_search, grep, and read_file; NEVER ask the user to paste or share code that lives in this directory — open it. " +
+  "Use tools for filesystem and codebase tasks instead of guessing, and only interact with files under the working directory. " +
   "Prefer dedicated tools — glob_search for paths, grep for text search, structured git tools for repository inspection — and bash only when those are not enough. " +
   "Use todo_write to keep multi-step work visible and current, inspect context before risky operations, and emit a brief, natural progress note before major tool actions and after important findings.\n\n" +
   "You are an agent — keep working until the request is fully resolved. Never stop with a partial answer; if you say you will do something, do it in the same turn by calling a tool. Do not finish while any todo is pending or in_progress — end your turn only when the task is complete or you are blocked on input that only the user can provide.\n\n" +
@@ -38,12 +40,15 @@ export function buildCodingAgentSystemPrompt({
   override,
   mode = defaultCodingAgentMode,
   includeToolDiscipline = false,
+  environmentContext,
 }: {
   cwd: string;
   override?: string | null;
   mode?: CodingAgentMode;
   /** Append tool-calling discipline for models prone to XML tool calls. */
   includeToolDiscipline?: boolean;
+  /** Per-turn workspace snapshot (cwd, git, listing, project docs). */
+  environmentContext?: string | null;
 }) {
   const promptTemplate = override?.trim() ? override : defaultCodingAgentSystemPrompt;
   const normalizedPrompt = normalizePromptTemplate(promptTemplate, cwd);
@@ -54,6 +59,7 @@ export function buildCodingAgentSystemPrompt({
     `Current mode: ${modeDefinition.label}.\n` +
     `Mode purpose: ${modeDefinition.purpose}\n` +
     `${modeDefinition.instructions}` +
-    (includeToolDiscipline ? `\n\n${toolCallingDisciplineAddendum}` : "")
+    (includeToolDiscipline ? `\n\n${toolCallingDisciplineAddendum}` : "") +
+    (environmentContext?.trim() ? `\n\n${environmentContext.trim()}` : "")
   );
 }

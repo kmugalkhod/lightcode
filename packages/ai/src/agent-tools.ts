@@ -285,6 +285,8 @@ export const codingAgentCallOptionsSchema = z.object({
   allowedTools: z.array(codingAgentToolNameSchema).optional(),
   permissionRules: permissionRulesSchema.optional(),
   sandbox: sandboxConfigSchema.optional(),
+  /** Per-turn workspace/environment block appended to the system prompt. */
+  environmentContext: z.string().optional(),
 });
 
 export type CodingAgentCallOptions = z.infer<typeof codingAgentCallOptionsSchema>;
