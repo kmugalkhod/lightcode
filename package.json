@@ -20,7 +20,7 @@
     "db:push:accept-data-loss": "bunx --bun prisma db push --config packages/db/prisma.config.ts --accept-data-loss",
     "db:generate": "bunx --bun prisma generate --config packages/db/prisma.config.ts",
     "db:validate": "bunx --bun prisma validate --config packages/db/prisma.config.ts",
-    "postinstall": "bun run db:generate",
+    "postinstall": "bun scripts/postinstall.ts",
     "server:dev": "bun --watch --env-file=.env apps/server/src/index.ts",
     "server:start": "bun --env-file=.env apps/server/src/index.ts",
     "cli:dev": "bun apps/cli/src/index.tsx",
