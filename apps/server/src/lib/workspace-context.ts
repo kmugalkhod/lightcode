@@ -1,4 +1,9 @@
-import { createWorkspaceContext, executeGitStatus } from "@lightcode/ai/runtime";
+import {
+  createWorkspaceContext,
+  executeGitStatus,
+  listSkills,
+  type SkillSummary,
+} from "@lightcode/ai/runtime";
 import { createLogger, getErrorMessage } from "@lightcode/shared";
 import { readFile, readdir } from "node:fs/promises";
 import { platform } from "node:os";
@@ -10,8 +15,39 @@ const logger = createLogger("workspace-context");
 const projectDocNames = ["AGENTS.md", "CLAUDE.md", "README.md"] as const;
 
 const maxListedEntries = 40;
+const maxListedSkills = 20;
 const maxDocChars = 1_500;
 const maxBlockChars = 8_000;
+
+/**
+ * Render the discoverable skills as a compact list the agent can act on. Pure
+ * (no fs) so it is unit-testable; returns "" when there are no skills.
+ */
+export function formatAvailableSkills(skills: readonly SkillSummary[]): string {
+  if (skills.length === 0) {
+    return "";
+  }
+
+  const shown = skills.slice(0, maxListedSkills);
+  const lines = shown.map(
+    (skill) =>
+      `- ${skill.name}${skill.description ? `: ${skill.description}` : ""}`,
+  );
+  const more =
+    skills.length > shown.length
+      ? `\n… and ${skills.length - shown.length} more`
+      : "";
+  return `Available skills (load by name with the skill tool):\n${lines.join("\n")}${more}`;
+}
+
+function buildAvailableSkills(cwd: string): string {
+  try {
+    return formatAvailableSkills(listSkills({ cwd }));
+  } catch (error) {
+    logger.warn("workspace_skills_failed", { cwd, error: getErrorMessage(error) });
+    return "";
+  }
+}
 
 function describePlatform(): string {
   const map: Record<string, string> = {
@@ -117,6 +153,7 @@ export async function buildWorkspaceContext({
     buildGitSummary(cwd),
     buildProjectDocs(cwd),
   ]);
+  const skills = buildAvailableSkills(cwd);
 
   const today = new Date().toISOString().slice(0, 10);
   const parts = [
@@ -131,6 +168,7 @@ export async function buildWorkspaceContext({
     "Top-level entries:",
     listing,
     docs ? `\nProject instructions:\n${docs}` : "",
+    skills ? `\n${skills}` : "",
     "</environment>",
   ];
 

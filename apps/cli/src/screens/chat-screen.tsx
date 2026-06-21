@@ -16,7 +16,7 @@ import {
 } from "@lightcode/ai";
 import { useCodingSessionChat } from "@lightcode/ai/react";
 import { useKeyboard, useRenderer } from "@opentui/react";
-import type { UIMessage } from "ai";
+import type { FileUIPart, UIMessage } from "ai";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import {
@@ -663,27 +663,30 @@ export function ChatScreen() {
   );
 
   const submitChatInput = useCallback(
-    (text: string) => {
-      const action = findChatSlashAction(text);
-      if (action) {
-        closeSlashMenu();
-        // Selector actions open an overlay; their run() is a placeholder.
-        if (action.id === "permission") {
-          setPermissionSelectorOpen(true);
+    (text: string, files?: FileUIPart[]) => {
+      // Slash commands are text-only; skip routing when an image is attached.
+      if (!files || files.length === 0) {
+        const action = findChatSlashAction(text);
+        if (action) {
+          closeSlashMenu();
+          // Selector actions open an overlay; their run() is a placeholder.
+          if (action.id === "permission") {
+            setPermissionSelectorOpen(true);
+            return;
+          }
+          runChatSlashAction(action, parseChatSlashArgs(text));
           return;
         }
-        runChatSlashAction(action, parseChatSlashArgs(text));
-        return;
-      }
 
-      if (navigateIfSlashRoute(text)) {
-        return;
+        if (navigateIfSlashRoute(text)) {
+          return;
+        }
       }
 
       setActionNotice(null);
       void (async () => {
         const expandedText = await appendMentionAttachments(text, process.cwd());
-        submitInput(expandedText);
+        submitInput(expandedText, files);
       })();
     },
     [closeSlashMenu, navigateIfSlashRoute, runChatSlashAction, submitInput],

@@ -1,8 +1,40 @@
-import { TextAttributes, type TextareaRenderable } from "@opentui/core";
+import {
+  decodePasteBytes,
+  type PasteEvent,
+  stripAnsiSequences,
+  TextAttributes,
+  type TextareaRenderable,
+} from "@opentui/core";
+import type { FileUIPart } from "ai";
+import { appendFileSync } from "node:fs";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { cliTheme } from "../../ui/cli-theme";
+import { cliTheme, borderStyleFor } from "../../ui/cli-theme";
+import { readClipboardImage } from "../../utils/clipboard-image";
 import { fuzzyFilter } from "../../utils/fuzzy-match";
+import {
+  clipboardImageToFilePart,
+  formatImageChip,
+  stripImageChips,
+} from "../../utils/image-attachments";
+import {
+  expandPastePlaceholders,
+  formatPastePlaceholder,
+  shouldCollapsePaste,
+} from "../../utils/paste-placeholders";
+
+// Temporary paste/image diagnostic: set LIGHTCODE_PASTE_DEBUG=1 to log events to
+// /tmp/lightcode-paste-debug.log. Remove once image paste is confirmed.
+function pasteDebug(message: string): void {
+  if (!process.env.LIGHTCODE_PASTE_DEBUG) {
+    return;
+  }
+  try {
+    appendFileSync("/tmp/lightcode-paste-debug.log", `${message}\n`);
+  } catch {
+    // Diagnostics must never break the input.
+  }
+}
 
 interface TextareaKeyEvent {
   name: string;
@@ -11,7 +43,7 @@ interface TextareaKeyEvent {
 }
 
 interface ChatTextAreaProps {
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, files?: FileUIPart[]) => void;
   placeholder: string;
   focused?: boolean;
   disabled?: boolean;
@@ -62,9 +94,97 @@ export function ChatTextArea({
   const textareaRef = useRef<TextareaRenderable>(null);
   const lastManualNewlineAt = useRef(0);
   const wasSlashMenuOpen = useRef(false);
+  // Full text of each collapsed paste, keyed by its placeholder number. Spliced
+  // back in at submit time; reset after each send.
+  const pasteStore = useRef<Map<number, string>>(new Map());
+  const pasteCounter = useRef(0);
+  // Pasted images, keyed by their chip number. Sent as file parts at submit;
+  // reset after each send.
+  const imageStore = useRef<Map<number, FileUIPart>>(new Map());
+  const imageCounter = useRef(0);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionSelected, setMentionSelected] = useState(0);
   const isFocused = focused && !disabled;
+
+  // Collapse large pastes into a short placeholder so the box stays readable.
+  // Runs as the textarea's paste handler: for a big paste we preventDefault to
+  // suppress the raw insert, drop in a short placeholder, and stash the full
+  // body in `pasteStore` to splice back at submit time. Small pastes fall
+  // through to the default handler and insert normally.
+  // Pull an image off the OS clipboard and attach it as a chip. Used by both the
+  // empty-paste path and the Ctrl+V fallback (for terminals that send no paste
+  // event for image clipboard data). No-op when the clipboard holds no image.
+  const attachClipboardImage = useCallback(() => {
+    void readClipboardImage().then((image) => {
+      pasteDebug(
+        `clipboard read: ${image ? `image ${image.byteLength} bytes` : "no image"}`,
+      );
+      const textarea = textareaRef.current;
+      if (!image || !textarea) {
+        return;
+      }
+      const index = imageCounter.current + 1;
+      imageCounter.current = index;
+      imageStore.current.set(index, clipboardImageToFilePart(index, image));
+      textarea.insertText(formatImageChip(index));
+      onTextChange?.(textarea.plainText);
+    });
+  }, [onTextChange]);
+
+  const handlePaste = useCallback(
+    (event: PasteEvent) => {
+      const pasted = stripAnsiSequences(decodePasteBytes(event.bytes));
+      pasteDebug(
+        `paste fired: bytes=${event.bytes?.length ?? "?"} decodedLen=${pasted.length} empty=${pasted.trim().length === 0}`,
+      );
+      const textarea = textareaRef.current;
+      if (!textarea) {
+        return;
+      }
+
+      // A pasted screenshot arrives as an empty paste (terminals forward no
+      // bytes for image clipboard data); recover it from the OS clipboard and
+      // drop in a chip. The full image rides along as a file part on submit.
+      if (pasted.trim().length === 0) {
+        event.preventDefault();
+        attachClipboardImage();
+        return;
+      }
+
+      if (!shouldCollapsePaste(pasted)) {
+        return;
+      }
+
+      event.preventDefault();
+      const index = pasteCounter.current + 1;
+      pasteCounter.current = index;
+      pasteStore.current.set(index, pasted);
+      textarea.insertText(formatPastePlaceholder(index, pasted));
+
+      const next = textarea.plainText;
+      if (mentionCandidates) {
+        setMentionQuery(getTrailingMentionQuery(next));
+        setMentionSelected(0);
+      }
+      onTextChange?.(next);
+    },
+    [mentionCandidates, onTextChange],
+  );
+
+  // Attach the paste handler straight to the renderable so it intercepts the
+  // focused textarea's paste before the default raw insert.
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.onPaste = handlePaste;
+    return () => {
+      if (textarea.onPaste === handlePaste) {
+        textarea.onPaste = undefined;
+      }
+    };
+  }, [handlePaste]);
 
   const mentionMatches =
     mentionQuery !== null && mentionCandidates && mentionCandidates.length > 0
@@ -110,6 +230,15 @@ export function ChatTextArea({
         return;
       }
 
+      // Ctrl+V grabs an image off the clipboard directly — a fallback for
+      // terminals that don't emit a paste event for image clipboard data.
+      if (event.name === "v" && event.ctrl) {
+        event.preventDefault();
+        pasteDebug("ctrl+v: grab clipboard image");
+        attachClipboardImage();
+        return;
+      }
+
       if (mentionMatches.length === 0) {
         return;
       }
@@ -131,7 +260,7 @@ export function ChatTextArea({
         setMentionSelected(0);
       }
     },
-    [acceptMention, mentionMatches, selectedMentionIndex],
+    [acceptMention, attachClipboardImage, mentionMatches, selectedMentionIndex],
   );
 
   const handleSubmit = useCallback(() => {
@@ -140,14 +269,22 @@ export function ChatTextArea({
     }
 
     const rawText = textareaRef.current?.plainText ?? "";
-    const submittedText = trimOnSubmit ? rawText.trim() : rawText;
+    const expandedText = stripImageChips(
+      expandPastePlaceholders(rawText, pasteStore.current),
+    );
+    const submittedText = trimOnSubmit ? expandedText.trim() : expandedText;
+    const files = [...imageStore.current.values()];
 
-    if (!allowEmpty && submittedText.length === 0) {
+    if (!allowEmpty && submittedText.length === 0 && files.length === 0) {
       return;
     }
 
-    onSubmit(submittedText);
+    onSubmit(submittedText, files.length > 0 ? files : undefined);
     textareaRef.current?.setText("");
+    pasteStore.current.clear();
+    pasteCounter.current = 0;
+    imageStore.current.clear();
+    imageCounter.current = 0;
     setMentionQuery(null);
     setMentionSelected(0);
     onTextChange?.("");
@@ -192,7 +329,7 @@ export function ChatTextArea({
       {mentionMatches.length > 0 ? (
         <box
           flexDirection="column"
-          borderStyle="single"
+          borderStyle={borderStyleFor.card}
           borderColor={cliTheme.overlay.border}
           backgroundColor={cliTheme.overlay.surface}
           paddingX={1}
@@ -226,7 +363,7 @@ export function ChatTextArea({
       ) : null}
       <box
         flexDirection="column"
-        borderStyle="single"
+        borderStyle={borderStyleFor.card}
         borderColor={isFocused ? cliTheme.input.focusedBorder : cliTheme.input.blurredBorder}
         backgroundColor={cliTheme.input.container}
         paddingX={1}

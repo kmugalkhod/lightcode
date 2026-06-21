@@ -219,6 +219,36 @@ async function runCopyAction({
   );
 }
 
+/** /skills — list the skills the coding agent can load in this workspace. */
+async function runSkillsAction({
+  notify,
+}: ChatSlashActionContext): Promise<void> {
+  try {
+    const { listSkills } = await import("@lightcode/ai/runtime");
+    const skills = listSkills({ cwd: process.cwd() });
+
+    if (skills.length === 0) {
+      notify(
+        "No skills found. Add one at .lightcode/skills/<name>/SKILL.md (or ~/.lightcode/skills/ for all projects).",
+      );
+      return;
+    }
+
+    const lines = skills.map(
+      (skill) =>
+        `• ${skill.name}${skill.description ? ` — ${skill.description}` : ""} (${skill.source})`,
+    );
+    notify(
+      `Available skills (ask the agent to use one by name):\n${lines.join("\n")}`,
+    );
+  } catch (error) {
+    notify(
+      `Could not list skills: ${error instanceof Error ? error.message : "unknown error"}`,
+      "error",
+    );
+  }
+}
+
 export const chatSlashActions: ChatSlashActionDefinition[] = [
   {
     kind: "chat-action",
@@ -251,6 +281,14 @@ export const chatSlashActions: ChatSlashActionDefinition[] = [
     description: "Revert file edits made by the most recent agent turn",
     shortcut: "/undo",
     run: runUndoAction,
+  },
+  {
+    kind: "chat-action",
+    id: "skills",
+    label: "List skills",
+    description: "Show the skills the agent can load in this workspace",
+    shortcut: "/skills",
+    run: runSkillsAction,
   },
   {
     kind: "chat-action",

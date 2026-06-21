@@ -354,11 +354,11 @@ function AppContent() {
       <box
         flexDirection="row"
         justifyContent="space-between"
-        paddingLeft={1}
-        paddingRight={1}
-        borderStyle="single"
-        border={["bottom"]}
-        borderColor={cliTheme.borders.default}
+        paddingLeft={2}
+        paddingRight={2}
+        paddingTop={1}
+        paddingBottom={1}
+        backgroundColor={cliTheme.surfaces.panel}
       >
         <box flexDirection="row" gap={1} alignItems="center">
           <StatusDot
@@ -430,11 +430,9 @@ function AppContent() {
         flexDirection="row"
         justifyContent="center"
         gap={2}
-        paddingTop={1}
-        paddingBottom={1}
-        borderStyle="single"
-        border={["top"]}
-        borderColor={cliTheme.borders.default}
+        paddingX={2}
+        paddingY={1}
+        backgroundColor={cliTheme.surfaces.panel}
       >
         <text fg={ctrlCNotice ? cliTheme.semantic.warning : cliTheme.text.muted}>
           {ctrlCNotice ?? getFooterStatus()}

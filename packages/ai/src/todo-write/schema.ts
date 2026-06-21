@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  TODO_ACTIVE_FORM_MAX_CHARS,
+  TODO_CONTENT_MAX_CHARS,
+} from "../constants";
 
 export const todoWriteDescription =
   "Persist the current session task list. Use this to track multi-step coding work and update task status as progress changes.";
@@ -14,15 +18,33 @@ export const todoPrioritySchema = z.enum(["low", "medium", "high"]);
 
 export const todoItemSchema = z.object({
   id: z.string().min(1).max(120).optional(),
-  content: z.string().min(1).max(500),
+  content: z.string().min(1).max(TODO_CONTENT_MAX_CHARS),
   status: todoStatusSchema,
   priority: todoPrioritySchema.optional().default("medium"),
   notes: z.string().max(1000).optional(),
+  activeForm: z
+    .string()
+    .min(1)
+    .max(TODO_ACTIVE_FORM_MAX_CHARS)
+    .optional(),
 });
 
+// Provider-facing schema: terser shape (no id/priority/notes) so each
+// full-rewrite stays small. Content caps match todoItemSchema via the shared
+// TODO_CONTENT_MAX_CHARS constant. activeForm is exposed here (with a
+// description the model reads) so it sets a present-tense label for the
+// in_progress item; the UI falls back to content when absent.
 const todoItemProviderSchema = z.object({
-  content: z.string().min(1).max(500),
+  content: z.string().min(1).max(TODO_CONTENT_MAX_CHARS),
   status: todoStatusSchema,
+  activeForm: z
+    .string()
+    .min(1)
+    .max(TODO_ACTIVE_FORM_MAX_CHARS)
+    .optional()
+    .describe(
+      "Short present-tense active label for this task, e.g. \"Adding tests\" or \"Editing schema\". Set it primarily for the in_progress item so the UI can show what's actively happening; the UI falls back to content when omitted.",
+    ),
 });
 
 export const todoWriteInputSchema = z.object({
@@ -30,7 +52,7 @@ export const todoWriteInputSchema = z.object({
 });
 
 export const todoWriteProviderInputSchema = z.object({
-  todos: z.array(todoItemProviderSchema),
+  todos: z.array(todoItemProviderSchema).max(20),
 });
 
 export const todoWriteOutputSchema = z.object({
@@ -44,6 +66,10 @@ export const todoWriteOutputSchema = z.object({
     completed: z.number().int().nonnegative(),
     canceled: z.number().int().nonnegative(),
   }),
+  // Non-fatal corrections applied to the submitted list (e.g. extra
+  // in_progress items demoted, completions regressed, content truncated).
+  // Fed back to the model so it can self-correct on the next call.
+  warnings: z.array(z.string()).optional(),
 });
 
 export type TodoItem = z.infer<typeof todoItemSchema>;

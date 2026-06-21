@@ -1,5 +1,7 @@
 import { InvalidToolInputError, NoSuchToolError } from "ai";
 import type { LanguageModelV3ToolCall } from "@ai-sdk/provider";
+import { codingToolProviderInputSchemas } from "./agent-tools";
+import { coerceToolInputToSchema } from "./common/coerce-tool-input";
 import { repairToolJson } from "./providers/tool-call-json-repair";
 
 /**
@@ -134,9 +136,18 @@ export async function repairCodingAgentToolCall({
     if (!repairedInput || typeof repairedInput !== "object") {
       return null;
     }
+    // Heal wrong-typed primitives (e.g. "10" -> 10) against the tool's schema so
+    // weaker models clear validation; fall back to the syntax-only repair.
+    const schema =
+      codingToolProviderInputSchemas[
+        toolCall.toolName as keyof typeof codingToolProviderInputSchemas
+      ];
+    const coerced = schema
+      ? coerceToolInputToSchema(repairedInput, schema)
+      : null;
     return {
       ...toolCall,
-      input: JSON.stringify(repairedInput),
+      input: JSON.stringify(coerced ?? repairedInput),
     };
   }
 

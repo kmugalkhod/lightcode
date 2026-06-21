@@ -21,6 +21,11 @@
 - Typecheck everything with `bun run typecheck`; package-scoped typechecks are `bun run --cwd apps/cli typecheck` and `bun run --cwd apps/server typecheck`.
 - There are no test, lint, formatter, build, or packaging scripts defined yet; do not assume they exist.
 
+## Skills
+
+- Reusable agent instructions live in `SKILL.md` files under `.lightcode/skills/<name>/` (project) or `~/.lightcode/skills/<name>/` (user-global); project wins on name clashes.
+- Frontmatter is simple `name:` / `description:` lines between `---` fences; the body is the instructions. Available skills are surfaced to the agent each turn — load one with the `skill` tool by name.
+
 ## Tooling Notes
 
 - TypeScript config is rooted at `tsconfig.base.json`; app/package configs extend it via `../../tsconfig.base.json` and `@lightcode/shared` is mapped to `packages/shared/src/index.ts`.

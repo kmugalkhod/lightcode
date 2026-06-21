@@ -82,6 +82,34 @@ extractive fallback when the model is unreachable). The full conversation is
 always preserved in SQLite — compaction only changes what the model sees.
 Use `/compact` in a chat to compact manually.
 
+## Skills
+
+Skills are reusable instruction files the agent can load on demand — a recipe
+for a recurring task (writing a PR description, cutting a release, following a
+review checklist). Each skill is a `SKILL.md` file with frontmatter:
+
+```markdown
+---
+name: pr-description
+description: Write a clear PR title and description from the diff.
+---
+
+# Instructions the agent follows when this skill is loaded…
+```
+
+Lightcode discovers skills from three locations, first match wins (project
+overrides user):
+
+1. `.lightcode/skills/<name>/SKILL.md` — project-local
+2. `.agents/skills/<name>/SKILL.md` — project-local (fallback)
+3. `~/.lightcode/skills/<name>/SKILL.md` — available in every project
+
+Each turn the agent is told which skills are available (name + description), so
+just ask it to "use the pr-description skill" (or mention the skill by name) and
+it loads the instructions via the `skill` tool and follows them. Run `/skills`
+in the TUI to list what's installed. Only simple `key: value` frontmatter lines
+are parsed (`name`, `description`); the rest of the file is the instruction body.
+
 ## Workspaces
 
 - `apps/cli` — OpenTUI React terminal interface

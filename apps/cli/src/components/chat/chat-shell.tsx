@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { TextAttributes } from "@opentui/core";
 import { ChatMessageErrorPart } from "./chat-message-error-part";
-import { cliTheme, space } from "../../ui/cli-theme";
+import { cliTheme, space, borderStyleFor } from "../../ui/cli-theme";
 
 interface ChatShellProps {
   title?: string;
@@ -35,7 +35,7 @@ export function ChatShell({
       <box
         width="100%"
         flexGrow={1}
-        borderStyle="single"
+        borderStyle={borderStyleFor.card}
         borderColor={cliTheme.borders.default}
         backgroundColor={cliTheme.surfaces.inset}
       >

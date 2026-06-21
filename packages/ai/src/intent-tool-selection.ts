@@ -1,20 +1,20 @@
-import type {
-  CodingAgentMode,
-  CodingAgentToolName,
+import {
+  getCodingAgentModeDefinition,
+  type CodingAgentMode,
+  type CodingAgentToolName,
 } from "./coding-agent-modes";
 
 const casualPromptPattern =
   /^(hi|hello|hey|how are you|how r you|what'?s up|whats up|sup|thanks|thank you|ok|okay|yes|no|nice|cool|great)[\s?!.,]*$/i;
 
-const baseReadTools = [
-  "list_files",
-  "glob_search",
-  "read_file",
-  "grep",
-] as const satisfies readonly CodingAgentToolName[];
-
-/** Providers reject overly large tool grammars; cap the active set. */
-const maxProviderActiveTools = 7;
+/**
+ * Safety cap for providers that reject overly large tool grammars. Set above
+ * the full tool count (20 names below) so it never drops a legitimate
+ * mode tool for capable providers; `limitProviderActiveTools` keeps the
+ * priority order so, if a smaller provider ever needs a tighter cap, the core
+ * read/write/run tools survive first.
+ */
+const maxProviderActiveTools = 24;
 
 /** Order in which tools survive the provider cap — core file ops first. */
 const providerToolPriority = [
@@ -94,25 +94,6 @@ function getLastUserText(messages: unknown, prompt: unknown) {
   return collectTextFromUnknown(prompt).trim();
 }
 
-function pushUniqueTool(
-  tools: CodingAgentToolName[],
-  toolName: CodingAgentToolName,
-) {
-  if (!tools.includes(toolName)) {
-    tools.push(toolName);
-  }
-}
-
-function includesAny(text: string, tokens: readonly string[]) {
-  return tokens.some((token) => {
-    if (token.includes("://") || token.includes(" ")) {
-      return text.includes(token);
-    }
-
-    return new RegExp(`(^|[^a-z0-9])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`).test(text);
-  });
-}
-
 export function selectCodingAgentIntentTools({
   mode,
   prompt,
@@ -121,116 +102,29 @@ export function selectCodingAgentIntentTools({
   mode: CodingAgentMode;
   prompt: unknown;
   messages: unknown;
+  /**
+   * Retained for call-site compatibility. Tool exposure no longer depends on
+   * skill name matching — every real prompt gets the full mode tool set, which
+   * already includes the `skill` tool in build mode.
+   */
+  availableSkillNames?: readonly string[];
 }): CodingAgentToolName[] {
   const userText = getLastUserText(messages, prompt);
   const normalizedText = userText.toLowerCase();
 
-  // Genuine chit-chat ("hi", "thanks") keeps the tool-less fast path. Every
-  // other message is a real task and MUST get tools — gating tool availability
-  // on keyword matches previously returned [] for prompts like "design a
-  // multiplayer system", leaving the model with no tools and a hard
-  // NoSuchToolError the moment it tried to read a file.
+  // Genuine chit-chat ("hi", "thanks") keeps the tool-less fast path. The
+  // server's fast-path detector relies on `[]` meaning "no tools needed".
   if (!normalizedText || casualPromptPattern.test(normalizedText)) {
     return [];
   }
 
-  // Situational tools are niche and added only on explicit intent — they must
-  // not crowd the core set out from under the provider tool cap, so they are
-  // placed after the always-on read tools but before the build-mode defaults.
-  const situational: CodingAgentToolName[] = [];
-
-  const hasGitIntent = includesAny(normalizedText, [
-    "git",
-    "diff",
-    "status",
-    "commit",
-    "log",
-    "show",
-    "revision",
-    "changes",
-  ]);
-  if (hasGitIntent) {
-    if (
-      includesAny(normalizedText, ["status", "state", "dirty", "working tree"]) ||
-      !includesAny(normalizedText, ["diff", "log", "show", "history", "commit"])
-    ) {
-      pushUniqueTool(situational, "git_status");
-    }
-    if (includesAny(normalizedText, ["diff", "changes", "patch"])) {
-      pushUniqueTool(situational, "git_diff");
-    }
-    if (includesAny(normalizedText, ["log", "history", "commits"])) {
-      pushUniqueTool(situational, "git_log");
-    }
-    if (includesAny(normalizedText, ["show", "revision", "commit"])) {
-      pushUniqueTool(situational, "git_show");
-    }
-  }
-
-  if (
-    mode === "build" &&
-    includesAny(normalizedText, ["todo", "tasks", "checklist", "steps", "epic", "ticket"])
-  ) {
-    pushUniqueTool(situational, "todo_write");
-  }
-
-  if (includesAny(normalizedText, ["tool_search", "tool search", "find tool", "available tool"])) {
-    pushUniqueTool(situational, "tool_search");
-  }
-
-  if (includesAny(normalizedText, ["skill", "skills", "load skill"])) {
-    pushUniqueTool(situational, "skill");
-  }
-
-  if (includesAny(normalizedText, ["mcp", "resource", "resources", "mcp tool", "mcp server"])) {
-    pushUniqueTool(situational, "list_mcp_resources");
-    if (includesAny(normalizedText, ["read", "resource", "resources"])) {
-      pushUniqueTool(situational, "read_mcp_resource");
-    }
-    if (mode === "build" && includesAny(normalizedText, ["call", "execute", "run"])) {
-      pushUniqueTool(situational, "call_mcp_tool");
-    }
-  }
-
-  if (
-    includesAny(normalizedText, [
-      "http://",
-      "https://",
-      "url",
-      "fetch",
-      "website",
-      "web",
-      "online",
-      "search internet",
-      "latest",
-    ])
-  ) {
-    pushUniqueTool(situational, "web_fetch");
-    pushUniqueTool(situational, "web_search");
-  }
-
-  if (mode === "plan" && includesAny(normalizedText, ["question", "ask", "clarify"])) {
-    pushUniqueTool(situational, "request_user_input");
-  }
-
-  // Compose the active set, ordered by what must survive the provider cap:
-  //   1. core read tools — every task can inspect the workspace (the fix);
-  //   2. explicit situational tools — honor what the user asked for;
-  //   3. build-mode write/run defaults — so a build task can edit and run
-  //      without the user re-phrasing (plan mode is read-only and skips these).
-  const ordered: CodingAgentToolName[] = [...baseReadTools, ...situational];
-  if (mode === "build") {
-    ordered.push("write_file", "edit_file", "bash");
-  }
-
-  const selected: CodingAgentToolName[] = [];
-  for (const toolName of ordered) {
-    pushUniqueTool(selected, toolName);
-  }
-
-  // Cap here (read-first order preserved) so the downstream priority-based cap
-  // can't reorder and drop the read tools or the explicitly-requested ones.
-  return selected.slice(0, maxProviderActiveTools);
+  // Every other message is a real task: expose the full set of tools the mode
+  // allows and let the model choose (opencode-style). Keyword-guessing a small
+  // subset previously dropped write_file/edit_file/bash whenever the prompt
+  // happened to mention enough situational tools (git/web), leaving build-mode
+  // agents unable to edit files. Plan mode's tool set is read-only by
+  // definition, so this stays safe; permission policy is enforced downstream.
+  return [...getCodingAgentModeDefinition(mode).activeTools];
 }
 
 export function limitProviderActiveTools(

@@ -4,7 +4,7 @@ import { ChatMessageErrorPart } from "./chat-message-error-part";
 import { ChatMessageReasoningPart } from "./chat-message-reasoning-part";
 import { ChatMessageTextPart } from "./chat-message-text-part";
 import { ChatMessageToolInvocationPart } from "./chat-message-tool-invocation-part";
-import { getMessageRoleTheme, space } from "../../ui/cli-theme";
+import { getMessageRoleTheme, space, borderStyleFor } from "../../ui/cli-theme";
 import { activeGlyphs } from "../../ui/cli-theme-capabilities";
 
 interface ChatMessageProps {
@@ -66,19 +66,31 @@ export function ChatMessage({ message, pendingApprovalIds }: ChatMessageProps) {
     return null;
   }
 
-  // Sleek-minimal turn: no box or background — a role glyph + label header, with
-  // the message body indented beneath it. Hierarchy comes from the role color,
-  // bold label, and indentation rather than a border around every message.
+  // Use immersive layout: a bounding box with the role's background and a solid
+  // left border. This groups the entire message visually and sets it apart cleanly
+  // from tools and surrounding space.
   return (
-    <box width="100%" flexDirection="column" gap={space.xs}>
+    <box 
+      width="100%" 
+      flexDirection="column" 
+      gap={space.xs}
+      paddingLeft={1}
+      paddingRight={1}
+      paddingTop={1}
+      paddingBottom={1}
+      borderStyle={borderStyleFor.chrome}
+      border={["left"]}
+      borderColor={roleStyle.borderColor}
+      backgroundColor={roleStyle.backgroundColor}
+    >
       <text fg={roleStyle.labelColor} attributes={TextAttributes.BOLD}>
         {`${ROLE_GLYPHS[message.role]} ${ROLE_LABELS[message.role]}`}
       </text>
       <box
         width="100%"
         flexDirection="column"
-        gap={space.xs}
-        paddingLeft={space.md}
+        gap={space.md}
+        paddingTop={space.xs}
       >
         {renderedParts}
       </box>
