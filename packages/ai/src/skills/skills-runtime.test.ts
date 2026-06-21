@@ -47,4 +47,40 @@ describe("skills resolver", () => {
     expect(loaded.skill.name).toBe("demo-skill");
     expect(loaded.content).toContain("Use this skill carefully.");
   });
+
+  test("dedupes skills that share a name (first discovery root wins)", () => {
+    const cwd = createTempWorkspace();
+    for (const dirName of ["a", "b"]) {
+      const skillDir = path.join(cwd, ".lightcode", "skills", dirName);
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        path.join(skillDir, "SKILL.md"),
+        ["---", "name: dupe", "description: variant", "---", ""].join("\n"),
+      );
+    }
+
+    const skills = listSkills({ cwd });
+    expect(skills.filter((skill) => skill.name === "dupe")).toHaveLength(1);
+  });
+
+  test("treats missing description as null", () => {
+    const cwd = createTempWorkspace();
+    const skillDir = path.join(cwd, ".lightcode", "skills", "bare");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      path.join(skillDir, "SKILL.md"),
+      ["---", "name: bare-skill", "---", "Body only."].join("\n"),
+    );
+
+    const [skill] = listSkills({ cwd });
+    expect(skill.name).toBe("bare-skill");
+    expect(skill.description).toBeNull();
+  });
+
+  test("throws when loading an unknown skill", () => {
+    const cwd = createTempWorkspace();
+    expect(() => loadSkill({ name: "does-not-exist" }, { cwd })).toThrow(
+      /Skill not found/,
+    );
+  });
 });

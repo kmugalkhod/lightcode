@@ -5,6 +5,7 @@ import {
   fitMessagesToBudget,
   formatChatStreamError,
   lightcodeConfigDefaults,
+  listSkills,
   normalizeProviderMessages,
   resolveMaxOutputTokens,
   selectCodingAgentIntentTools,
@@ -121,10 +122,12 @@ export function shouldUseFastChatPath({
   messages,
   mode,
   allowedTools,
+  availableSkillNames = [],
 }: {
   messages: UIMessage[];
   mode: CodingAgentMode;
   allowedTools: CodingAgentToolName[] | undefined;
+  availableSkillNames?: readonly string[];
 }) {
   if (allowedTools && allowedTools.length > 0) {
     return false;
@@ -143,6 +146,7 @@ export function shouldUseFastChatPath({
     mode,
     prompt: "",
     messages,
+    availableSkillNames,
   }).length === 0;
 }
 
@@ -580,6 +584,7 @@ export async function streamSessionChat(
   // aware of the repo it is running in (reads the cwd instead of asking the
   // user to paste code). Best-effort; never throws.
   const environmentContext = await buildWorkspaceContext({ cwd });
+  const availableSkillNames = listSkills({ cwd }).map((skill) => skill.name);
 
   try {
     if (
@@ -587,6 +592,7 @@ export async function streamSessionChat(
         messages: providerMessages,
         mode,
         allowedTools,
+        availableSkillNames,
       })
     ) {
       logger.info("chat_fast_path", {

@@ -3,8 +3,15 @@ import type { UIMessage } from "ai";
 import {
   computePruneCutoffIndex,
   isElidedToolOutput,
+  PROGRESS_NOTE_ELISION_STUB,
   pruneToolOutputs,
 } from "./tier1-prune";
+
+function getPartText(message: UIMessage, partIndex = 0): unknown {
+  return Reflect.get(message.parts[partIndex] as object, "text");
+}
+
+const longNote = "I am narrating my progress. ".repeat(20);
 
 function textMessage(role: UIMessage["role"], id: string, text: string): UIMessage {
   return {
@@ -176,6 +183,66 @@ describe("pruneToolOutputs", () => {
     expect(isElidedToolOutput(getToolOutput(result.messages[1]))).toBe(true);
     // The latest read (in the recent window) keeps its content.
     expect(getToolOutput(result.messages[3])).toEqual(smallOutput);
+  });
+
+  test("elides long progress notes co-located with tool calls outside the window", () => {
+    const messages = [
+      textMessage("user", "u0", "start"),
+      assistantToolMessage("a1", [
+        { type: "text", text: longNote } as UIMessage["parts"][number],
+        toolPart("bash", { input: { command: "ls" }, output: smallOutput }),
+      ]),
+      textMessage("user", "u2", "next"),
+      textMessage("assistant", "a3", "done"),
+    ];
+
+    const result = pruneToolOutputs(messages, {
+      preserveRecentMessages: 2,
+      quantizeUserTurns: 1,
+    });
+
+    expect(result.elidedProgressNotes).toBe(1);
+    expect(result.savedChars).toBeGreaterThan(0);
+    expect(getPartText(result.messages[1], 0)).toBe(PROGRESS_NOTE_ELISION_STUB);
+  });
+
+  test("leaves standalone assistant text (final summary) untouched", () => {
+    const messages = [
+      textMessage("user", "u0", "start"),
+      textMessage("assistant", "a1", longNote),
+      textMessage("user", "u2", "next"),
+      textMessage("assistant", "a3", "done"),
+    ];
+
+    const result = pruneToolOutputs(messages, {
+      preserveRecentMessages: 2,
+      quantizeUserTurns: 1,
+    });
+
+    expect(result.elidedProgressNotes).toBe(0);
+    expect(getPartText(result.messages[1])).toBe(longNote);
+  });
+
+  test("keeps notes within the recent window", () => {
+    const messages = [
+      textMessage("user", "u0", "start"),
+      assistantToolMessage("a1", [
+        toolPart("bash", { output: smallOutput }),
+      ]),
+      textMessage("user", "u2", "next"),
+      assistantToolMessage("a3", [
+        { type: "text", text: longNote } as UIMessage["parts"][number],
+        toolPart("bash", { toolCallId: "bash-2", output: smallOutput }),
+      ]),
+    ];
+
+    const result = pruneToolOutputs(messages, {
+      preserveRecentMessages: 2,
+      quantizeUserTurns: 1,
+    });
+
+    expect(result.elidedProgressNotes).toBe(0);
+    expect(getPartText(result.messages[3], 0)).toBe(longNote);
   });
 
   test("is idempotent on already-pruned input", () => {

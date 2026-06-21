@@ -7,6 +7,8 @@ import {
   type CodingToolOutputByName,
 } from "./agent-tools";
 import type { CodingAgentMode } from "./coding-agent-modes";
+import { coerceToolInputToSchema } from "./common/coerce-tool-input";
+import { assertNotRepeatingToolCall } from "./tool-call-repeat-guard";
 import { executeBash } from "./bash/runtime";
 import { executeEditFile } from "./edit-file/runtime";
 import { executeGrep } from "./grep/runtime";
@@ -167,9 +169,23 @@ export function parseCodingToolInput<K extends CodingToolName>(
 ): CodingToolInputByName[K] {
   // The schema map is keyed by tool name; indexing erases the per-key
   // relation, so narrow the parsed union back to the requested tool.
-  return codingToolInputSchemas[toolName].parse(
-    rawInput,
-  ) as CodingToolInputByName[K];
+  const schema = codingToolInputSchemas[toolName];
+  const parsed = schema.safeParse(rawInput);
+  if (parsed.success) {
+    return parsed.data as CodingToolInputByName[K];
+  }
+
+  // Cheaper models get the argument shape right but the types wrong (a number
+  // sent as "10", a boolean as "true"). Coerce against the schema before giving
+  // up so the call succeeds instead of failing strict validation.
+  const coerced = coerceToolInputToSchema(rawInput, schema);
+  if (coerced !== null) {
+    return coerced as CodingToolInputByName[K];
+  }
+
+  // Still invalid (e.g. a required field is genuinely missing) — surface the
+  // original, descriptive validation error.
+  return schema.parse(rawInput) as CodingToolInputByName[K];
 }
 
 export async function executeCodingTool<K extends CodingToolName>(
@@ -180,6 +196,8 @@ export async function executeCodingTool<K extends CodingToolName>(
   const workspaceContext = getWorkspaceContext(options);
   const validatedInput = parseCodingToolInput(toolName, input);
   assertToolPermission(toolName, validatedInput, options);
+  // Break weak-model loops that re-run the same read-only tool unchanged.
+  assertNotRepeatingToolCall(toolName, validatedInput, options?.turnKey);
 
   const runtime = codingToolRuntimes[toolName] as (
     input: CodingToolInputByName[K],

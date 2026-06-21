@@ -36,6 +36,10 @@ export function ChatTodoStatusCard({ todos }: ChatTodoStatusCardProps) {
   }
 
   const completedCount = todos.filter((todo) => todo.status === "completed").length;
+  const percent = todos.length > 0 ? Math.round((completedCount / todos.length) * 100) : 0;
+  const progressText = completedCount === 0 
+    ? "Not started" 
+    : `${completedCount}/${todos.length} done (${percent}%)`;
 
   return (
     <box
@@ -53,31 +57,40 @@ export function ChatTodoStatusCard({ todos }: ChatTodoStatusCardProps) {
           Session Todo
         </text>
         <text fg={cliTheme.text.muted}>
-          {completedCount}/{todos.length} done
+          {progressText}
         </text>
       </box>
 
       <box width="100%" flexDirection="column">
-        {todos.slice(0, 6).map((todo, index) => (
-          <box key={todo.id ?? `${todo.content}-${index}`} width="100%" flexDirection="row" gap={1}>
-            <text fg={getStatusColor(todo.status)}>
-              {todo.status === "completed" ? "[x]" : "[ ]"}
-            </text>
-            <text fg={cliTheme.text.primary}>
-              {truncateInline(todo.content)}
-            </text>
-            <text fg={getStatusColor(todo.status)} attributes={TextAttributes.DIM}>
-              {todoStatusLabel[todo.status]}
-            </text>
-          </box>
-        ))}
+        {todos.map((todo, index) => {
+          // For the active item, show its present-tense activeForm (e.g.
+          // "Adding tests") when the model set one, falling back to content.
+          const isActive = todo.status === "in_progress";
+          const label = isActive && todo.activeForm
+            ? todo.activeForm
+            : todo.content;
+
+          return (
+            <box key={todo.id ?? `${todo.content}-${index}`} width="100%" flexDirection="row" gap={1}>
+              <text fg={getStatusColor(todo.status)}>
+                {todo.status === "completed" ? "[x]" : "[ ]"}
+              </text>
+              <text fg={cliTheme.text.primary}>
+                {truncateInline(label)}
+              </text>
+              {isActive && todo.activeForm ? (
+                <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+                  {truncateInline(todo.content)}
+                </text>
+              ) : null}
+              <text fg={getStatusColor(todo.status)} attributes={TextAttributes.DIM}>
+                {todoStatusLabel[todo.status]}
+              </text>
+            </box>
+          );
+        })}
       </box>
 
-      {todos.length > 6 ? (
-        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
-          {todos.length - 6} more tasks hidden
-        </text>
-      ) : null}
     </box>
   );
 }

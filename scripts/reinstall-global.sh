@@ -16,10 +16,10 @@ cd "$REPO_DIR"
 if [ "${1:-}" = "--build" ]; then
   echo "==> Building fresh tarball"
   bun scripts/build-dist.ts
-  npm pack ./dist >/dev/null
+  npm pack ./dist --pack-destination dist >/dev/null
 fi
 
-TARBALL="$(ls -t "$REPO_DIR"/kmugalkhod-lightcode-*.tgz 2>/dev/null | head -1 || true)"
+TARBALL="$(ls -t "$REPO_DIR"/dist/kmugalkhod-lightcode-*.tgz 2>/dev/null | head -1 || true)"
 if [ -z "$TARBALL" ]; then
   echo "No tarball found. Build one first:"
   echo "  bash scripts/reinstall-global.sh --build"

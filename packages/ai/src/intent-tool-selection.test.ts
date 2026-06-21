@@ -70,16 +70,47 @@ describe("selectCodingAgentIntentTools", () => {
     expect(selected).not.toContain("bash");
   });
 
-  test("explicit situational intent survives the provider tool cap", () => {
-    const selected = tools("show me the git status");
-    expect(selected).toContain("git_status");
+  test("git-only build prompt still exposes write/run tools (the bug fix)", () => {
+    // Previously this prompt matched git_status + git_diff + git_log and the
+    // 7-tool cap sliced off write_file/edit_file/bash, so the build agent
+    // could not edit files. The full set must now be available.
+    const selected = tools("review the repo and check git status, diff, and log");
     expect(selected).toContain("read_file");
-    expect(selected.length).toBeLessThanOrEqual(7);
+    expect(selected).toContain("git_status");
+    expect(selected).toContain("git_diff");
+    expect(selected).toContain("write_file");
+    expect(selected).toContain("edit_file");
+    expect(selected).toContain("bash");
   });
 
-  test("never exceeds the provider tool cap", () => {
-    const selected = tools("review the repo, run the tests, check git diff, and fetch https://x.com");
-    expect(selected.length).toBeLessThanOrEqual(7);
-    expect(selected).toContain("read_file");
+  test("build mode exposes the full build tool set for any real task", () => {
+    const selected = tools("fix the bug");
+    for (const toolName of [
+      "read_file",
+      "write_file",
+      "edit_file",
+      "bash",
+      "git_status",
+      "todo_write",
+      "skill",
+      "web_search",
+    ] as const) {
+      expect(selected).toContain(toolName);
+    }
+  });
+
+  test("the skill tool is always available in build mode", () => {
+    const selected = selectCodingAgentIntentTools({
+      mode: "build",
+      prompt: "",
+      messages: [
+        {
+          role: "user",
+          parts: [{ type: "text", text: "fix the null check in parser.ts" }],
+        },
+      ],
+      availableSkillNames: ["pr-description"],
+    });
+    expect(selected).toContain("skill");
   });
 });

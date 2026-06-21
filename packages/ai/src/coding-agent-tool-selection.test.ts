@@ -22,7 +22,7 @@ describe("coding agent dynamic tool selection", () => {
     ).toEqual([]);
   });
 
-  test("includes explicitly requested situational tools alongside the core set", () => {
+  test("exposes the full build tool set for a real task", () => {
     const tools = selectCodingAgentIntentTools({
       mode: "build",
       prompt: "Use tool_search to find git tools, then check git status.",
@@ -31,10 +31,11 @@ describe("coding agent dynamic tool selection", () => {
 
     expect(tools).toContain("tool_search");
     expect(tools).toContain("git_status");
-    // Core read tools are always present so the agent can inspect the workspace.
     expect(tools).toContain("read_file");
-    expect(tools).not.toContain("git_diff"); // not requested
-    expect(tools.length).toBeLessThanOrEqual(7);
+    // The model now gets the whole mode set and chooses for itself, so
+    // unrequested tools are available too (opencode-style).
+    expect(tools).toContain("git_diff");
+    expect(tools).toContain("write_file");
   });
 
   test("non-casual prompts always get tools (never an empty set)", () => {
@@ -51,7 +52,7 @@ describe("coding agent dynamic tool selection", () => {
     expect(tools.length).toBeGreaterThan(0);
   });
 
-  test("build-mode tasks include write and shell tools by default", () => {
+  test("build-mode tasks include write, shell, and planning tools by default", () => {
     const tools = selectCodingAgentIntentTools({
       mode: "build",
       prompt: "Create a file named plan-test.txt",
@@ -61,11 +62,11 @@ describe("coding agent dynamic tool selection", () => {
     expect(tools).toContain("write_file");
     expect(tools).toContain("edit_file");
     expect(tools).toContain("bash"); // build mode can run commands without re-prompting
-    expect(tools).not.toContain("todo_write"); // situational, not requested
+    expect(tools).toContain("todo_write"); // always available so the agent can track work
   });
 
-  test("caps provider tools to Anthropic-safe compact sets", () => {
-    const tools = limitProviderActiveTools([
+  test("limitProviderActiveTools passes through sets within the cap", () => {
+    const input = [
       "list_files",
       "glob_search",
       "read_file",
@@ -76,33 +77,30 @@ describe("coding agent dynamic tool selection", () => {
       "git_show",
       "tool_search",
       "request_user_input",
-    ]);
+    ] as const;
 
-    expect(tools).toEqual([
-      "list_files",
-      "glob_search",
-      "read_file",
-      "grep",
-      "git_status",
-      "git_diff",
-      "git_log",
-    ]);
-    expect(tools.length).toBeLessThanOrEqual(7);
+    // 10 tools is well under the 24-tool cap, so nothing is dropped or reordered.
+    expect(limitProviderActiveTools([...input])).toEqual([...input]);
   });
 
-  test("keeps core edit and shell tools before nice-to-have tools", () => {
-    const tools = limitProviderActiveTools([
-      "list_files",
-      "glob_search",
-      "read_file",
-      "grep",
-      "git_status",
-      "tool_search",
-      "todo_write",
-      "write_file",
-      "edit_file",
-      "bash",
-    ]);
+  test("keeps core edit and shell tools first when a tighter provider cap applies", () => {
+    // Safety net for weak providers: when an explicit cap is below the tool
+    // count, priority ordering ensures read/write/run tools survive first.
+    const tools = limitProviderActiveTools(
+      [
+        "list_files",
+        "glob_search",
+        "read_file",
+        "grep",
+        "git_status",
+        "tool_search",
+        "todo_write",
+        "write_file",
+        "edit_file",
+        "bash",
+      ],
+      7,
+    );
 
     expect(tools).toEqual([
       "list_files",
@@ -113,6 +111,6 @@ describe("coding agent dynamic tool selection", () => {
       "edit_file",
       "bash",
     ]);
-    expect(tools.length).toBeLessThanOrEqual(7);
+    expect(tools.length).toBe(7);
   });
 });

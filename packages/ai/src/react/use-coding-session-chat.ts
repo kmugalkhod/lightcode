@@ -1,6 +1,7 @@
 import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
+  type FileUIPart,
   isToolUIPart,
   lastAssistantMessageIsCompleteWithToolCalls,
   safeValidateUIMessages,
@@ -1501,7 +1502,7 @@ export function useCodingSessionChat({
   ]);
 
   const submitInput = useCallback(
-    (text: string) => {
+    (text: string, files?: FileUIPart[]) => {
       if (canRetryRecoverableResponse && isRetryCommand(text)) {
         void retryRecoverableResponse();
         return;
@@ -1533,7 +1534,7 @@ export function useCodingSessionChat({
 
       setToolExecutionError(null);
       advanceTurnKey();
-      void sendMessage({ text });
+      void sendMessage({ text, files });
     },
     [
       advanceTurnKey,

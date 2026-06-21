@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import { PROGRESS_NOTE_PRUNE_MIN_CHARS } from "../constants";
 import { safeStringify } from "./estimate";
 import {
   getToolNameFromPart,
@@ -7,6 +8,9 @@ import {
 } from "./message-parts";
 
 export const DEFAULT_PRUNE_MIN_OUTPUT_CHARS = 2_000;
+
+/** Placeholder left in place of an elided progress note. */
+export const PROGRESS_NOTE_ELISION_STUB = "[progress note elided]";
 
 /**
  * The prune cutoff only advances once every N user turns so the pruned prefix
@@ -30,6 +34,7 @@ export interface Tier1PruneResult {
   messages: UIMessage[];
   elidedToolOutputs: number;
   dedupedFileReads: number;
+  elidedProgressNotes: number;
   savedChars: number;
 }
 
@@ -55,6 +60,20 @@ function normalizeReadPathKey(input: unknown): string | null {
 function getPartState(part: UIMessagePart): string | null {
   const state = isRecord(part) ? Reflect.get(part, "state") : undefined;
   return typeof state === "string" ? state : null;
+}
+
+/** A plain `type: "text"` part's text, or null for any other part shape. */
+function getPlainTextPartContent(part: UIMessagePart): string | null {
+  if (!isRecord(part) || Reflect.get(part, "type") !== "text") {
+    return null;
+  }
+
+  const text = Reflect.get(part, "text");
+  return typeof text === "string" ? text : null;
+}
+
+function messageHasToolPart(message: UIMessage): boolean {
+  return message.parts.some((part) => getToolNameFromPart(part) !== null);
 }
 
 /**
@@ -146,6 +165,7 @@ export function pruneToolOutputs(
 
   let elidedToolOutputs = 0;
   let dedupedFileReads = 0;
+  let elidedProgressNotes = 0;
   let savedChars = 0;
 
   const prunedMessages = messages.map((message, messageIndex) => {
@@ -153,10 +173,35 @@ export function pruneToolOutputs(
       return message;
     }
 
+    // Progress notes are assistant text co-located with tool calls (narration
+    // around tool orchestration). A standalone assistant text message with no
+    // tool part is the user-facing answer / final summary — never pruned.
+    const noteCandidate =
+      message.role === "assistant" && messageHasToolPart(message);
+
     let changed = false;
     const parts = message.parts.map((part, partIndex) => {
       const toolName = getToolNameFromPart(part);
       if (!toolName || getPartState(part) !== "output-available") {
+        if (noteCandidate && toolName === null) {
+          const text = getPlainTextPartContent(part);
+          if (
+            text !== null &&
+            text !== PROGRESS_NOTE_ELISION_STUB &&
+            text.length > PROGRESS_NOTE_PRUNE_MIN_CHARS
+          ) {
+            elidedProgressNotes += 1;
+            savedChars += Math.max(
+              0,
+              text.length - PROGRESS_NOTE_ELISION_STUB.length,
+            );
+            changed = true;
+            return {
+              ...(part as Record<string, unknown>),
+              text: PROGRESS_NOTE_ELISION_STUB,
+            } as UIMessagePart;
+          }
+        }
         return part;
       }
 
@@ -189,8 +234,8 @@ export function pruneToolOutputs(
       const stub: ToolOutputElisionStub = {
         lightcodeElided: true,
         note: isStaleRead
-          ? "Earlier read of this file elided; a later read in this conversation has the current content. Re-run read_file if needed."
-          : "Large tool output elided to preserve context budget. Re-run the tool if this output is needed again.",
+          ? "Earlier read of this file elided; its current content is already shown later in this conversation — do not read it again."
+          : "Large tool output elided to preserve context budget. Re-run the tool only if this output is needed again.",
         originalChars: serializedOutput.length,
       };
 
@@ -215,6 +260,7 @@ export function pruneToolOutputs(
     messages: prunedMessages,
     elidedToolOutputs,
     dedupedFileReads,
+    elidedProgressNotes,
     savedChars,
   };
 }
