@@ -1,6 +1,7 @@
 {
   "name": "lightcode",
   "version": "0.1.0",
+  "private": true,
   "description": "Lightcode — a personal AI coding agent with a terminal UI and local session storage.",
   "type": "module",
   "license": "MIT",
@@ -20,7 +21,7 @@
     "db:push:accept-data-loss": "bunx --bun prisma db push --config packages/db/prisma.config.ts --accept-data-loss",
     "db:generate": "bunx --bun prisma generate --config packages/db/prisma.config.ts",
     "db:validate": "bunx --bun prisma validate --config packages/db/prisma.config.ts",
-    "postinstall": "bun scripts/postinstall.ts",
+    "postinstall": "bun scripts/postinstall.ts || exit 0",
     "server:dev": "bun --watch --env-file=.env apps/server/src/index.ts",
     "server:start": "bun --env-file=.env apps/server/src/index.ts",
     "cli:dev": "bun apps/cli/src/index.tsx",
