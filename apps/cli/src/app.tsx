@@ -1,4 +1,4 @@
-import { TextAttributes } from "@opentui/core";
+import { TextAttributes, typeRole } from "./ui/cli-theme";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import { useEffect, useRef, useState } from "react";
 import { MemoryRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
@@ -103,6 +103,8 @@ function AppContent() {
     configRefreshNonce,
     toggleToolOutputExpansion,
     toggleReasoningExpansion,
+    toggleChangesPanel,
+    editorActive,
   } = useAppState();
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -192,6 +194,9 @@ function AppContent() {
       case "system:toggleReasoning":
         toggleReasoningExpansion();
         break;
+      case "system:toggleChangesPanel":
+        toggleChangesPanel();
+        break;
       case "system:cancel":
         if (helpOpen) {
           setHelpOpen(false);
@@ -214,10 +219,10 @@ function AppContent() {
   );
 
   const isDownKey = (keyEvent: KeyboardEventLike) =>
-    isDownKeyName(keyEvent.name, { vim: !keyEvent.ctrl });
+    isDownKeyName(keyEvent.name, { vim: false });
 
   const isUpKey = (keyEvent: KeyboardEventLike) =>
-    isUpKeyName(keyEvent.name, { vim: !keyEvent.ctrl });
+    isUpKeyName(keyEvent.name, { vim: false });
 
   const isEnterKey = (keyEvent: KeyboardEventLike) =>
     isEnterKeyName(keyEvent.name);
@@ -300,6 +305,13 @@ function AppContent() {
       return;
     }
 
+    // While the in-panel file editor is active, the focused editor textarea owns
+    // every other key (typing, Esc, Ctrl+S). Yield so Esc doesn't navigate back
+    // and shortcuts don't fire mid-edit.
+    if (editorActive) {
+      return;
+    }
+
     if (slashMenuOpen) {
       handleSlashMenuKeyDown(keyEvent);
       return;
@@ -370,7 +382,7 @@ function AppContent() {
                   : "offline"
             }
           />
-          <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>Lightcode</text>
+          <text {...typeRole("display")}>Lightcode</text>
           {configBadge.status === "available" ? (
             <text fg={cliTheme.text.secondary}>
               · {configBadge.provider} · {configBadge.model}

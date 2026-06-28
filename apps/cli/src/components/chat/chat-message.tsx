@@ -1,5 +1,5 @@
 import { isToolUIPart, type UIMessage } from "ai";
-import { TextAttributes } from "@opentui/core";
+import { TextAttributes, typeRole } from "../../ui/cli-theme";
 import { ChatMessageErrorPart } from "./chat-message-error-part";
 import { ChatMessageReasoningPart } from "./chat-message-reasoning-part";
 import { ChatMessageTextPart } from "./chat-message-text-part";
@@ -83,7 +83,7 @@ export function ChatMessage({ message, pendingApprovalIds }: ChatMessageProps) {
       borderColor={roleStyle.borderColor}
       backgroundColor={roleStyle.backgroundColor}
     >
-      <text fg={roleStyle.labelColor} attributes={TextAttributes.BOLD}>
+      <text fg={roleStyle.labelColor} attributes={typeRole("title").attributes}>
         {`${ROLE_GLYPHS[message.role]} ${ROLE_LABELS[message.role]}`}
       </text>
       <box

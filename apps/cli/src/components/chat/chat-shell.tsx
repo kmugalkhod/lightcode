@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { TextAttributes } from "@opentui/core";
+import { typeRole } from "../../ui/cli-theme";
 import { ChatMessageErrorPart } from "./chat-message-error-part";
 import { cliTheme, space, borderStyleFor } from "../../ui/cli-theme";
 
@@ -11,6 +11,10 @@ interface ChatShellProps {
   emptyStateLabel?: string;
   errorMessage?: string | null;
   inputArea: ReactNode;
+  /** Optional control rendered at the top-right of the header (e.g. panel toggle). */
+  headerRight?: ReactNode;
+  /** Active-pane focus ring (IDE layout): amber border when this pane has focus. */
+  focused?: boolean;
 }
 
 export function ChatShell({
@@ -21,22 +25,25 @@ export function ChatShell({
   emptyStateLabel = "Send a prompt to start chatting.",
   errorMessage,
   inputArea,
+  headerRight,
+  focused = false,
 }: ChatShellProps) {
   const statusLabel = `${messageCount} message${messageCount === 1 ? "" : "s"}`;
 
   return (
     <box width="100%" height="100%" flexDirection="column" gap={1}>
-      <box width="100%" flexDirection="row" justifyContent="space-between" paddingX={1}>
-        <text fg={cliTheme.text.secondary} attributes={TextAttributes.BOLD}>
-          {title}
-        </text>
-        <text fg={cliTheme.text.muted}>{statusLabel}</text>
+      <box width="100%" flexDirection="row" justifyContent="space-between" alignItems="center" paddingX={1}>
+        <text {...typeRole("title")}>{title}</text>
+        <box flexDirection="row" alignItems="center" gap={2}>
+          <text fg={cliTheme.text.muted}>{statusLabel}</text>
+          {headerRight}
+        </box>
       </box>
       <box
         width="100%"
         flexGrow={1}
         borderStyle={borderStyleFor.card}
-        borderColor={cliTheme.borders.default}
+        borderColor={focused ? cliTheme.borders.active : cliTheme.borders.default}
         backgroundColor={cliTheme.surfaces.inset}
       >
         <scrollbox
@@ -77,11 +84,9 @@ export function ChatShell({
               justifyContent="center"
               gap={space.xs}
             >
-              <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>
-                ◆ ready
-              </text>
-              <text fg={cliTheme.text.secondary}>{emptyStateLabel}</text>
-              <text fg={cliTheme.text.muted}>
+              <text {...typeRole("emphasis")}>◆ ready</text>
+              <text {...typeRole("secondary")}>{emptyStateLabel}</text>
+              <text {...typeRole("caption")}>
                 Type a message · / for commands · @ to attach files
               </text>
             </box>

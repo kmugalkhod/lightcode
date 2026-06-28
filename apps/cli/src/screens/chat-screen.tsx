@@ -15,7 +15,7 @@ import {
   sessionPathParamsSchema,
 } from "@lightcode/ai";
 import { useCodingSessionChat } from "@lightcode/ai/react";
-import { useKeyboard, useRenderer } from "@opentui/react";
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import type { FileUIPart, UIMessage } from "ai";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
@@ -41,6 +41,23 @@ import {
 } from "../components/chat/chat-interaction-popup";
 import { ChatMessage } from "../components/chat/chat-message";
 import { ChatShell } from "../components/chat/chat-shell";
+import {
+  ChangesTab,
+  EditorPane,
+  ExplorerTree,
+  TabButton,
+  type FileViewMode,
+  type PanelTab,
+} from "../components/chat/file-explorer-panel";
+import { IdeLayout } from "../components/chat/ide-layout";
+import { PanelToggleButton } from "../components/chat/panel-toggle-button";
+import {
+  useChangedFiles,
+  type ChangedFileChangeKind,
+} from "../components/chat/use-changed-files";
+import { useFileTree } from "../components/chat/use-file-tree";
+import { useGitChanges } from "../components/chat/use-git-changes";
+import { useFileContent } from "../components/chat/use-file-content";
 import { PermissionModeSelector } from "../components/chat/permission-mode-selector";
 import { ChatTextArea } from "../components/chat/chat-text-area";
 import { ChatTodoStatusCard } from "../components/chat/chat-todo-status-card";
@@ -57,7 +74,7 @@ import {
 } from "../navigation/route-registry";
 import { coerceSessionRouteLocationState } from "../navigation/route-state";
 import { useAppState } from "../state/app-state";
-import { cliTheme } from "../ui/cli-theme";
+import { borderStyleFor, cliTheme } from "../ui/cli-theme";
 import { estimateContextUsage } from "../utils/chat-context-utils";
 import { appendMentionAttachments } from "../utils/file-mentions";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../utils/key-utils";
@@ -180,6 +197,10 @@ export function ChatScreen() {
     closeSlashMenu,
     requestedChatActionId,
     clearRequestedChatAction,
+    changesPanelOpen,
+    setChangesPanelOpen,
+    toggleChangesPanel,
+    setEditorActive,
   } = useAppState();
 
   const parsedRouteParams = useMemo(
@@ -495,6 +516,243 @@ export function ChatScreen() {
   );
 
   const renderer = useRenderer();
+
+  // IDE layout (Explorer | Editor | Chat). The three panes need a wide terminal;
+  // below this width the IDE is suppressed and the chat fills the screen.
+  const MIN_WIDTH_FOR_PANEL = 100;
+  const { width: terminalWidth } = useTerminalDimensions();
+  const panelFitsTerminal = terminalWidth >= MIN_WIDTH_FOR_PANEL;
+  const panelVisible = changesPanelOpen && panelFitsTerminal;
+
+  // Real git working-tree changes drive the Changes tab + the tree markers.
+  const gitChanges = useGitChanges({ cwd: process.cwd(), enabled: panelVisible });
+  const changesFiles = gitChanges.files;
+  const changedByPath = useMemo(() => {
+    const map = new Map<string, ChangedFileChangeKind>();
+    for (const file of changesFiles) {
+      map.set(file.path, file.changeKind);
+    }
+    return map;
+  }, [changesFiles]);
+  // Files the agent edited this session — used only for a small "agent" badge.
+  const agentChangedFiles = useChangedFiles(messages);
+  const agentTouched = useMemo(
+    () => new Set(agentChangedFiles.map((file) => file.path)),
+    [agentChangedFiles],
+  );
+
+  // Changes-panel selection + focus. Selection is lifted here (not in the panel)
+  // so the keyboard handler can drive it; the panel is presentational.
+  const [selectedChangedPath, setSelectedChangedPath] = useState<string | null>(null);
+  const [changedSelectionPinned, setChangedSelectionPinned] = useState(false);
+  const [panelFocused, setPanelFocused] = useState(false);
+  const [panelTab, setPanelTab] = useState<PanelTab>("files");
+  const [fileView, setFileView] = useState<FileViewMode>("content");
+  // "browse" = read-only viewer; "edit" = the file is open in the editable buffer.
+  const [panelMode, setPanelMode] = useState<"browse" | "edit">("browse");
+  const [fileReloadToken, setFileReloadToken] = useState(0);
+
+  // Editor-style project file tree (Files tab) + open-file tabs.
+  const fileTree = useFileTree({
+    cwd: process.cwd(),
+    enabled: panelVisible && panelTab === "files",
+  });
+  // Open editor tabs (like an IDE). `activeFilePath` is the one shown.
+  const MAX_OPEN_TABS = 8;
+  const [openFiles, setOpenFiles] = useState<string[]>([]);
+  const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+  const openFileContent = useFileContent(
+    activeFilePath,
+    process.cwd(),
+    fileReloadToken,
+  );
+
+  const isEditingFile = panelMode === "edit";
+
+  const openFileTab = useCallback((path: string) => {
+    setOpenFiles((current) =>
+      current.includes(path) ? current : [...current, path].slice(-MAX_OPEN_TABS),
+    );
+    setActiveFilePath(path);
+  }, []);
+
+  // Selecting a file in the tree opens (or focuses) its tab.
+  useEffect(() => {
+    if (fileTree.openFilePath) {
+      openFileTab(fileTree.openFilePath);
+    }
+  }, [fileTree.openFilePath, openFileTab]);
+
+  const selectFileTab = useCallback((path: string) => {
+    setPanelMode("browse");
+    setActiveFilePath(path);
+  }, []);
+
+  const closeFileTab = useCallback((path: string) => {
+    setPanelMode("browse");
+    setOpenFiles((current) => {
+      const index = current.indexOf(path);
+      if (index === -1) {
+        return current;
+      }
+      const next = current.filter((file) => file !== path);
+      setActiveFilePath((active) => {
+        if (active !== path) {
+          return active;
+        }
+        // Activate the nearest remaining tab.
+        return next[index] ?? next[index - 1] ?? null;
+      });
+      return next;
+    });
+  }, []);
+
+  const switchTab = useCallback(
+    (delta: number) => {
+      setActiveFilePath((current) => {
+        if (openFiles.length === 0) {
+          return current;
+        }
+        const index = current ? openFiles.indexOf(current) : -1;
+        const base = index === -1 ? 0 : index;
+        const nextIndex = (base + delta + openFiles.length) % openFiles.length;
+        return openFiles[nextIndex] ?? current;
+      });
+    },
+    [openFiles],
+  );
+
+  // Keep the global key handler in sync so it yields to the focused editor.
+  useEffect(() => {
+    setEditorActive(isEditingFile);
+    return () => setEditorActive(false);
+  }, [isEditingFile, setEditorActive]);
+
+  // Leave edit mode automatically when the panel hides, the tab changes, or no
+  // file is active.
+  useEffect(() => {
+    if (!panelVisible || panelTab !== "files" || !activeFilePath) {
+      setPanelMode("browse");
+    }
+  }, [panelVisible, panelTab, activeFilePath]);
+
+  const exitFileEdit = useCallback(() => setPanelMode("browse"), []);
+  const enterFileEdit = useCallback(() => {
+    const content = openFileContent;
+    if (
+      activeFilePath &&
+      content.path === activeFilePath &&
+      !content.loading &&
+      !content.error
+    ) {
+      setPanelMode("edit");
+    }
+  }, [activeFilePath, openFileContent]);
+  const handleFileSaved = useCallback(() => {
+    // Re-read the file so the read-only view reflects the saved content, and
+    // refresh git so the new change appears in the Changes tab / tree markers.
+    setFileReloadToken((token) => token + 1);
+    gitChanges.refresh();
+  }, [gitChanges]);
+
+  // Auto-refresh git changes when the assistant finishes a turn (it likely
+  // edited files). Separate from the context-state refresh effect so it sits
+  // after gitChanges is declared.
+  const wasStreamingForGitRef = useRef(false);
+  useEffect(() => {
+    if (wasStreamingForGitRef.current && !isStreaming && panelVisible) {
+      gitChanges.refresh();
+    }
+    wasStreamingForGitRef.current = isStreaming;
+  }, [isStreaming, panelVisible, gitChanges]);
+
+  const toggleFileView = useCallback(() => {
+    setFileView((view) => (view === "content" ? "diff" : "content"));
+  }, []);
+
+  // When the active file changes, default the editor view: changed files open
+  // straight to their git diff (git-GUI style), everything else to content.
+  const activeFilePathRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeFilePath !== activeFilePathRef.current) {
+      activeFilePathRef.current = activeFilePath;
+      const isChangedFile =
+        activeFilePath !== null &&
+        changesFiles.some((file) => file.path === activeFilePath);
+      setFileView(isChangedFile ? "diff" : "content");
+    }
+  }, [activeFilePath, changesFiles]);
+
+  // Default-select the first changed file when nothing valid is selected yet
+  // (unless the user pinned a selection).
+  useEffect(() => {
+    if (changedSelectionPinned || changesFiles.length === 0) {
+      return;
+    }
+    setSelectedChangedPath((current) => {
+      if (current && changesFiles.some((file) => file.path === current)) {
+        return current;
+      }
+      return changesFiles[0]!.path;
+    });
+  }, [changedSelectionPinned, changesFiles]);
+
+  // Lazily load the git diff for whatever file is in focus (Changes selection or
+  // the file open in the Files tab).
+  useEffect(() => {
+    if (selectedChangedPath) {
+      gitChanges.requestDiff(selectedChangedPath);
+    }
+  }, [selectedChangedPath, gitChanges]);
+  useEffect(() => {
+    if (activeFilePath) {
+      gitChanges.requestDiff(activeFilePath);
+    }
+  }, [activeFilePath, gitChanges]);
+
+  // Drop focus (and any pin) whenever the panel is hidden so reopening starts
+  // clean and the input regains focus.
+  useEffect(() => {
+    if (!panelVisible) {
+      setPanelFocused(false);
+    }
+  }, [panelVisible]);
+
+  const selectChangedPath = useCallback((path: string) => {
+    setSelectedChangedPath(path);
+    setChangedSelectionPinned(true);
+  }, []);
+
+  // From the IDE sidebar: selecting a changed file also opens it in the center
+  // editor pane, where its full-width diff renders (git-GUI style).
+  const openChangedFile = useCallback(
+    (path: string) => {
+      selectChangedPath(path);
+      openFileTab(path);
+    },
+    [selectChangedPath, openFileTab],
+  );
+
+  const moveChangedSelection = useCallback(
+    (delta: number) => {
+      if (changesFiles.length === 0) {
+        return;
+      }
+      setSelectedChangedPath((current) => {
+        const index = changesFiles.findIndex((file) => file.path === current);
+        if (index === -1) {
+          return changesFiles[0]!.path;
+        }
+        const nextIndex = Math.min(
+          changesFiles.length - 1,
+          Math.max(0, index + delta),
+        );
+        return changesFiles[nextIndex]!.path;
+      });
+      setChangedSelectionPinned(true);
+    },
+    [changesFiles],
+  );
 
   const [copyModeOpen, setCopyModeOpen] = useState(false);
   const [copyModeIndex, setCopyModeIndex] = useState(0);
@@ -833,6 +1091,146 @@ export function ChatScreen() {
       return;
     }
 
+    // While a file is open in the editable buffer, the focused editor textarea
+    // owns every key (typing, Esc, Ctrl+S handled in FileEditor). Don't process
+    // anything here.
+    if (isEditingFile) {
+      return;
+    }
+
+    // While the panel holds focus it owns navigation; the text area is blurred,
+    // so swallow keys here to keep them out of the transcript.
+    if (panelFocused && panelVisible) {
+      const isTab = keyName === "tab" || keyEvent.sequence === "\t";
+      const isRight = keyName === "right" || keyName === "l";
+      const isLeft = keyName === "left" || keyName === "h";
+
+      // Esc leaves the panel; Tab cycles between the Files and Changes tabs.
+      if (isEscapeKey(keyName)) {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        setPanelFocused(false);
+        return;
+      }
+      if (isTab) {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        setPanelTab((tab) => (tab === "files" ? "changes" : "files"));
+        return;
+      }
+
+      if (panelTab === "files") {
+        if (isUpKey(keyName, { vim: true })) {
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          fileTree.moveSelection(-1);
+          return;
+        }
+        if (isDownKey(keyName, { vim: true })) {
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          fileTree.moveSelection(1);
+          return;
+        }
+        if (isRight) {
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          fileTree.expandOrEnter();
+          return;
+        }
+        if (isLeft) {
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          fileTree.collapseOrParent();
+          return;
+        }
+        if (isEnterKey(keyName)) {
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          fileTree.activateSelected();
+          return;
+        }
+        if (keyName === "d") {
+          // Toggle between the file's contents and its diff (changed files).
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          toggleFileView();
+          return;
+        }
+        if (keyName === "e") {
+          // Edit the active file in place (no-op for dirs / unloaded / binary).
+          const content = openFileContent;
+          const editable =
+            activeFilePath !== null &&
+            content.path === activeFilePath &&
+            !content.loading &&
+            !content.error;
+          if (editable) {
+            keyEvent.preventDefault();
+            keyEvent.stopPropagation();
+            setPanelMode("edit");
+          }
+          return;
+        }
+        // [ and ] cycle between open editor tabs.
+        if (keyName === "[" || keyEvent.sequence === "[") {
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          switchTab(-1);
+          return;
+        }
+        if (keyName === "]" || keyEvent.sequence === "]") {
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          switchTab(1);
+          return;
+        }
+        if (keyName === "w" && !keyEvent.ctrl && activeFilePath) {
+          // Close the active tab.
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          closeFileTab(activeFilePath);
+          return;
+        }
+      } else {
+        if (isUpKey(keyName, { vim: true })) {
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          moveChangedSelection(-1);
+          return;
+        }
+        if (isDownKey(keyName, { vim: true })) {
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          moveChangedSelection(1);
+          return;
+        }
+        if (isEnterKey(keyName)) {
+          // Open the selected change in the center editor pane (full-width diff).
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          if (selectedChangedPath) {
+            openChangedFile(selectedChangedPath);
+          }
+          return;
+        }
+        if (keyName === "r") {
+          // Manual git refresh.
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          gitChanges.refresh();
+          return;
+        }
+      }
+
+      // Let F2 reach the global handler so it can still toggle visibility;
+      // swallow everything else so it can't leak into the transcript.
+      if (keyName === "f2") {
+        return;
+      }
+      return;
+    }
+
     const isCtrlY =
       keyName === "y" &&
       keyEvent.ctrl &&
@@ -881,12 +1279,37 @@ export function ChatScreen() {
 
     keyEvent.preventDefault();
     keyEvent.stopPropagation();
+
+    // When the Changes panel is open, plain Tab moves focus into it (Ctrl+T
+    // still cycles the agent mode). Otherwise Tab cycles the mode as before.
+    if (isPlainTab && panelVisible) {
+      setPanelFocused(true);
+      return;
+    }
+
     setMode((currentMode) => cycleCodingAgentMode(currentMode));
   });
 
-  return (
-    <box width="100%" height="100%">
+  // Active-pane focus ring (IDE layout). Exactly one pane carries the amber
+  // border at a time, derived from the existing focus/edit state.
+  const editorFocused = isEditingFile;
+  const explorerFocused = panelFocused && !isEditingFile;
+  const chatFocused = panelVisible && !panelFocused && !isEditingFile;
+
+  // Line count of the file shown in the editor — for the status bar (0 unless
+  // the active file's content is loaded).
+  const activeLineCount =
+    activeFilePath &&
+    openFileContent.path === activeFilePath &&
+    !openFileContent.loading &&
+    !openFileContent.error &&
+    openFileContent.content
+      ? openFileContent.content.split("\n").length
+      : 0;
+
+  const chatShell = (
       <ChatShell
+        focused={chatFocused}
         hasMessages={
           messages.length > 0 ||
           isStreaming ||
@@ -896,11 +1319,20 @@ export function ChatScreen() {
         }
         messageCount={messages.length}
         errorMessage={errorMessage}
+        headerRight={
+          panelFitsTerminal ? (
+            <PanelToggleButton
+              open={panelVisible}
+              count={changesFiles.length}
+              onToggle={toggleChangesPanel}
+            />
+          ) : null
+        }
         inputArea={
           <ChatTextArea
             placeholder={isLoading ? "Waiting for response..." : "Reply... (@ to attach files)"}
-            focused={canTypeInChat && !copyModeOpen}
-            disabled={!canTypeInChat || copyModeOpen}
+            focused={canTypeInChat && !copyModeOpen && !panelFocused && !isEditingFile}
+            disabled={!canTypeInChat || copyModeOpen || panelFocused || isEditingFile}
             slashMenuOpen={slashMenuOpen}
             mentionCandidates={mentionCandidates}
             onTextChange={syncSlashMenuFromInput}
@@ -915,6 +1347,14 @@ export function ChatScreen() {
               <box flexDirection="row" justifyContent="space-between">
                 {copyModeOpen ? (
                   <text fg={cliTheme.text.muted}>Copy mode: ↑/↓ select · Enter copy · c code · Esc exit</text>
+                ) : panelFocused ? (
+                  <text fg={cliTheme.text.muted}>
+                    {panelTab === "files"
+                      ? "Files: ↑/↓ move · →/Enter open · e edit · [ ] tabs · w close · d diff · Tab switch · Esc back"
+                      : "Changes: ↑/↓ select · Enter open diff · r refresh · Tab switch · Esc back"}
+                  </text>
+                ) : panelVisible ? (
+                  <text fg={cliTheme.text.muted}>IDE · Tab focus Explorer · click ✎ edit · F2 exit · Enter send</text>
                 ) : canRetryRecoverableResponse ? (
                   <text fg={cliTheme.text.muted}>
                     {errorMessage && /rate.?limit/i.test(errorMessage)
@@ -1154,6 +1594,99 @@ export function ChatScreen() {
           />
         ) : null}
       </ChatShell>
+  );
+
+  // In IDE mode the chat moves to the right column and the editor takes center
+  // stage; otherwise the chat fills the screen as usual.
+  if (!panelVisible) {
+    return (
+      <box width="100%" height="100%">
+        {chatShell}
+      </box>
+    );
+  }
+
+  const explorerSidebar = (
+    <box
+      width="100%"
+      height="100%"
+      flexDirection="column"
+      borderStyle={borderStyleFor.card}
+      borderColor={explorerFocused ? cliTheme.borders.active : cliTheme.borders.subtle}
+      backgroundColor={cliTheme.surfaces.inset}
+    >
+      <box flexDirection="row" alignItems="center" gap={1} paddingX={1}>
+        <TabButton label="Explorer" active={panelTab === "files"} onPress={() => setPanelTab("files")} />
+        <TabButton
+          label={`Changes${changesFiles.length > 0 ? ` ${changesFiles.length}` : ""}`}
+          active={panelTab === "changes"}
+          onPress={() => setPanelTab("changes")}
+        />
+      </box>
+      <box flexGrow={1} flexDirection="column">
+        {panelTab === "files" ? (
+          <ExplorerTree tree={fileTree} changedByPath={changedByPath} rootPath={process.cwd()} />
+        ) : (
+          <ChangesTab
+            changedFiles={changesFiles}
+            selectedChangePath={selectedChangedPath}
+            onSelectChange={openChangedFile}
+            stickToNewest={!changedSelectionPinned}
+            focused={panelFocused}
+            branch={gitChanges.branch}
+            ahead={gitChanges.ahead}
+            behind={gitChanges.behind}
+            loading={gitChanges.loading}
+            isRepo={gitChanges.isRepo}
+            agentTouched={agentTouched}
+            listOnly
+          />
+        )}
+      </box>
     </box>
+  );
+
+  const editorCenter = (
+    <box
+      width="100%"
+      height="100%"
+      flexDirection="column"
+      borderStyle={borderStyleFor.card}
+      borderColor={editorFocused ? cliTheme.borders.active : cliTheme.borders.subtle}
+      backgroundColor={cliTheme.surfaces.inset}
+    >
+      <EditorPane
+        openFiles={openFiles}
+        activeFilePath={activeFilePath}
+        changedFiles={changesFiles}
+        fileContent={openFileContent}
+        fileView={fileView}
+        onToggleFileView={toggleFileView}
+        editing={isEditingFile}
+        cwd={process.cwd()}
+        onExitEdit={exitFileEdit}
+        onSavedEdit={handleFileSaved}
+        notify={notifyChatAction}
+        onSelectFileTab={selectFileTab}
+        onCloseFileTab={closeFileTab}
+        onEnterEdit={enterFileEdit}
+      />
+    </box>
+  );
+
+  return (
+    <IdeLayout
+      explorer={explorerSidebar}
+      editor={editorCenter}
+      chat={chatShell}
+      onExitIde={() => setChangesPanelOpen(false)}
+      branch={gitChanges.branch}
+      ahead={gitChanges.ahead}
+      behind={gitChanges.behind}
+      activeFilePath={activeFilePath}
+      modeLabel={modeDefinition.label}
+      permissionMode={permissionMode}
+      lineCount={activeLineCount}
+    />
   );
 }

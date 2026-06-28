@@ -1,7 +1,6 @@
-import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { useMemo, useState } from "react";
-import { borderStyleFor, cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
+import { typeRole, borderStyleFor, cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../../utils/key-utils";
 
 interface InteractionOption {
@@ -175,9 +174,7 @@ export function ChatInteractionPopup({
       paddingY={1}
       gap={1}
     >
-      <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>
-        {title}
-      </text>
+      <text {...typeRole("title")}>{title}</text>
       <text fg={cliTheme.text.primary}>{question}</text>
 
       {rows.length > 0 ? (
@@ -197,12 +194,7 @@ export function ChatInteractionPopup({
                   {index + 1}. {row.label}
                 </text>
                 {row.description ? (
-                  <text
-                    fg={rowColors.secondaryTextColor}
-                    attributes={TextAttributes.DIM}
-                  >
-                    {row.description}
-                  </text>
+                  <text {...typeRole("caption")}>{row.description}</text>
                 ) : null}
               </box>
             );
@@ -235,7 +227,7 @@ export function ChatInteractionPopup({
       ) : null}
 
       <box width="100%" flexDirection="row" justifyContent="space-between">
-        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+        <text {...typeRole("caption")}>
           {hintLabel}
         </text>
         <text fg={cliTheme.text.secondary}>{submitLabel}</text>

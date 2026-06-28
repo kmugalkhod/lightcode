@@ -1,4 +1,4 @@
-import { TextAttributes } from "@opentui/core";
+import { TextAttributes, typeRole } from "../ui/cli-theme";
 import { borderStyleFor, cliTheme } from "../ui/cli-theme";
 
 /** Minimal shape the menu needs; satisfied by routes and chat actions. */
@@ -61,9 +61,9 @@ export function SlashPageMenu({
             : `${routes.length} page${routes.length !== 1 ? "s" : ""}`}
         </text>
         <box flexGrow={1} />
-        <text fg={cliTheme.overlay.footerText}>Enter open | </text>
-        <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>Up/Down</text>
-        <text fg={cliTheme.overlay.footerText}> select | Esc close</text>
+        <text {...typeRole("caption")}>Enter open | </text>
+        <text {...typeRole("emphasis")}>Up/Down</text>
+        <text {...typeRole("caption")}> select | Esc close</text>
       </box>
     </box>
   );

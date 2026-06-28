@@ -5,6 +5,7 @@ import {
   TextAttributes,
   type TextareaRenderable,
 } from "@opentui/core";
+import { typeRole } from "../../ui/cli-theme";
 import type { FileUIPart } from "ai";
 import { appendFileSync } from "node:fs";
 import type { ReactNode } from "react";
@@ -356,7 +357,7 @@ export function ChatTextArea({
               {`${index === selectedMentionIndex ? "> " : "  "}${mentionPath}`}
             </text>
           ))}
-          <text fg={cliTheme.overlay.footerText} attributes={TextAttributes.DIM}>
+          <text {...typeRole("caption")}>
             Tab attach | Up/Down select | Esc dismiss
           </text>
         </box>

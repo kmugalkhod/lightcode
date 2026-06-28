@@ -28,3 +28,6 @@ Screenshot*.png
 # Local SQLite scratch databases (created by prisma db push without DATABASE_URL)
 dev.db
 packages/db/dev.db
+
+# Vendored tree-sitter grammars (fetched via `bun scripts/fetch-grammars.ts`)
+apps/cli/assets/grammars/

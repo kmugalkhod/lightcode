@@ -1,5 +1,8 @@
 import type { BorderStyle } from "@opentui/core";
 
+/** Re-export for consumers that want to use attributes directly */
+export { TextAttributes } from "@opentui/core";
+
 export type MessageRole = "user" | "assistant" | "system";
 
 export interface MessageRoleTheme {
@@ -95,6 +98,28 @@ export interface CliTheme {
   };
   markdown: {
     tableBorder: string;
+  };
+  /** Deliberate typographic hierarchy.
+   *  These define roles + suggested attributes instead of ad-hoc BOLD/DIM everywhere.
+   *  Actual rendering still uses color + TextAttributes from OpenTUI.
+   */
+  typography: {
+    /** Highest: brand or major screen title (once per screen) */
+    display: { color: string; attributes: number };
+    /** Page or section header title */
+    title: { color: string; attributes: number };
+    /** Sub-section or subgroup header inside a page */
+    section: { color: string; attributes: number };
+    /** Inline/field label (e.g. table keys, form labels) */
+    label: { color: string; attributes: number };
+    /** Default body / paragraph text */
+    body: { color: string; attributes: number };
+    /** Supporting / secondary body */
+    secondary: { color: string; attributes: number };
+    /** Smallest / captions, hints, metadata */
+    caption: { color: string; attributes: number };
+    /** Strong emphasis callouts (amber, errors, etc.) */
+    emphasis: { color: string; attributes: number };
   };
 }
 
@@ -201,6 +226,24 @@ export const cliTheme: CliTheme = {
   },
   markdown: {
     tableBorder: "#273241",
+  },
+  typography: {
+    /** Display: brand level, used sparingly once per context (e.g. cover title) */
+    display: { color: "accent", attributes: 1 /* BOLD */ },
+    /** Title: primary page or major section header */
+    title: { color: "primary", attributes: 1 /* BOLD */ },
+    /** Section: subsection header within a surface */
+    section: { color: "secondary", attributes: 1 /* BOLD */ },
+    /** Label: row/field labels, table keys */
+    label: { color: "muted", attributes: 0 /* NONE */ },
+    /** Body: default readable text */
+    body: { color: "primary", attributes: 0 },
+    /** Secondary: supporting descriptive text */
+    secondary: { color: "secondary", attributes: 0 },
+    /** Caption: footnotes, hints, meta, dim details */
+    caption: { color: "muted", attributes: 2 /* DIM */ },
+    /** Emphasis: calls-to-action, active states, strong signals */
+    emphasis: { color: "accent", attributes: 1 /* BOLD */ },
   },
 };
 
@@ -320,3 +363,26 @@ export const serverStatusColors = {
   unhealthy: cliTheme.semantic.warning,
   offline: cliTheme.semantic.error,
 } as const;
+
+/** Helpers to resolve typography role values */
+export function getTypographyColor(role: keyof CliTheme["typography"]): string {
+  const entry = cliTheme.typography[role];
+  const ref = entry.color as string;
+  if (ref in cliTheme.text) return (cliTheme.text as any)[ref];
+  if (ref in cliTheme.accent) return (cliTheme.accent as any)[ref];
+  // Fallbacks
+  if (ref === "primary") return cliTheme.text.primary;
+  if (ref === "secondary") return cliTheme.text.secondary;
+  if (ref === "muted") return cliTheme.text.muted;
+  if (ref === "accent") return cliTheme.accent.primary;
+  return cliTheme.text.primary;
+}
+
+export function getTypographyAttributes(role: keyof CliTheme["typography"]): number {
+  return cliTheme.typography[role].attributes;
+}
+
+/** Convenience tuple for a <text> element */
+export function typeRole(role: keyof CliTheme["typography"]): { fg: string; attributes: number } {
+  return { fg: getTypographyColor(role), attributes: getTypographyAttributes(role) };
+}

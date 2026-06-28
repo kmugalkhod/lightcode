@@ -1,7 +1,6 @@
-import { TextAttributes } from "@opentui/core";
 import type { ReasoningUIPart } from "ai";
 import { useAppState } from "../../state/app-state";
-import { cliTheme } from "../../ui/cli-theme";
+import { cliTheme, typeRole } from "../../ui/cli-theme";
 
 interface ChatMessageReasoningPartProps {
   part: ReasoningUIPart;
@@ -19,9 +18,7 @@ export function ChatMessageReasoningPart({ part }: ChatMessageReasoningPartProps
   if (!expandedReasoning) {
     return (
       <box paddingX={1}>
-        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
-          Thinking… (Ctrl+R to view)
-        </text>
+        <text {...typeRole("caption")}>Thinking… (Ctrl+R to view)</text>
       </box>
     );
   }

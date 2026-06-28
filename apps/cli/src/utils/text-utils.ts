@@ -8,6 +8,19 @@ export function truncateInline(text: string, maxLength = 96): string {
   return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
+/**
+ * Truncate a path from the left, keeping the tail (filename) visible. Used for
+ * file lists where the basename matters more than the leading directories.
+ * The ellipsis is configurable so callers can pass an ASCII fallback.
+ */
+export function truncatePathLeft(path: string, maxLength = 40, ellipsis = "…"): string {
+  if (path.length <= maxLength) {
+    return path;
+  }
+  const keep = Math.max(0, maxLength - ellipsis.length);
+  return `${ellipsis}${path.slice(path.length - keep)}`;
+}
+
 export function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {

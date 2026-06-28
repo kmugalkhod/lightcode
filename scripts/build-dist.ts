@@ -8,7 +8,7 @@
  * external and are declared in the generated manifest so native modules
  * (OpenTUI zig libs, libsql) install normally on the target machine.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { lightcodeVersion } from "../packages/shared/src/version";
 
@@ -155,6 +155,14 @@ const cliPath = path.join(distDir, "cli.js");
 const cliSource = readFileSync(cliPath, "utf8");
 if (!cliSource.startsWith("#!")) {
   writeFileSync(cliPath, `#!/usr/bin/env bun\n${cliSource}`, "utf8");
+}
+
+// Copy bundled tree-sitter grammars (if fetched) next to cli.js so the runtime
+// can resolve dist/assets/grammars. Optional — absent when not fetched.
+const grammarsSrc = path.join(repoRoot, "apps", "cli", "assets", "grammars");
+if (existsSync(grammarsSrc)) {
+  cpSync(grammarsSrc, path.join(distDir, "assets", "grammars"), { recursive: true });
+  console.log("Copied tree-sitter grammars into dist/assets/grammars");
 }
 
 // Create a Node-compatible launcher that checks for Bun and fails fast with a clear message.
@@ -327,7 +335,7 @@ writeFileSync(
       license: "MIT",
       bin: { lightcode: "./lightcode.cjs" },
       engines: { bun: ">=1.3.0" },
-      files: ["cli.js", "lightcode.cjs", "server.js", "README.md", "LICENSE"],
+      files: ["cli.js", "lightcode.cjs", "server.js", "assets", "README.md", "LICENSE"],
       // Ship Bun itself so `npm install -g` is self-contained (the npm "bun"
       // package vendors the right native binary per platform). The launcher
       // prefers this bundled Bun and falls back to a system Bun on PATH.

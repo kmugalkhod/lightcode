@@ -1,4 +1,4 @@
-import { TextAttributes } from "@opentui/core";
+import { typeRole } from "../../ui/cli-theme";
 import {
   getToolName,
   type DynamicToolUIPart,
@@ -24,7 +24,7 @@ const previewOutputKeys = [
   "message",
 ] as const;
 
-type AnyToolPart = ToolUIPart<UITools> | DynamicToolUIPart;
+export type AnyToolPart = ToolUIPart<UITools> | DynamicToolUIPart;
 
 interface ChatMessageToolInvocationPartProps {
   part: AnyToolPart;
@@ -80,7 +80,7 @@ function normalizeToolTarget(target: string | null) {
   return target;
 }
 
-function getFileEditDiff(part: AnyToolPart): { path: string; diff: string } | null {
+export function getFileEditDiff(part: AnyToolPart): { path: string; diff: string } | null {
   if (part.state !== "output-available") {
     return null;
   }
@@ -150,7 +150,7 @@ function getOutputPreviewLines(part: AnyToolPart, maxLines: number): string[] {
   return [];
 }
 
-function countDiffStats(diff: string): { added: number; removed: number } {
+export function countDiffStats(diff: string): { added: number; removed: number } {
   let added = 0;
   let removed = 0;
   for (const line of diff.split("\n")) {
@@ -163,7 +163,7 @@ function countDiffStats(diff: string): { added: number; removed: number } {
   return { added, removed };
 }
 
-function basename(path: string): string {
+export function basename(path: string): string {
   const normalized = path.replaceAll("\\", "/");
   const lastSlash = normalized.lastIndexOf("/");
   return lastSlash === -1 ? normalized : normalized.slice(lastSlash + 1);
@@ -267,11 +267,11 @@ export function ChatMessageToolInvocationPart({
       backgroundColor={cliTheme.surfaces.inset}
       gap={fileEditDiff || rawPreviewLines.length > 0 ? 1 : 0}
     >
-      <text fg={stateColor} attributes={TextAttributes.BOLD}>
+      <text {...typeRole("title")} fg={stateColor}>
         {line}
       </text>
       {secondaryParams ? (
-        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+        <text {...typeRole("caption")}>
           {`  ${secondaryParams}`}
         </text>
       ) : null}
@@ -289,8 +289,8 @@ export function ChatMessageToolInvocationPart({
           {`  ${activeGlyphs.indent} ${resultSummary.text}`}
           {hasCollapsedRawOutput ? " · Ctrl+O" : ""}
         </text>
-      ) : hasCollapsedRawOutput ? (
-        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+        ) : hasCollapsedRawOutput ? (
+        <text {...typeRole("caption")}>
           {`  ${activeGlyphs.indent} Ctrl+O to expand`}
         </text>
       ) : null}

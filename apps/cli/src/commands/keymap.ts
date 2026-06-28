@@ -22,6 +22,7 @@ export const keymap: KeymapConfig = {
     "ctrl+c": { sequence: "ctrl+c", action: "system:quit", label: "Quit", category: "system" },
     "ctrl+q": { sequence: "ctrl+q", action: "system:quit", label: "Quit", category: "system" },
     "f1": { sequence: "f1", action: "system:help", label: "Help", category: "system" },
+    "f2": { sequence: "f2", action: "system:toggleChangesPanel", label: "Toggle Changes Panel", category: "action" },
     "ctrl+/": { sequence: "ctrl+/", action: "system:help", label: "Help", category: "system" },
     "ctrl+o": { sequence: "ctrl+o", action: "system:toggleToolOutput", label: "Expand Tool Output", category: "action" },
     "ctrl+r": { sequence: "ctrl+r", action: "system:toggleReasoning", label: "Show Reasoning", category: "action" },

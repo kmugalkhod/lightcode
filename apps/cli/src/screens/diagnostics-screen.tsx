@@ -1,4 +1,4 @@
-import { TextAttributes } from "@opentui/core";
+import { TextAttributes, typeRole } from "../ui/cli-theme";
 import { useKeyboard } from "@opentui/react";
 import {
   diagnosticsDoctorResponseSchema,
@@ -431,9 +431,7 @@ export function DiagnosticsScreen({ kind }: { kind: DiagnosticsScreenKind }) {
   return (
     <box width="100%" height="100%" flexDirection="column" gap={1}>
       <box flexDirection="row" justifyContent="space-between" paddingX={1}>
-        <text fg={cliTheme.text.primary} attributes={TextAttributes.BOLD}>
-          {title}
-        </text>
+        <text {...typeRole("title")}>{title}</text>
         <text fg={cliTheme.text.muted}>
           {isLoading ? "loading..." : "press r to refresh"}
         </text>

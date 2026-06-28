@@ -1,7 +1,6 @@
-import { TextAttributes } from "@opentui/core";
 import type { SessionContextState } from "@lightcode/ai";
 import type { UIMessage } from "ai";
-import { borderStyleFor, cliTheme } from "../../ui/cli-theme";
+import { borderStyleFor, cliTheme, typeRole } from "../../ui/cli-theme";
 import { stripTrailingPeriod, truncateInline } from "../../utils/text-utils";
 
 interface ParsedContextSummary {
@@ -87,9 +86,7 @@ function ContextSummaryFrame({ children }: { children: React.ReactNode }) {
       paddingY={1}
       gap={1}
     >
-      <text fg={cliTheme.semantic.info} attributes={TextAttributes.BOLD}>
-        Context compacted
-      </text>
+      <text {...typeRole("title")}>Context compacted</text>
       {children}
     </box>
   );
@@ -111,10 +108,10 @@ export function ChatContextStateCard({ contextState }: ChatContextStateCardProps
 
   return (
     <ContextSummaryFrame>
-      <text fg={cliTheme.text.secondary}>
+      <text {...typeRole("secondary")}>
         {`${contextState.coveredMessageCount} earlier messages folded into a summary`}
       </text>
-      <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+      <text {...typeRole("caption")}>
         {`${summaryLabel} - full history remains stored and exportable`}
       </text>
     </ContextSummaryFrame>
@@ -143,12 +140,12 @@ export function ChatContextSummaryCard({ message }: ChatContextSummaryCardProps)
       ) : null}
 
       {parsed.metadataLines.map((line) => (
-        <text key={line} fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+        <text {...typeRole("caption")} key={line}>
           {line}
         </text>
       ))}
 
-      <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+      <text {...typeRole("caption")}>
         Recent messages were preserved
       </text>
     </ContextSummaryFrame>

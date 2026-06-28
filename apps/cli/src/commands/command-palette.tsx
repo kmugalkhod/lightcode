@@ -1,4 +1,4 @@
-import { TextAttributes } from "@opentui/core";
+import { TextAttributes, typeRole } from "../ui/cli-theme";
 import { commandRegistry, searchCommands, type Command } from "./command-registry";
 import { borderStyleFor, cliTheme } from "../ui/cli-theme";
 
@@ -40,9 +40,7 @@ export function CommandPalette({ query, setQuery, selectedIndex }: CommandPalett
         borderColor={cliTheme.overlay.border}
       >
         <box flexDirection="row" alignItems="center" gap={1}>
-          <text fg={cliTheme.overlay.title} attributes={TextAttributes.BOLD}>
-            Command Palette
-          </text>
+          <text {...typeRole("display")}>Command Palette</text>
           <box
             backgroundColor={cliTheme.overlay.countBadge}
             paddingX={1}
@@ -216,12 +214,7 @@ interface PaletteHintProps {
 function PaletteHint({ text, description }: PaletteHintProps) {
   return (
     <box flexDirection="row" gap={1} alignItems="center">
-      <text
-        fg={cliTheme.accent.primary}
-        attributes={TextAttributes.BOLD}
-      >
-        {text}
-      </text>
+      <text {...typeRole("emphasis")}>{text}</text>
       <text
         fg={cliTheme.overlay.mutedText}
       >
@@ -245,19 +238,12 @@ function NoCommandsFound({ query }: NoCommandsFoundProps) {
       paddingY={3}
       paddingX={2}
     >
-      <text fg={cliTheme.overlay.footerText} attributes={TextAttributes.BOLD}>
-        No commands found
-      </text>
+      <text {...typeRole("emphasis")}>No commands found</text>
       <box flexDirection="column" alignItems="center" marginTop={1}>
         <text fg={cliTheme.overlay.shortcutHint}>
           No results for "{query}"
         </text>
-        <text
-          fg={cliTheme.overlay.description}
-          marginTop={1}
-        >
-          Try a different search term
-        </text>
+        <text {...typeRole("caption")}>Try a different search term</text>
       </box>
     </box>
   );

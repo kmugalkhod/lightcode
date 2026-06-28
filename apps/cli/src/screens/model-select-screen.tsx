@@ -1,4 +1,4 @@
-import { TextAttributes } from "@opentui/core";
+import { TextAttributes, typeRole } from "../ui/cli-theme";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { ModelSelector } from "../components/chat/model-selector";
@@ -17,9 +17,7 @@ export function ModelSelectScreen() {
 
   return (
     <box width="100%" height="100%" flexDirection="column" gap={1} paddingX={1}>
-      <text fg={cliTheme.text.primary} attributes={TextAttributes.BOLD}>
-        Switch Model
-      </text>
+      <text {...typeRole("title")}>Switch Model</text>
       {notice ? (
         <text
           fg={

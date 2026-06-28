@@ -23,7 +23,20 @@ const renderer = await createCliRenderer({
   // We own Ctrl+C in app.tsx (copy selection / "press again to exit"); the
   // renderer must not hard-quit on it. Ctrl+Q remains an immediate quit.
   exitOnCtrlC: false,
+  // Mouse reporting powers click-to-select copy and the Changes-panel toggle
+  // button. It defaults to true; set explicitly so the dependency is obvious.
+  useMouse: true,
 });
+
+// Register any bundled extra tree-sitter grammars (python, go, rust, …) so the
+// file viewer / diffs highlight them. Fail-closed and non-blocking: absent or
+// broken grammars are skipped, and the wasm loads lazily on first use.
+try {
+  const { registerExtraGrammars } = await import("./ui/register-grammars");
+  registerExtraGrammars();
+} catch {
+  // Highlighting is cosmetic — never let grammar setup block startup.
+}
 
 if (serverLaunch.ownedProcess) {
   const ownedProcess = serverLaunch.ownedProcess;

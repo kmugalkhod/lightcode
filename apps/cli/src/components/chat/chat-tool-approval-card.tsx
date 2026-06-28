@@ -1,4 +1,5 @@
 import { TextAttributes } from "@opentui/core";
+import { typeRole } from "../../ui/cli-theme";
 import { useKeyboard } from "@opentui/react";
 import type {
   PendingToolApproval,
@@ -161,7 +162,7 @@ export function ChatToolApprovalCard({
       gap={1}
     >
       <box width="100%" flexDirection="row" justifyContent="space-between">
-        <text fg={cliTheme.semantic.warning} attributes={TextAttributes.BOLD}>
+        <text fg={cliTheme.semantic.warning} attributes={typeRole("title").attributes}>
           Tool Approval
         </text>
         <text fg={keyboardActive ? cliTheme.accent.primary : cliTheme.text.muted}>

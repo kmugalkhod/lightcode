@@ -32,6 +32,21 @@ export interface AppStateValue {
   /** Global toggle (Ctrl+R): show the model's reasoning in chat. */
   expandedReasoning: boolean;
   toggleReasoningExpansion: () => void;
+  /**
+   * Right-side "Changes" file-explorer panel visibility. Both the F2 keystroke
+   * and the clickable header toggle flip this single boolean so they stay in
+   * sync. Hidden by default.
+   */
+  changesPanelOpen: boolean;
+  setChangesPanelOpen: (open: boolean) => void;
+  toggleChangesPanel: () => void;
+  /**
+   * True while the in-panel file editor owns the keyboard. The global key
+   * handler yields to the focused editor textarea (only Ctrl+C still works) so
+   * typing, Esc, and Ctrl+S reach the editor instead of triggering navigation.
+   */
+  editorActive: boolean;
+  setEditorActive: (active: boolean) => void;
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null);
@@ -98,6 +113,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setExpandedReasoning((expanded) => !expanded);
   }, []);
 
+  const [changesPanelOpen, setChangesPanelOpen] = useState(false);
+
+  const toggleChangesPanel = useCallback(() => {
+    setChangesPanelOpen((open) => !open);
+  }, []);
+
+  const [editorActive, setEditorActive] = useState(false);
+
   const value = useMemo<AppStateValue>(() => ({
     paletteOpen,
     paletteQuery,
@@ -122,6 +145,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     toggleToolOutputExpansion,
     expandedReasoning,
     toggleReasoningExpansion,
+    changesPanelOpen,
+    setChangesPanelOpen,
+    toggleChangesPanel,
+    editorActive,
+    setEditorActive,
   }), [
     paletteOpen,
     paletteQuery,
@@ -142,6 +170,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     toggleToolOutputExpansion,
     expandedReasoning,
     toggleReasoningExpansion,
+    changesPanelOpen,
+    setChangesPanelOpen,
+    toggleChangesPanel,
+    editorActive,
+    setEditorActive,
   ]);
 
   return (

@@ -1,5 +1,5 @@
-import { SyntaxStyle, TextAttributes } from "@opentui/core";
-import { borderStyleFor, cliTheme } from "../../ui/cli-theme";
+import { SyntaxStyle } from "@opentui/core";
+import { typeRole, borderStyleFor, cliTheme } from "../../ui/cli-theme";
 
 const proposedPlanOpenTag = "<proposed_plan>";
 const proposedPlanCloseTag = "</proposed_plan>";
@@ -113,14 +113,10 @@ export function ChatProposedPlanCard({ content }: ChatProposedPlanCardProps) {
     >
       <box width="100%" flexDirection="column" gap={0}>
         <box width="100%" flexDirection="row" justifyContent="space-between">
-          <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>
-            Proposed plan
-          </text>
-          <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
-            {firstHeading ?? "review required"}
-          </text>
+          <text {...typeRole("title")}>Proposed plan</text>
+          <text {...typeRole("caption")}>{firstHeading ?? "review required"}</text>
         </box>
-        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+        <text {...typeRole("caption")}>
           {sections} section{sections !== 1 ? "s" : ""} | {bullets} bullet
           {bullets !== 1 ? "s" : ""}
         </text>
@@ -143,7 +139,7 @@ export function ChatProposedPlanCard({ content }: ChatProposedPlanCardProps) {
           }}
         />
       ) : (
-        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+        <text {...typeRole("caption")}>
           No plan content provided
         </text>
       )}

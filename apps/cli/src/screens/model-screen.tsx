@@ -1,4 +1,4 @@
-import { TextAttributes } from "@opentui/core";
+import { TextAttributes, typeRole } from "../ui/cli-theme";
 import { useKeyboard } from "@opentui/react";
 import { useCallback, useEffect, useState } from "react";
 import { client } from "../lib/client";
@@ -46,9 +46,7 @@ export function ModelScreen() {
   return (
     <box width="100%" height="100%" flexDirection="column" gap={1} paddingX={1}>
       <box flexDirection="row" justifyContent="space-between">
-        <text fg={cliTheme.text.primary} attributes={TextAttributes.BOLD}>
-          Model
-        </text>
+        <text {...typeRole("title")}>Model</text>
         <text fg={cliTheme.text.muted}>
           {isLoading ? "loading..." : "press r to refresh"}
         </text>

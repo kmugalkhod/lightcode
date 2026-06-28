@@ -1,5 +1,5 @@
 import { writeStoredCredentials, type StoredCredentials } from "@lightcode/ai";
-import { TextAttributes } from "@opentui/core";
+import { TextAttributes, typeRole } from "../ui/cli-theme";
 import { useKeyboard } from "@opentui/react";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";

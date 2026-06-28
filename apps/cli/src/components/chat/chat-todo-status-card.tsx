@@ -1,6 +1,5 @@
-import { TextAttributes } from "@opentui/core";
 import type { TodoItem } from "@lightcode/ai";
-import { borderStyleFor, cliTheme } from "../../ui/cli-theme";
+import { typeRole, borderStyleFor, cliTheme, TextAttributes } from "../../ui/cli-theme";
 import { truncateInline } from "../../utils/text-utils";
 
 interface ChatTodoStatusCardProps {
@@ -53,9 +52,7 @@ export function ChatTodoStatusCard({ todos }: ChatTodoStatusCardProps) {
       gap={1}
     >
       <box width="100%" flexDirection="row" justifyContent="space-between">
-        <text fg={cliTheme.semantic.info} attributes={TextAttributes.BOLD}>
-          Session Todo
-        </text>
+        <text {...typeRole("title")}>Session Todo</text>
         <text fg={cliTheme.text.muted}>
           {progressText}
         </text>
@@ -79,11 +76,11 @@ export function ChatTodoStatusCard({ todos }: ChatTodoStatusCardProps) {
                 {truncateInline(label)}
               </text>
               {isActive && todo.activeForm ? (
-                <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+                <text {...typeRole("caption")}>
                   {truncateInline(todo.content)}
                 </text>
               ) : null}
-              <text fg={getStatusColor(todo.status)} attributes={TextAttributes.DIM}>
+              <text {...typeRole("caption")} fg={getStatusColor(todo.status)}>
                 {todoStatusLabel[todo.status]}
               </text>
             </box>

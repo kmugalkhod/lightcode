@@ -1,10 +1,10 @@
-import { TextAttributes } from "@opentui/core";
 import { keymap, type KeyBinding } from "../commands/keymap";
-import { borderStyleFor, cliTheme } from "../ui/cli-theme";
+import { typeRole, borderStyleFor, cliTheme } from "../ui/cli-theme";
 
 const screenHints: Array<{ context: string; hint: string }> = [
   { context: "Chat", hint: "Tab/Ctrl+T switch mode | @ attach files | /compact, /undo actions" },
   { context: "Chat", hint: "Ctrl+O expand tool output | Ctrl+R show reasoning | Enter send | Ctrl+Enter newline" },
+  { context: "IDE", hint: "F2 IDE layout (Explorer · Editor · Chat) | Tab focus Explorer | →/Enter open file | click ✎ or e to edit, Ctrl+S save | [ ] tabs" },
   { context: "Copy", hint: "Ctrl+Y copy mode (↑/↓ pick, Enter copy, c code) | /copy [last|code|all]" },
   { context: "Sessions", hint: "Enter resume | r rename | f fork | / filter | e export (.md) | d delete" },
 ];
@@ -27,17 +27,13 @@ export function HelpOverlay() {
       paddingY={1}
       gap={1}
     >
-      <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>
-        Keyboard reference
-      </text>
+      <text {...typeRole("display")}>Keyboard reference</text>
 
       <box flexDirection="column">
         {bindings.map((binding) => (
           <box key={binding.sequence} flexDirection="row">
-            <text fg={cliTheme.accent.softText} attributes={TextAttributes.BOLD}>
-              {formatSequence(binding).padEnd(10)}
-            </text>
-            <text fg={cliTheme.text.secondary}>{binding.label}</text>
+            <text {...typeRole("label")}>{formatSequence(binding).padEnd(10)}</text>
+            <text {...typeRole("body")}>{binding.label}</text>
           </box>
         ))}
       </box>
@@ -45,17 +41,13 @@ export function HelpOverlay() {
       <box flexDirection="column">
         {screenHints.map((entry, index) => (
           <box key={`${entry.context}-${index}`} flexDirection="row">
-            <text fg={cliTheme.text.muted} attributes={TextAttributes.BOLD}>
-              {entry.context.padEnd(10)}
-            </text>
-            <text fg={cliTheme.text.muted}>{entry.hint}</text>
+            <text {...typeRole("label")}>{entry.context.padEnd(10)}</text>
+            <text {...typeRole("secondary")}>{entry.hint}</text>
           </box>
         ))}
       </box>
 
-      <text fg={cliTheme.overlay.footerText} attributes={TextAttributes.DIM}>
-        Esc or F1 to close
-      </text>
+      <text {...typeRole("caption")}>Esc or F1 to close</text>
     </box>
   );
 }
