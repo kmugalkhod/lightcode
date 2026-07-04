@@ -5,6 +5,7 @@ import { codeSyntaxStyle, inferFiletype } from "../../ui/code-syntax-style";
 import { fileTypeStyle } from "../../ui/file-type-style";
 import { useSpinner } from "../../ui/hooks/use-spinner";
 import { truncatePathLeft } from "../../utils/text-utils";
+import { Breadcrumb } from "./breadcrumb";
 import { ChatDiffCard } from "./chat-diff-card";
 import { FileEditor } from "./file-editor";
 import type { FileContentState } from "./use-file-content";
@@ -168,6 +169,8 @@ export function TabButton({
       onMouseOut={() => setHovered(false)}
     >
       <text
+        wrapMode="none"
+        truncate
         fg={active ? cliTheme.accent.primary : cliTheme.text.muted}
         attributes={active ? typeRole("section").attributes : undefined}
       >
@@ -226,19 +229,21 @@ function ChangedFileRow({
         flexGrow={1}
         paddingX={1}
       >
-        <box flexDirection="row" alignItems="center" gap={1} flexShrink={1}>
-          <text fg={isStreaming ? cliTheme.accent.primary : marker.color}>
-            {isStreaming ? spinner : marker.letter}
-          </text>
-          <text>
+        {/* One text run: the marker/name spacing survives truncation, which a
+            flex gap between sibling texts does not. */}
+        <box flexDirection="row" alignItems="center" flexShrink={1}>
+          <text wrapMode="none" truncate>
+            <span fg={isStreaming ? cliTheme.accent.primary : marker.color}>
+              {`${isStreaming ? spinner : marker.letter} `}
+            </span>
             {shownDir ? <span fg={cliTheme.text.muted}>{shownDir}</span> : null}
             <span fg={cliTheme.text.primary} attributes={typeRole("section").attributes}>
               {base}
             </span>
+            {agentTouched ? (
+              <span fg={cliTheme.accent.primary}>{` ${activeGlyphs.statusDot}`}</span>
+            ) : null}
           </text>
-          {agentTouched ? (
-            <text fg={cliTheme.accent.primary}>{activeGlyphs.statusDot}</text>
-          ) : null}
         </box>
         <box flexDirection="row" alignItems="center" gap={1}>
           {isStreaming ? (
@@ -278,6 +283,7 @@ function GitBranchHeader({
       flexDirection="row"
       justifyContent="space-between"
       alignItems="center"
+      flexShrink={0}
       paddingX={1}
       borderStyle={borderStyleFor.chrome}
       border={["bottom"]}
@@ -334,15 +340,23 @@ export function ChangesTab({
 
   return (
     <>
+      {/* In list-only (IDE sidebar) mode the surrounding pane already draws the
+          card + focus ring, so the list renders frameless to avoid a double border. */}
       <box
         width="100%"
         flexGrow={showDetail ? undefined : 1}
         height={showDetail ? "42%" : undefined}
-        flexShrink={0}
+        flexShrink={listOnly ? 1 : 0}
         flexDirection="column"
-        borderStyle={borderStyleFor.card}
-        borderColor={focused ? cliTheme.borders.active : cliTheme.borders.default}
-        backgroundColor={cliTheme.surfaces.inset}
+        borderStyle={listOnly ? undefined : borderStyleFor.card}
+        borderColor={
+          listOnly
+            ? undefined
+            : focused
+              ? cliTheme.borders.active
+              : cliTheme.borders.default
+        }
+        backgroundColor={listOnly ? undefined : cliTheme.surfaces.inset}
       >
         {isRepo ? <GitBranchHeader branch={branch} ahead={ahead} behind={behind} loading={loading} /> : null}
         {!isRepo ? (
@@ -362,7 +376,7 @@ export function ChangesTab({
             scrollY
             stickyScroll={stickToNewest}
             stickyStart="bottom"
-            contentOptions={{ width: "100%", flexDirection: "column", gap: space.xs }}
+            contentOptions={{ width: "100%", flexDirection: "column" }}
             scrollbarOptions={{
               trackOptions: {
                 foregroundColor: cliTheme.scroll.thumb,
@@ -396,6 +410,7 @@ export function ChangesTab({
             flexDirection="row"
             justifyContent="space-between"
             alignItems="center"
+            flexShrink={0}
             paddingX={1}
             borderStyle={borderStyleFor.chrome}
             border={["bottom"]}
@@ -492,16 +507,20 @@ function TreeRow({
       onMouseOver={() => setHovered(true)}
       onMouseOut={() => setHovered(false)}
     >
+      {/* One text run (guides + caret + name): truncation keeps the leading
+          glyphs and clips the tail, so long names can't tear the tree apart. */}
       <box flexDirection="row" alignItems="center" flexGrow={1} flexShrink={1}>
-        {Array.from({ length: node.depth }, (_, level) => (
-          <text key={level} fg={cliTheme.borders.subtle}>{`${INDENT_GUIDE} `}</text>
-        ))}
-        <text fg={leadColor}>{`${caret} `}</text>
-        <text
-          fg={node.isDir ? cliTheme.accent.softText : cliTheme.text.primary}
-          attributes={node.isDir ? typeRole("section").attributes : undefined}
-        >
-          {node.isDir ? `${node.name}/` : node.name}
+        <text wrapMode="none" truncate>
+          {Array.from({ length: node.depth }, (_, level) => (
+            <span key={level} fg={cliTheme.borders.subtle}>{`${INDENT_GUIDE} `}</span>
+          ))}
+          <span fg={leadColor}>{`${caret} `}</span>
+          <span
+            fg={node.isDir ? cliTheme.accent.softText : cliTheme.text.primary}
+            attributes={node.isDir ? typeRole("section").attributes : undefined}
+          >
+            {node.isDir ? `${node.name}/` : node.name}
+          </span>
         </text>
       </box>
       {marker ? <text fg={marker.color}>{marker.letter}</text> : null}
@@ -610,13 +629,17 @@ function FileEditorView({
         flexDirection="row"
         justifyContent="space-between"
         alignItems="center"
+        flexShrink={0}
+        gap={2}
         paddingX={1}
         borderStyle={borderStyleFor.chrome}
         border={["bottom"]}
         borderColor={cliTheme.borders.subtle}
       >
-        <text {...typeRole("section")}>{truncatePathLeft(openFilePath, 26, ELLIPSIS)}</text>
-        <box flexDirection="row" alignItems="center" gap={1}>
+        <box flexShrink={1} height={1} overflow="hidden">
+          <Breadcrumb path={openFilePath} />
+        </box>
+        <box flexDirection="row" alignItems="center" gap={1} flexShrink={0}>
           {changedFile ? (
             <>
               <text {...typeRole("caption")}>{changeKindLabel(changedFile.changeKind)}</text>
@@ -703,27 +726,27 @@ function EditorTab({
   const base = splitPath(path).base;
   const typeStyle = fileTypeStyle(path);
   const background = active
-    ? cliTheme.surfaces.inset
+    ? cliTheme.accent.softBackground
     : hovered
       ? cliTheme.overlay.hoverBackground
       : "transparent";
 
   return (
+    // flexShrink 0 + no-wrap text: a crowded strip clips at its right edge
+    // instead of squeezing every tab into a wrapped two-line jumble.
     <box
       flexDirection="row"
       alignItems="center"
+      flexShrink={0}
       gap={1}
       paddingX={1}
       backgroundColor={background}
-      borderStyle={borderStyleFor.chrome}
-      border={["bottom"]}
-      borderColor={active ? cliTheme.accent.primary : background}
       onMouseDown={() => onSelect(path)}
       onMouseOver={() => setHovered(true)}
       onMouseOut={() => setHovered(false)}
     >
-      <text fg={active ? typeStyle.color : cliTheme.text.muted}>{typeStyle.tag}</text>
-      <text fg={active ? cliTheme.text.primary : cliTheme.text.secondary}>{base}</text>
+      <text wrapMode="none" truncate fg={active ? typeStyle.color : cliTheme.text.muted}>{typeStyle.tag}</text>
+      <text wrapMode="none" truncate fg={active ? cliTheme.text.primary : cliTheme.text.secondary}>{base}</text>
       <box
         onMouseDown={(event: { stopPropagation?: () => void }) => {
           event.stopPropagation?.();
@@ -758,6 +781,7 @@ function EditorTabStrip({
       flexDirection="row"
       alignItems="center"
       flexShrink={0}
+      height={2}
       overflow="hidden"
       borderStyle={borderStyleFor.chrome}
       border={["bottom"]}
@@ -773,35 +797,6 @@ function EditorTabStrip({
           onSelect={onSelect}
           onClose={onClose}
         />
-      ))}
-    </box>
-  );
-}
-
-/** VS Code-style breadcrumb: src › graph › file.ts */
-function Breadcrumb({ path }: { path: string }) {
-  const segments = path.replaceAll("\\", "/").split("/").filter(Boolean);
-  return (
-    <box
-      flexDirection="row"
-      alignItems="center"
-      gap={1}
-      paddingX={1}
-      flexShrink={0}
-      borderStyle={borderStyleFor.chrome}
-      border={["bottom"]}
-      borderColor={cliTheme.borders.subtle}
-      backgroundColor={cliTheme.surfaces.panel}
-    >
-      {segments.map((segment, index) => (
-        <box key={`${segment}-${index}`} flexDirection="row" alignItems="center" gap={1}>
-          {index > 0 ? <text fg={cliTheme.text.muted}>{activeGlyphs.breadcrumb}</text> : null}
-          <text
-            fg={index === segments.length - 1 ? cliTheme.text.secondary : cliTheme.text.muted}
-          >
-            {segment}
-          </text>
-        </box>
       ))}
     </box>
   );
@@ -904,6 +899,7 @@ export function ExplorerTree({
       <box
         flexDirection="row"
         alignItems="center"
+        flexShrink={0}
         gap={1}
         paddingX={1}
         borderStyle={borderStyleFor.chrome}
@@ -999,7 +995,6 @@ export function EditorPane({
           onClose={onCloseFileTab}
         />
       ) : null}
-      {activeFilePath && !isEditing ? <Breadcrumb path={activeFilePath} /> : null}
       {isEditing && activeFilePath ? (
         <FileEditor
           key={activeFilePath}
@@ -1080,6 +1075,7 @@ export function FileExplorerPanel({
         flexDirection="row"
         justifyContent="space-between"
         alignItems="center"
+        flexShrink={0}
         paddingX={1}
       >
         <box flexDirection="row" alignItems="center" gap={1}>

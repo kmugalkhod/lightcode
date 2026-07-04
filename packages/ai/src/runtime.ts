@@ -3,6 +3,7 @@ export * from "./runtime-registry";
 export * from "./common/output-utils";
 export * from "./common/resolve-within-workspace";
 
+export * from "./agent/toolset";
 export * from "./bash/runtime";
 export * from "./checkpoints/runtime";
 export * from "./edit-file/runtime";

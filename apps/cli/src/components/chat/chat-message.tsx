@@ -86,12 +86,7 @@ export function ChatMessage({ message, pendingApprovalIds }: ChatMessageProps) {
       <text fg={roleStyle.labelColor} attributes={typeRole("title").attributes}>
         {`${ROLE_GLYPHS[message.role]} ${ROLE_LABELS[message.role]}`}
       </text>
-      <box
-        width="100%"
-        flexDirection="column"
-        gap={space.md}
-        paddingTop={space.xs}
-      >
+      <box width="100%" flexDirection="column" gap={space.sm}>
         {renderedParts}
       </box>
     </box>

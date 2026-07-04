@@ -32,7 +32,7 @@ export function ChatShell({
 
   return (
     <box width="100%" height="100%" flexDirection="column" gap={1}>
-      <box width="100%" flexDirection="row" justifyContent="space-between" alignItems="center" paddingX={1}>
+      <box width="100%" flexDirection="row" justifyContent="space-between" alignItems="center" paddingX={1} flexShrink={0}>
         <text {...typeRole("title")}>{title}</text>
         <box flexDirection="row" alignItems="center" gap={2}>
           <text fg={cliTheme.text.muted}>{statusLabel}</text>

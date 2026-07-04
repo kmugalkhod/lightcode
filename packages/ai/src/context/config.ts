@@ -38,6 +38,18 @@ export const contextOptimizerConfigSchema = z
     uncachedPruneAtFraction: z.number().min(0.2).max(0.9).optional(),
     uncachedPruneMinOutputChars: z.number().int().min(200).max(12_000).optional(),
     uncachedQuantizeUserTurns: z.number().int().min(1).max(20).optional(),
+    /**
+     * Rolling compaction for uncached sessions: once the history after the
+     * summary anchor exceeds this many user turns, the oldest turns are folded
+     * into the summary after the turn completes (off the request path), keeping
+     * the per-turn payload flat instead of waiting for context pressure.
+     */
+    uncachedRollingCompactionUserTurns: z
+      .number()
+      .int()
+      .min(2)
+      .max(100)
+      .optional(),
     /** @deprecated Use contextWindowOverride. Kept so older configs still parse. */
     maxInputTokens: z.number().int().min(1).max(10_000_000).optional(),
   })
@@ -60,6 +72,7 @@ export const resolvedContextOptimizerConfigSchema = z.object({
   uncachedPruneAtFraction: z.number().min(0.2).max(0.9),
   uncachedPruneMinOutputChars: z.number().int().min(200).max(12_000),
   uncachedQuantizeUserTurns: z.number().int().min(1).max(20),
+  uncachedRollingCompactionUserTurns: z.number().int().min(2).max(100),
 });
 
 export type ContextOptimizerConfig = z.infer<typeof contextOptimizerConfigSchema>;
@@ -79,6 +92,7 @@ export const defaultContextOptimizerConfig = {
   uncachedPruneAtFraction: 0.45,
   uncachedPruneMinOutputChars: 600,
   uncachedQuantizeUserTurns: 1,
+  uncachedRollingCompactionUserTurns: 10,
 } satisfies ResolvedContextOptimizerConfig;
 
 export function normalizeContextOptimizerConfig(

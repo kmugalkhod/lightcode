@@ -57,6 +57,7 @@ function getToolTarget(input: unknown) {
     Reflect.get(input, "pattern"),
     Reflect.get(input, "revision"),
     Reflect.get(input, "url"),
+    Reflect.get(input, "description"),
   ];
 
   for (const candidate of candidates) {

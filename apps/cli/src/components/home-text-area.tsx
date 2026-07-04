@@ -143,7 +143,7 @@ export function HomeTextArea() {
         footer={
           <box flexDirection="row" justifyContent="space-between">
             <text fg={cliTheme.text.muted}>
-              {isCreatingSession ? "Creating session..." : "Tab/Ctrl+T switch mode | Ctrl+P commands"}
+              {isCreatingSession ? "Creating session..." : "Enter send · Tab switch mode · Ctrl+P commands"}
             </text>
             <text>
               <span fg={cliTheme.accent.primary}>{modeDefinition.label}</span>

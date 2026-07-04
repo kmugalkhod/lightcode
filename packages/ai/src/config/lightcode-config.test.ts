@@ -150,6 +150,7 @@ describe("loadLightcodeConfig", () => {
       uncachedPruneAtFraction: 0.45,
       uncachedPruneMinOutputChars: 600,
       uncachedQuantizeUserTurns: 1,
+      uncachedRollingCompactionUserTurns: 10,
     });
   });
 

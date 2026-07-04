@@ -14,6 +14,7 @@ import {
   codingToolProviderInputSchemas,
   getActiveCodingToolsForPolicy,
 } from "./agent-tools";
+import type { AgentToolInput, AgentToolOutput } from "./agent/schema";
 import { buildCodingAgentSystemPrompt } from "./coding-agent-prompt";
 import { repairCodingAgentToolCall } from "./coding-agent-tool-repair";
 import {
@@ -27,8 +28,51 @@ import {
 
 const codingAgentLogger = createLogger("coding-agent");
 
-export function createCodingAgentTools() {
+/** Per-call context forwarded to server-executed tools (currently `agent`). */
+export interface CodingAgentExecutionContext {
+  cwd: string;
+  parentSessionId?: string;
+}
+
+/**
+ * Server-side runner for the `agent` tool. Runs a subagent loop in a fresh
+ * context and resolves with its capped final summary. Injected by the server
+ * (which owns the model); without a runner the tool call fails cleanly.
+ */
+export type RunSubagentTool = (
+  input: AgentToolInput,
+  context: CodingAgentExecutionContext & { abortSignal?: AbortSignal },
+) => Promise<AgentToolOutput>;
+
+export function createCodingAgentTools(runSubagent?: RunSubagentTool) {
   return {
+    // Unlike every other tool (streamed to the client for local execution),
+    // `agent` executes inside the server loop: the subagent needs the
+    // provider model, which only the server holds.
+    agent: tool({
+      description: codingToolDescriptions.agent,
+      inputSchema: codingToolProviderInputSchemas.agent,
+      strict: true,
+      execute: async (input, { experimental_context, abortSignal }) => {
+        if (!runSubagent) {
+          throw new Error(
+            "The agent tool requires a server-side subagent runner and is unavailable here.",
+          );
+        }
+
+        const context = (experimental_context ?? {}) as
+          Partial<CodingAgentExecutionContext>;
+        if (!context.cwd) {
+          throw new Error("The agent tool is missing its working directory context.");
+        }
+
+        return runSubagent(input as AgentToolInput, {
+          cwd: context.cwd,
+          parentSessionId: context.parentSessionId,
+          abortSignal,
+        });
+      },
+    }),
     list_files: tool({
       description: codingToolDescriptions.list_files,
       inputSchema: codingToolProviderInputSchemas.list_files,
@@ -144,6 +188,8 @@ export interface CreateCodingAgentOptions {
   providerOptions?: SharedV3ProviderOptions;
   /** Append tool-calling discipline for models prone to XML/text tool calls. */
   includeToolDiscipline?: boolean;
+  /** Server-side runner backing the `agent` tool; omit to disable subagents. */
+  runSubagent?: RunSubagentTool;
 }
 
 export function createCodingAgent({
@@ -154,8 +200,9 @@ export function createCodingAgent({
   maxRetries = 5,
   providerOptions,
   includeToolDiscipline = false,
+  runSubagent,
 }: CreateCodingAgentOptions) {
-  const tools = createCodingAgentTools();
+  const tools = createCodingAgentTools(runSubagent);
 
   return new ToolLoopAgent<CodingAgentCallOptions, typeof tools>({
     model,
@@ -200,6 +247,12 @@ export function createCodingAgent({
         messages,
         tools: activeTools.length > 0 ? settings.tools : undefined,
         activeTools: activeTools.length > 0 ? activeTools : undefined,
+        // Server-executed tools (agent) read the per-request context from
+        // here; other tools execute on the client and never see it.
+        experimental_context: {
+          cwd: options.cwd,
+          parentSessionId: options.sessionId,
+        } satisfies CodingAgentExecutionContext,
         instructions: buildCodingAgentSystemPrompt({
           cwd: options.cwd,
           override: promptOverride,

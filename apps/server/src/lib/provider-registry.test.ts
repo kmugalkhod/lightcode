@@ -112,6 +112,60 @@ describe("provider registry", () => {
     });
   });
 
+  test("enables prompt caching for OpenRouter Anthropic-family models", () => {
+    const resolved = resolveConfiguredProviderModel({
+      config: {
+        ...baseConfig,
+        provider: "openrouter",
+        model: "anthropic/claude-sonnet-4.6",
+      },
+      env: { OPENROUTER_API_KEY: "test-openrouter-key" },
+    });
+
+    expect(resolved.supportsPromptCaching).toBe(true);
+    // Top-level cache_control opts in to OpenRouter's automatic Anthropic
+    // breakpoint placement; it is spread to the request body root.
+    expect(resolved.providerOptions).toEqual({
+      openrouter: {
+        provider: {
+          allow_fallbacks: true,
+          require_parameters: true,
+        },
+        cache_control: { type: "ephemeral" },
+      },
+    });
+  });
+
+  test("does not opt non-Anthropic OpenRouter models into cache_control", () => {
+    const resolved = resolveConfiguredProviderModel({
+      config: {
+        ...baseConfig,
+        provider: "openrouter",
+        model: "z-ai/glm-5.2",
+      },
+      env: { OPENROUTER_API_KEY: "test-openrouter-key" },
+    });
+
+    expect(resolved.supportsPromptCaching).toBe(false);
+    expect(resolved.providerOptions).toEqual({
+      openrouter: {
+        provider: {
+          allow_fallbacks: true,
+          require_parameters: true,
+        },
+      },
+    });
+  });
+
+  test("marks direct Anthropic as cache-capable", () => {
+    const resolved = resolveConfiguredProviderModel({
+      config: baseConfig,
+      env: {},
+    });
+
+    expect(resolved.supportsPromptCaching).toBe(true);
+  });
+
   test("does not set provider routing for non-OpenRouter OpenAI-compatible providers", () => {
     const resolved = resolveConfiguredProviderModel({
       config: {

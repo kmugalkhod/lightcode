@@ -1,4 +1,5 @@
 export * from "./agent-tools";
+export * from "./agent/schema";
 export * from "./chat-error";
 export * from "./chat-interaction-schemas";
 export * from "./common/plan-block";
@@ -18,6 +19,7 @@ export * from "./mcp/schema";
 export * from "./permissions";
 export * from "./providers/clamp-output-tokens";
 export * from "./providers/model-metadata";
+export * from "./providers/prompt-cache-middleware";
 export * from "./providers/xml-tool-call-middleware";
 export * from "./plugins/runtime";
 export * from "./plugins/schema";

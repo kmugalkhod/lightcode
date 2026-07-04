@@ -66,6 +66,12 @@ export interface ProviderViewResult {
   inputBudgetTokens: number;
   /** True when a (new) Tier-2 compaction should run before streaming. */
   needsCompaction: boolean;
+  /**
+   * True when an uncached session has accumulated enough user turns past the
+   * anchor that its oldest turns should be folded into the summary — run after
+   * the turn completes (off the request path), independent of context pressure.
+   */
+  needsRollingCompaction: boolean;
   compactionBlockedReason: CompactionBlockedReason | null;
   /** True when the stored summary anchor was found in the incoming history. */
   anchorResolved: boolean;
@@ -194,7 +200,13 @@ export function buildProviderView(
         : 0,
     );
 
-  if (triggerTokens(estimate.tokens) > pruneFraction * inputBudgetTokens) {
+  // Without a cache the full history is re-billed every turn, so waiting for
+  // context pressure only accumulates cost: prune unconditionally from turn 1.
+  const shouldPrune =
+    uncachedActive ||
+    triggerTokens(estimate.tokens) > pruneFraction * inputBudgetTokens;
+
+  if (shouldPrune) {
     tier1 = pruneToolOutputs(providerMessages, {
       preserveRecentMessages: config.preserveRecentMessages,
       minOutputChars: uncachedActive
@@ -203,6 +215,8 @@ export function buildProviderView(
       quantizeUserTurns: uncachedActive
         ? config.uncachedQuantizeUserTurns
         : undefined,
+      dedupeAcrossFullHistory: uncachedActive,
+      elideReasoningParts: uncachedActive,
     });
 
     if (tier1.savedChars > 0) {
@@ -237,8 +251,18 @@ export function buildProviderView(
     triggerTokens(estimate.tokens) >
     config.compactAtFraction * inputBudgetTokens;
 
+  // Rolling trigger for uncached sessions: fold history into the summary once
+  // enough user turns have piled up past the anchor, regardless of pressure —
+  // per-turn input then plateaus at summary + recent window instead of growing.
+  const userTurnsAfterAnchor = messages
+    .slice(afterAnchorIndex)
+    .filter((message) => message.role === "user").length;
+  const rollingThresholdReached =
+    uncachedActive &&
+    userTurnsAfterAnchor > config.uncachedRollingCompactionUserTurns;
+
   let compactionBlockedReason: CompactionBlockedReason | null = null;
-  if (overCompactThreshold) {
+  if (overCompactThreshold || rollingThresholdReached) {
     if (coveredMessages.length === 0) {
       compactionBlockedReason = "not_enough_messages";
     } else if ((options.pendingInteractionCount ?? 0) > 0) {
@@ -259,6 +283,8 @@ export function buildProviderView(
     contextWindow,
     inputBudgetTokens,
     needsCompaction: overCompactThreshold && compactionBlockedReason === null,
+    needsRollingCompaction:
+      rollingThresholdReached && compactionBlockedReason === null,
     compactionBlockedReason,
     anchorResolved,
     coveredMessages,

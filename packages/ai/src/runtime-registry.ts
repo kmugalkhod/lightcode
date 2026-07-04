@@ -113,6 +113,11 @@ const codingToolRuntimes: {
     context: CodingToolRuntimeContext,
   ) => Promise<unknown> | unknown;
 } = {
+  agent: () => {
+    throw new Error(
+      'Tool "agent" runs inside the server agent loop and cannot run in runtime-registry.',
+    );
+  },
   list_files: (input, { workspaceContext }) =>
     executeListFiles(input, workspaceContext),
   glob_search: (input, { workspaceContext }) =>

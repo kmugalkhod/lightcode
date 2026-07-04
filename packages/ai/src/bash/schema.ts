@@ -6,7 +6,7 @@ import {
 import { integerRangeSchema } from "../common/base-schemas";
 
 export const bashDescription =
-  "Run a shell command from workspace root with a timeout. Bound noisy output at the source (head/tail/grep/wc, or write to a file then read a range) rather than dumping everything — output is truncated head+tail and wastes tokens. Commands are classified before execution and may require approval.";
+  "Run a shell command from workspace root with a timeout. Bound noisy output at the source (head/tail/grep/wc) — output is truncated head+tail. Commands may require approval.";
 
 export const bashInputSchema = z.object({
   command: z.string().min(1).max(4000),

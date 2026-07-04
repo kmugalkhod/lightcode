@@ -59,7 +59,10 @@ import {
 import { withSseHeartbeat } from "./sse-heartbeat";
 import { getSessionContextState } from "./context-state-store";
 import { maybeScheduleSessionAutoTitle } from "./session-auto-title";
-import { buildWorkspaceContext } from "./workspace-context";
+import {
+  buildWorkspaceContext,
+  buildWorkspaceContextDelta,
+} from "./workspace-context";
 import {
   chatModelId,
   codingAgent,
@@ -85,6 +88,10 @@ const fastChatRecentMessageCount = 6;
 // advances each round so compaction terminates on its own; this only caps
 // worst-case latency from repeated summarizer calls.
 const MAX_COMPACTION_ROUNDS = 3;
+
+// Sessions with a background rolling compaction in flight. One writer per
+// session at a time; a skipped run is retried after the next turn anyway.
+const rollingCompactionInFlight = new Set<string>();
 
 function isEmptyAssistantMessage(message: UIMessage) {
   return message.role === "assistant" && message.parts.length === 0;
@@ -263,10 +270,10 @@ export async function streamSessionChat(
   }
 
   const contextConfig = lightcodeConfigResult.config.context;
-  // Only Anthropic benefits from prompt caching; elsewhere (OpenRouter, generic
-  // OpenAI-compatible) there is no byte-stable prefix to protect, so Tier-1 may
-  // prune more aggressively.
-  const cacheActive = resolvedProviderModel.provider === "anthropic";
+  // Prompt caching (direct Anthropic, or OpenRouter Anthropic-family with
+  // cache_control set) needs a byte-stable prefix to hit; elsewhere there is
+  // nothing to protect, so Tier-1 may prune more aggressively.
+  const cacheActive = resolvedProviderModel.supportsPromptCaching;
   // The provider counts input + output against the same window, so the input
   // budget must subtract what we reserve for output (resolveMaxOutputTokens
   // grants the model's full advertised cap when the user left the default).
@@ -461,6 +468,62 @@ export async function streamSessionChat(
     noteContextOverflow(sessionId);
   };
 
+  // Rolling compaction for uncached sessions runs after the turn completes so
+  // the summarizer never adds latency to the request path; the next turn picks
+  // up the advanced anchor from SessionContextState. Fire-and-forget.
+  const maybeRunRollingCompaction = async (finishedMessages: UIMessage[]) => {
+    if (cacheActive || !contextConfig.autoCompact) {
+      return;
+    }
+    if (rollingCompactionInFlight.has(sessionId)) {
+      return;
+    }
+
+    rollingCompactionInFlight.add(sessionId);
+    try {
+      const latestState = await loadSessionContextStateSafe(sessionId);
+      const rollingView = buildProviderView({
+        messages: finishedMessages,
+        contextState: latestState,
+        config: contextConfig,
+        modelContextWindow: resolvedProviderModel.contextWindow,
+        reservedOutputTokens,
+        endpointLimitTokens,
+        pendingInteractionCount: await countPendingChatInteractions(sessionId),
+        cacheActive,
+      });
+      if (!rollingView.needsRollingCompaction) {
+        return;
+      }
+
+      const compaction = await compactSessionContext({
+        sessionId,
+        coveredMessages: rollingView.coveredMessages,
+        previousState: latestState,
+        model: resolvedProviderModel.model,
+        modelId: chatModelId,
+        cwd,
+        config: contextConfig,
+        estimatedTokens: rollingView.estimate.tokens,
+      });
+      logger.info("context_rolling_compaction", {
+        sessionId,
+        tier: compaction.state.tier,
+        usedFallback: compaction.usedFallback,
+        coveredMessageCount: compaction.state.coveredMessageCount,
+      });
+    } catch (error) {
+      // Best-effort: a failed roll costs nothing — the pressure-driven inline
+      // loop and the fit-to-budget clamp still bound the next request.
+      logger.error("context_rolling_compaction_failed", {
+        sessionId,
+        error: getErrorMessage(error),
+      });
+    } finally {
+      rollingCompactionInFlight.delete(sessionId);
+    }
+  };
+
   const persistFinishedMessages = async ({
     isAborted,
     isContinuation,
@@ -536,6 +599,10 @@ export async function streamSessionChat(
         sessionId,
         messages: validatedFinishResult.data,
       });
+
+      if (!persistResult.staleSkip) {
+        void maybeRunRollingCompaction(validatedFinishResult.data);
+      }
     } catch (error) {
       logger.error("chat_finish_persist_failed", {
         sessionId,
@@ -567,6 +634,7 @@ export async function streamSessionChat(
         inputTokens: part.totalUsage.inputTokens,
         outputTokens: part.totalUsage.outputTokens,
         totalTokens: part.totalUsage.totalTokens,
+        cachedInputTokens: part.totalUsage.cachedInputTokens,
       },
       modelId: chatModelId,
       finishReason: part.finishReason,
@@ -582,8 +650,15 @@ export async function streamSessionChat(
 
   // Snapshot the workspace once per turn so both paths can make the agent
   // aware of the repo it is running in (reads the cwd instead of asking the
-  // user to paste code). Best-effort; never throws.
-  const environmentContext = await buildWorkspaceContext({ cwd });
+  // user to paste code). Best-effort; never throws. Only the session's first
+  // turn pays for the full snapshot (listing, project docs, skills);
+  // follow-up turns send a compact delta of the parts that drift (git, date).
+  const isFirstAssistantTurn = !validatedMessages.some(
+    (message) => message.role === "assistant",
+  );
+  const environmentContext = isFirstAssistantTurn
+    ? await buildWorkspaceContext({ cwd })
+    : await buildWorkspaceContextDelta({ cwd });
   const availableSkillNames = listSkills({ cwd }).map((skill) => skill.name);
 
   try {
@@ -689,6 +764,7 @@ export async function streamSessionChat(
       uiMessages: providerMessages,
       options: {
         cwd,
+        sessionId,
         mode,
         permissionMode,
         allowedTools,

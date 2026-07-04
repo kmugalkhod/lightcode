@@ -192,8 +192,32 @@ export async function getOpenRouterModelCapabilities(
       supportsNativeTools: model.supportsTools,
       contextLength: model.contextLength ?? undefined,
       maxCompletionTokens: model.maxCompletionTokens,
+      pricing: toCapabilityPricing(model.pricing),
     };
   } catch {
     return undefined;
   }
+}
+
+/**
+ * OpenRouter reports pricing as USD-per-token strings (e.g. "0.000003");
+ * convert to USD per million tokens for display and cost math.
+ */
+function toCapabilityPricing(
+  pricing: OpenRouterModelSummary["pricing"],
+): ProviderModelCapabilities["pricing"] {
+  if (!pricing?.prompt || !pricing.completion) {
+    return null;
+  }
+
+  const promptPerToken = Number.parseFloat(pricing.prompt);
+  const completionPerToken = Number.parseFloat(pricing.completion);
+  if (!Number.isFinite(promptPerToken) || !Number.isFinite(completionPerToken)) {
+    return null;
+  }
+
+  return {
+    inputPerMTok: promptPerToken * 1_000_000,
+    outputPerMTok: completionPerToken * 1_000_000,
+  };
 }

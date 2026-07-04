@@ -17,12 +17,56 @@ import {
   type ProviderModelCapabilities,
   type ResolvedProviderModel,
 } from "./provider-registry";
+import {
+  runSubagentToolTask,
+  type SubagentRunnerDeps,
+} from "./subagent-runner";
 
 const logger = createLogger("runtime-config");
 
 assertProviderToolSchemaBudget();
 
 const codingAgentPromptOverride = Bun.env.LIGHTCODE_CODING_AGENT_SYSTEM_PROMPT;
+
+/**
+ * Model deps for a subagent run: the parent's live model by default, or a
+ * best-effort resolution of the requested override. A bad override silently
+ * falls back — a subagent must never fail just because the model id was wrong.
+ */
+function resolveSubagentDeps(
+  config: LightcodeResolvedConfig,
+  parent: ResolvedProviderModel,
+  modelOverride: string | undefined,
+): SubagentRunnerDeps {
+  if (modelOverride && modelOverride !== parent.resolvedModelId) {
+    try {
+      const resolved = resolveConfiguredProviderModel({
+        config: { ...config, model: modelOverride },
+        env: Bun.env,
+      });
+      if (resolved.missingCredentialHints.length === 0) {
+        return {
+          model: resolved.model,
+          modelId: resolved.resolvedModelId,
+          providerOptions: resolved.providerOptions,
+          maxRetries: config.maxRetries,
+        };
+      }
+    } catch (error) {
+      logger.warn("subagent_model_override_failed", {
+        modelOverride,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    model: parent.model,
+    modelId: parent.resolvedModelId,
+    providerOptions: parent.providerOptions,
+    maxRetries: config.maxRetries,
+  };
+}
 
 function buildCodingAgent(
   config: LightcodeResolvedConfig,
@@ -34,6 +78,12 @@ function buildCodingAgent(
     providerOptions: model.providerOptions,
     maxSteps: config.maxSteps,
     maxRetries: config.maxRetries,
+    runSubagent: (input, context) =>
+      runSubagentToolTask(
+        input,
+        context,
+        resolveSubagentDeps(config, model, input.model),
+      ),
     // Per-model output budget: when left at the default, use the model's full
     // advertised max_completion_tokens (e.g. 512K for minimax-m3) so the model
     // finishes in one turn instead of truncating at a small fixed cap and

@@ -43,7 +43,7 @@ const todoItemProviderSchema = z.object({
     .max(TODO_ACTIVE_FORM_MAX_CHARS)
     .optional()
     .describe(
-      "Short present-tense active label for this task, e.g. \"Adding tests\" or \"Editing schema\". Set it primarily for the in_progress item so the UI can show what's actively happening; the UI falls back to content when omitted.",
+      'Present-tense label shown while in_progress, e.g. "Adding tests".',
     ),
 });
 

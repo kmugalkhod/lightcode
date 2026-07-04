@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   buildWorkspaceContext,
+  buildWorkspaceContextDelta,
   formatAvailableSkills,
 } from "./workspace-context";
 
@@ -59,6 +60,37 @@ describe("buildWorkspaceContext", () => {
 
     expect(block).toContain("Available skills");
     expect(block).toContain("demo-skill: A demo");
+  });
+});
+
+describe("buildWorkspaceContextDelta", () => {
+  test("keeps cwd and git state but drops the bulky first-turn sections", async () => {
+    const dir = await tempDir();
+    await writeFile(
+      path.join(dir, "AGENTS.md"),
+      `Always run bun test.\n${"Project conventions. ".repeat(50)}`,
+    );
+    await mkdir(path.join(dir, "src"));
+
+    const [full, delta] = await Promise.all([
+      buildWorkspaceContext({ cwd: dir }),
+      buildWorkspaceContextDelta({ cwd: dir }),
+    ]);
+
+    expect(delta).toContain("<environment>");
+    expect(delta).toContain(`Working directory: ${dir}`);
+    expect(delta).toContain("Git:");
+    expect(delta).not.toContain("Top-level entries:");
+    expect(delta).not.toContain("Always run bun test.");
+    expect(delta.length).toBeLessThan(full.length);
+    expect(delta.trimEnd().endsWith("</environment>")).toBe(true);
+  });
+
+  test("never throws for a missing directory", async () => {
+    const block = await buildWorkspaceContextDelta({
+      cwd: path.join(tmpdir(), "lc-does-not-exist-xyz"),
+    });
+    expect(block).toContain("<environment>");
   });
 });
 

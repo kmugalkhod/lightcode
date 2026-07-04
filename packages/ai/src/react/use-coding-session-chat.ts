@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   codingToolInputSchemas,
   evaluateCodingToolPermission,
+  isServerExecutedCodingTool,
   resolveCodingPermissionMode,
   type CodingToolInputByName,
   type CodingToolName,
@@ -869,6 +870,12 @@ export function useCodingSessionChat({
       sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
       onToolCall: async ({ toolCall }) => {
         if (toolCall.dynamic || !isCodingToolName(toolCall.toolName)) {
+          return;
+        }
+
+        // Server-executed tools (agent) run inside the server loop; their
+        // output arrives in-stream, so the client must not execute or answer.
+        if (isServerExecutedCodingTool(toolCall.toolName)) {
           return;
         }
 

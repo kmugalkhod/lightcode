@@ -181,6 +181,14 @@ export const lightcodeConfigStatusSchema = z.object({
   autoContinue: resolvedAutoContinueConfigSchema,
   /** Effective context window in tokens (config override or model metadata). */
   contextWindow: z.number().int().positive(),
+  /** Per-token pricing (USD per million tokens); null when unknown. */
+  pricing: z
+    .object({
+      inputPerMTok: z.number().nonnegative(),
+      outputPerMTok: z.number().nonnegative(),
+      cachedInputPerMTok: z.number().nonnegative().nullable(),
+    })
+    .nullable(),
   /** Headroom compressing-proxy facility status. */
   headroom: z.object({
     enabled: z.boolean(),

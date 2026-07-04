@@ -18,6 +18,7 @@ const maxProviderActiveTools = 24;
 
 /** Order in which tools survive the provider cap — core file ops first. */
 const providerToolPriority = [
+  "agent",
   "list_files",
   "glob_search",
   "read_file",

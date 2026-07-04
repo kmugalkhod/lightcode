@@ -1,6 +1,23 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 
+/**
+ * Live chat metrics published by the chat screen so the persistent app
+ * footer can show them from outside the chat route.
+ */
+export interface ChatFooterStatus {
+  /** Context budget used, 0-100. */
+  contextPercentage: number;
+  contextLevel: "normal" | "warning" | "critical";
+  /** Messages folded into the rolling summary; 0 when uncompacted. */
+  compactedMessages: number;
+  /** Cumulative session cost in USD; null when pricing is unknown. */
+  sessionCostUsd: number | null;
+}
+
 export interface AppStateValue {
+  /** Live chat metrics for the footer; null when no chat session is open. */
+  chatFooterStatus: ChatFooterStatus | null;
+  setChatFooterStatus: (status: ChatFooterStatus | null) => void;
   paletteOpen: boolean;
   paletteQuery: string;
   setPaletteQuery: (q: string) => void;
@@ -121,7 +138,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
   const [editorActive, setEditorActive] = useState(false);
 
+  const [chatFooterStatus, setChatFooterStatus] =
+    useState<ChatFooterStatus | null>(null);
+
   const value = useMemo<AppStateValue>(() => ({
+    chatFooterStatus,
+    setChatFooterStatus,
     paletteOpen,
     paletteQuery,
     setPaletteQuery,
@@ -151,6 +173,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     editorActive,
     setEditorActive,
   }), [
+    chatFooterStatus,
     paletteOpen,
     paletteQuery,
     paletteSelected,

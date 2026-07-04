@@ -3,7 +3,7 @@ import { MAX_TOOL_TEXT_OUTPUT_CHARS } from "../constants";
 import { boundedPathSchema, integerRangeSchema, positiveLineSchema } from "../common/base-schemas";
 
 export const readFileDescription =
-  "Read file content from the working directory. Prefer a startLine/endLine range to read only the region you need instead of the whole file — large files are truncated (head+tail) and waste tokens. Raise maxChars only when you truly need more.";
+  "Read file content from the working directory. Prefer a startLine/endLine range over whole files — large files are truncated head+tail.";
 
 export const readFileInputSchema = z
   .object({

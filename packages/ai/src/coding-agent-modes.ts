@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const codingAgentToolNameOrder = [
+  "agent",
   "list_files",
   "glob_search",
   "read_file",
@@ -47,6 +48,7 @@ export const codingAgentModes: Record<CodingAgentMode, CodingAgentModeDefinition
       "You are in build mode. You should plan and execute coding tasks end-to-end, " +
       "including edits and shell commands when needed. Keep progress updates concise and concrete.",
     activeTools: [
+      "agent",
       "list_files",
       "glob_search",
       "read_file",
@@ -77,6 +79,7 @@ export const codingAgentModes: Record<CodingAgentMode, CodingAgentModeDefinition
       "If key information is missing, ask concise structured questions through the request_user_input tool. " +
       "When the plan is final, output it in a <proposed_plan>...</proposed_plan> block and wait for user confirmation before implementation.",
     activeTools: [
+      "agent",
       "list_files",
       "glob_search",
       "read_file",

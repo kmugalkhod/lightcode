@@ -211,6 +211,96 @@ describe("buildProviderView", () => {
     expect(view.compactionBlockedReason).toBe("not_enough_messages");
   });
 
+  test("uncached: prunes old tool outputs from turn 1, with no context pressure", () => {
+    // Tiny history far below every usage fraction; the only trigger is
+    // cacheActive === false. The old bash output (2k chars > uncached 600
+    // threshold) sits outside the default 6-message recent window.
+    const messages = conversation(6, 10);
+    messages[1] = {
+      id: "a0",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-bash",
+          toolCallId: "bash-1",
+          state: "output-available",
+          input: { command: "ls -R" },
+          output: { stdout: "y".repeat(2_000) },
+        } as unknown as UIMessage["parts"][number],
+      ],
+    };
+
+    const cachedView = buildProviderView({
+      messages,
+      contextState: null,
+      config: normalizeContextOptimizerConfig(undefined),
+      cacheActive: true,
+    });
+    // Cached behavior unchanged: no pressure → no pruning.
+    expect(cachedView.tier1).toBeNull();
+
+    const uncachedView = buildProviderView({
+      messages,
+      contextState: null,
+      config: normalizeContextOptimizerConfig(undefined),
+      cacheActive: false,
+    });
+    expect(uncachedView.tier1).not.toBeNull();
+    expect(uncachedView.tier1?.elidedToolOutputs).toBe(1);
+  });
+
+  test("uncached: flags rolling compaction once enough user turns accumulate", () => {
+    // 12 tiny user turns — far below any pressure threshold, above the default
+    // rolling threshold of 10.
+    const messages = conversation(12, 10);
+
+    const cachedView = buildProviderView({
+      messages,
+      contextState: null,
+      config: normalizeContextOptimizerConfig(undefined),
+      cacheActive: true,
+    });
+    expect(cachedView.needsRollingCompaction).toBe(false);
+
+    const uncachedView = buildProviderView({
+      messages,
+      contextState: null,
+      config: normalizeContextOptimizerConfig(undefined),
+      cacheActive: false,
+    });
+    expect(uncachedView.needsCompaction).toBe(false);
+    expect(uncachedView.needsRollingCompaction).toBe(true);
+    expect(uncachedView.coveredMessages.length).toBeGreaterThan(0);
+  });
+
+  test("uncached: rolling compaction respects pending interactions", () => {
+    const view = buildProviderView({
+      messages: conversation(12, 10),
+      contextState: null,
+      config: normalizeContextOptimizerConfig(undefined),
+      cacheActive: false,
+      pendingInteractionCount: 1,
+    });
+
+    expect(view.needsRollingCompaction).toBe(false);
+    expect(view.compactionBlockedReason).toBe("pending_interactions");
+  });
+
+  test("uncached: rolling compaction counts turns after the anchor only", () => {
+    // 12 turns total but the anchor covers through a7 — only 4 user turns
+    // remain past the anchor, below the threshold of 10.
+    const messages = conversation(12, 10);
+    const view = buildProviderView({
+      messages,
+      contextState: { ...contextState, anchorMessageId: "a7" },
+      config: normalizeContextOptimizerConfig(undefined),
+      cacheActive: false,
+    });
+
+    expect(view.anchorResolved).toBe(true);
+    expect(view.needsRollingCompaction).toBe(false);
+  });
+
   test("applies Tier-1 pruning above the prune threshold", () => {
     const messages = conversation(8, 10);
     // Inflate an old assistant message with a huge resolved tool output.

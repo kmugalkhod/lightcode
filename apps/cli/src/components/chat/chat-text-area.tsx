@@ -325,7 +325,9 @@ export function ChatTextArea({
   }, [onTextChange, slashMenuOpen]);
 
   return (
-    <box width="100%" flexDirection="column" gap={1}>
+    // flexShrink 0: in a tight column the transcript scrollbox should absorb
+    // the squeeze — never the input, whose footer would overlap its border.
+    <box width="100%" flexDirection="column" gap={1} flexShrink={0}>
       {beforeInput}
       {mentionMatches.length > 0 ? (
         <box
@@ -362,35 +364,38 @@ export function ChatTextArea({
           </text>
         </box>
       ) : null}
-      <box
-        flexDirection="column"
-        borderStyle={borderStyleFor.card}
-        borderColor={isFocused ? cliTheme.input.focusedBorder : cliTheme.input.blurredBorder}
-        backgroundColor={cliTheme.input.container}
-        paddingX={1}
-        paddingY={1}
-        height={containerHeight}
-        gap={1}
-      >
-        <textarea
-          ref={textareaRef}
-          initialValue=""
-          onKeyDown={handleKeyDown}
-          onSubmit={handleSubmit}
-          onContentChange={handleContentChange}
-          keyBindings={textareaKeyBindings}
-          placeholder={placeholder}
-          width="100%"
-          height={3}
-          wrapMode="word"
-          backgroundColor={cliTheme.input.field}
-          focusedBackgroundColor={cliTheme.input.field}
-          textColor={cliTheme.input.text}
-          cursorColor={cliTheme.input.cursor}
-          placeholderColor={cliTheme.input.placeholder}
-          focused={isFocused}
-        />
-        {footer}
+      {/* The footer hint line lives OUTSIDE the bordered box: inside a fixed
+          `containerHeight` it overflows and gets drawn over the bottom border. */}
+      <box flexDirection="column">
+        <box
+          flexDirection="column"
+          borderStyle={borderStyleFor.card}
+          borderColor={isFocused ? cliTheme.input.focusedBorder : cliTheme.input.blurredBorder}
+          backgroundColor={cliTheme.input.container}
+          paddingX={1}
+          paddingY={1}
+          height={containerHeight}
+        >
+          <textarea
+            ref={textareaRef}
+            initialValue=""
+            onKeyDown={handleKeyDown}
+            onSubmit={handleSubmit}
+            onContentChange={handleContentChange}
+            keyBindings={textareaKeyBindings}
+            placeholder={placeholder}
+            width="100%"
+            height={3}
+            wrapMode="word"
+            backgroundColor={cliTheme.input.field}
+            focusedBackgroundColor={cliTheme.input.field}
+            textColor={cliTheme.input.text}
+            cursorColor={cliTheme.input.cursor}
+            placeholderColor={cliTheme.input.placeholder}
+            focused={isFocused}
+          />
+        </box>
+        {footer ? <box paddingX={1}>{footer}</box> : null}
       </box>
     </box>
   );

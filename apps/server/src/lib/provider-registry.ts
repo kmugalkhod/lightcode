@@ -3,16 +3,19 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import type { LanguageModel } from "ai";
 import {
+  getAnthropicModelPricing,
   getModelContextWindow,
   lightcodeConfigDefaults,
   lightcodeConfigStatusSchema,
   readStoredCredentials,
   resolveContextWindowTokens,
   resolveMaxOutputTokens,
+  withAnthropicPromptCaching,
   withXmlToolCallSupport,
   type LightcodeConfigStatus,
   type LightcodeResolvedConfig,
   type LoadedConfigFile,
+  type ModelPricing,
   type StoredCredentials,
 } from "@lightcode/ai";
 
@@ -23,6 +26,11 @@ export interface ProviderModelCapabilities {
   contextLength?: number;
   /** Max completion tokens the routed provider accepts, when advertised. */
   maxCompletionTokens?: number | null;
+  /** Live per-token pricing (USD per million tokens), when advertised. */
+  pricing?: {
+    inputPerMTok: number;
+    outputPerMTok: number;
+  } | null;
 }
 
 export interface ResolvedProviderModel {
@@ -47,6 +55,14 @@ export interface ResolvedProviderModel {
   needsToolCallDiscipline?: boolean;
   /** Max completion tokens the model accepts, for clamping maxOutputTokens. */
   maxCompletionTokens?: number | null;
+  /**
+   * True when requests to this model benefit from provider prompt caching
+   * (direct Anthropic, or an OpenRouter Anthropic-family passthrough with
+   * cache_control set). Context pruning keeps the prefix byte-stable then.
+   */
+  supportsPromptCaching: boolean;
+  /** Per-token pricing (USD per million tokens); null when unknown. */
+  pricing: ModelPricing | null;
 }
 
 const anthropicModelAliases = {
@@ -103,6 +119,14 @@ function getAnthropicProviderOptions(
 }
 
 /**
+ * Anthropic-family model ids on OpenRouter (e.g. "anthropic/claude-sonnet-4.6")
+ * support prompt caching, but only when the request opts in with cache_control.
+ */
+function isOpenRouterAnthropicFamilyModel(modelId: string): boolean {
+  return modelId.toLowerCase().startsWith("anthropic/");
+}
+
+/**
  * OpenRouter provider-routing preferences, emitted as a top-level `provider`
  * field in the request body (the OpenAI-compatible SDK spreads non-schema
  * `providerOptions.openrouter` keys to the body root). `allow_fallbacks` lets
@@ -113,13 +137,21 @@ function getAnthropicProviderOptions(
  * Deliberately no `sort`/`order`: pinning a sort disables OpenRouter's
  * uptime-aware load balancing and would REDUCE reliability for slow models.
  */
-function getOpenRouterProviderOptions(): SharedV3ProviderOptions {
+function getOpenRouterProviderOptions(modelId: string): SharedV3ProviderOptions {
   return {
     openrouter: {
       provider: {
         allow_fallbacks: true,
         require_parameters: true,
       },
+      // Opportunistic prompt caching: OpenRouter's top-level cache_control
+      // enables automatic breakpoint placement for Anthropic-family upstreams
+      // (it advances breakpoints as the conversation grows). Harmless for
+      // conversations below the cacheable minimum; OpenAI-family upstreams
+      // cache automatically and ignore this.
+      ...(isOpenRouterAnthropicFamilyModel(modelId)
+        ? { cache_control: { type: "ephemeral" } }
+        : {}),
     },
   };
 }
@@ -190,10 +222,37 @@ function resolveAnthropicModel({
     baseUrl,
     effectiveBaseUrl,
     headroomRouted,
-    model: provider(modelId),
+    // Anthropic only caches when breakpoints are marked on the request; the
+    // middleware marks the system message and the final message every call.
+    model: withAnthropicPromptCaching(provider(modelId)),
     providerOptions: getAnthropicProviderOptions(modelId),
     contextWindow: getModelContextWindow("anthropic", modelId),
     missingCredentialHints,
+    supportsPromptCaching: true,
+    pricing: getAnthropicModelPricing(modelId),
+  };
+}
+
+/**
+ * Pricing for an OpenAI-transport model from live catalog capabilities.
+ * Cache-read pricing is only known for Anthropic-family passthroughs (~0.1x
+ * input); other upstreams keep null and cost estimates treat cached tokens
+ * at the full input rate.
+ */
+function resolveCapabilityPricing(
+  capabilities: ProviderModelCapabilities | undefined,
+  cachedInputFactor: number | null,
+): ModelPricing | null {
+  const pricing = capabilities?.pricing;
+  if (!pricing) {
+    return null;
+  }
+
+  return {
+    inputPerMTok: pricing.inputPerMTok,
+    outputPerMTok: pricing.outputPerMTok,
+    cachedInputPerMTok:
+      cachedInputFactor === null ? null : pricing.inputPerMTok * cachedInputFactor,
   };
 }
 
@@ -289,7 +348,9 @@ function resolveOpenAITransportModel({
     model: withXmlToolCallSupport(provider(configuredModel)),
     needsToolCallDiscipline: true,
     // Let OpenRouter fail over to a healthy upstream when one drops a stream.
-    providerOptions: isOpenRouter ? getOpenRouterProviderOptions() : undefined,
+    providerOptions: isOpenRouter
+      ? getOpenRouterProviderOptions(configuredModel)
+      : undefined,
     contextWindow:
       capabilities?.contextLength ??
       getModelContextWindow(config.provider, configuredModel),
@@ -303,6 +364,14 @@ function resolveOpenAITransportModel({
             "Set LIGHTCODE_OPENAI_COMPATIBLE_API_KEY or OPENAI_API_KEY if your OpenAI-compatible endpoint requires authentication.",
           ],
     maxCompletionTokens: capabilities?.maxCompletionTokens ?? null,
+    supportsPromptCaching:
+      isOpenRouter && isOpenRouterAnthropicFamilyModel(configuredModel),
+    pricing: resolveCapabilityPricing(
+      capabilities,
+      isOpenRouter && isOpenRouterAnthropicFamilyModel(configuredModel)
+        ? 0.1
+        : null,
+    ),
   };
 }
 
@@ -363,6 +432,7 @@ export function createConfigStatus({
       config: config.context,
       modelContextWindow: resolvedProviderModel.contextWindow,
     }),
+    pricing: resolvedProviderModel.pricing,
     headroom: {
       enabled: config.headroom?.enabled ?? false,
       proxyUrl: config.headroom?.proxyUrl ?? null,

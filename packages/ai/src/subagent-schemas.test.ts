@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  capSubagentSummary,
+  SUBAGENT_SUMMARY_TOKEN_CAP,
+  subagentProfileTools,
   subagentTaskCreateRequestSchema,
   subagentTaskSchema,
 } from "./subagent-schemas";
+import { codingToolPermissionRequirements } from "./agent-tools";
 
 const parentSessionId = "11111111-1111-4111-8111-111111111111";
 
@@ -49,5 +53,39 @@ describe("subagent task schemas", () => {
 
     expect(parsed.status).toBe("blocked_on_provider");
     expect(parsed.output).toEqual({ summary: "Waiting for provider quota." });
+  });
+});
+
+describe("subagent profiles", () => {
+  test("every profile tool is read-only, so subagents cannot expand permissions", () => {
+    for (const tools of Object.values(subagentProfileTools)) {
+      expect(tools.length).toBeGreaterThan(0);
+      for (const toolName of tools) {
+        expect(codingToolPermissionRequirements[toolName]).toBe("read-only");
+      }
+    }
+  });
+
+  test("no profile grants the agent tool itself (no recursive spawning)", () => {
+    for (const tools of Object.values(subagentProfileTools)) {
+      expect(tools).not.toContain("agent");
+    }
+  });
+});
+
+describe("capSubagentSummary", () => {
+  test("returns short summaries untouched", () => {
+    const result = capSubagentSummary("  All findings fit.  ");
+
+    expect(result).toEqual({ summary: "All findings fit.", truncated: false });
+  });
+
+  test("truncates summaries beyond the token cap and says so", () => {
+    const oversized = "x".repeat(SUBAGENT_SUMMARY_TOKEN_CAP * 4 + 100);
+    const result = capSubagentSummary(oversized);
+
+    expect(result.truncated).toBe(true);
+    expect(result.summary.length).toBeLessThan(oversized.length);
+    expect(result.summary).toContain("summary truncated");
   });
 });

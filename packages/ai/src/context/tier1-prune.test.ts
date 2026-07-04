@@ -5,6 +5,7 @@ import {
   isElidedToolOutput,
   PROGRESS_NOTE_ELISION_STUB,
   pruneToolOutputs,
+  REASONING_ELISION_STUB,
 } from "./tier1-prune";
 
 function getPartText(message: UIMessage, partIndex = 0): unknown {
@@ -243,6 +244,131 @@ describe("pruneToolOutputs", () => {
 
     expect(result.elidedProgressNotes).toBe(0);
     expect(getPartText(result.messages[3], 0)).toBe(longNote);
+  });
+
+  test("dedupes earlier identical grep calls, latest result wins", () => {
+    const grepInput = { pattern: "TODO", path: "src" };
+    const messages = [
+      textMessage("user", "u0", "search"),
+      assistantToolMessage("a1", [
+        toolPart("grep", { toolCallId: "grep-1", input: grepInput, output: smallOutput }),
+      ]),
+      textMessage("user", "u2", "search again"),
+      assistantToolMessage("a3", [
+        toolPart("grep", {
+          toolCallId: "grep-2",
+          input: { ...grepInput },
+          output: smallOutput,
+        }),
+      ]),
+    ];
+
+    const result = pruneToolOutputs(messages, {
+      preserveRecentMessages: 2,
+      quantizeUserTurns: 1,
+      minOutputChars: 100_000,
+    });
+
+    expect(result.dedupedToolCalls).toBe(1);
+    expect(isElidedToolOutput(getToolOutput(result.messages[1]))).toBe(true);
+    expect(getToolOutput(result.messages[3])).toEqual(smallOutput);
+  });
+
+  test("does not dedupe grep calls with different inputs", () => {
+    const messages = [
+      textMessage("user", "u0", "search"),
+      assistantToolMessage("a1", [
+        toolPart("grep", {
+          toolCallId: "grep-1",
+          input: { pattern: "TODO" },
+          output: smallOutput,
+        }),
+      ]),
+      textMessage("user", "u2", "search other"),
+      assistantToolMessage("a3", [
+        toolPart("grep", {
+          toolCallId: "grep-2",
+          input: { pattern: "FIXME" },
+          output: smallOutput,
+        }),
+      ]),
+    ];
+
+    const result = pruneToolOutputs(messages, {
+      preserveRecentMessages: 2,
+      quantizeUserTurns: 1,
+      minOutputChars: 100_000,
+    });
+
+    expect(result.dedupedToolCalls).toBe(0);
+    expect(getToolOutput(result.messages[1])).toEqual(smallOutput);
+  });
+
+  test("full-history dedup elides superseded calls inside the recent window", () => {
+    const messages = [
+      textMessage("user", "u0", "read it twice"),
+      assistantToolMessage("a1", [
+        toolPart("read_file", {
+          toolCallId: "read-1",
+          input: { path: "src/app.ts" },
+          output: smallOutput,
+        }),
+        toolPart("read_file", {
+          toolCallId: "read-2",
+          input: { path: "src/app.ts" },
+          output: smallOutput,
+        }),
+      ]),
+    ];
+
+    const withoutOption = pruneToolOutputs(messages, {
+      preserveRecentMessages: 2,
+      quantizeUserTurns: 1,
+      minOutputChars: 100_000,
+    });
+    expect(withoutOption.dedupedFileReads).toBe(0);
+
+    const withOption = pruneToolOutputs(messages, {
+      preserveRecentMessages: 2,
+      quantizeUserTurns: 1,
+      minOutputChars: 100_000,
+      dedupeAcrossFullHistory: true,
+    });
+
+    expect(withOption.dedupedFileReads).toBe(1);
+    expect(isElidedToolOutput(getToolOutput(withOption.messages[1], 0))).toBe(true);
+    // The latest read keeps its content, and size-based elision never fires in
+    // the recent window even with full-history dedup on.
+    expect(getToolOutput(withOption.messages[1], 1)).toEqual(smallOutput);
+  });
+
+  test("elides reasoning parts outside the window when enabled", () => {
+    const reasoningPart = {
+      type: "reasoning",
+      text: "thinking hard about this ".repeat(20),
+    } as unknown as UIMessage["parts"][number];
+    const messages = [
+      textMessage("user", "u0", "start"),
+      { id: "a1", role: "assistant", parts: [reasoningPart] } as UIMessage,
+      textMessage("user", "u2", "next"),
+      textMessage("assistant", "a3", "done"),
+    ];
+
+    const withoutOption = pruneToolOutputs(messages, {
+      preserveRecentMessages: 2,
+      quantizeUserTurns: 1,
+    });
+    expect(withoutOption.elidedReasoningParts).toBe(0);
+
+    const withOption = pruneToolOutputs(messages, {
+      preserveRecentMessages: 2,
+      quantizeUserTurns: 1,
+      elideReasoningParts: true,
+    });
+
+    expect(withOption.elidedReasoningParts).toBe(1);
+    expect(withOption.savedChars).toBeGreaterThan(0);
+    expect(getPartText(withOption.messages[1], 0)).toBe(REASONING_ELISION_STUB);
   });
 
   test("is idempotent on already-pruned input", () => {

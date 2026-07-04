@@ -29,6 +29,8 @@ export const messageUsageMetadataSchema = z
       inputTokens: z.number().nonnegative().optional(),
       outputTokens: z.number().nonnegative().optional(),
       totalTokens: z.number().nonnegative().optional(),
+      /** Input tokens served from the provider's prompt cache, when reported. */
+      cachedInputTokens: z.number().nonnegative().optional(),
     }),
     modelId: z.string().optional(),
     finishReason: languageModelFinishReasonSchema.optional(),

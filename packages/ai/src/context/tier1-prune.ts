@@ -12,6 +12,16 @@ export const DEFAULT_PRUNE_MIN_OUTPUT_CHARS = 2_000;
 /** Placeholder left in place of an elided progress note. */
 export const PROGRESS_NOTE_ELISION_STUB = "[progress note elided]";
 
+/** Placeholder left in place of an elided reasoning part. */
+export const REASONING_ELISION_STUB = "[reasoning elided]";
+
+/**
+ * Read-only tools whose repeated identical calls are safe to dedupe: the
+ * latest result reflects the current workspace, so earlier copies only cost
+ * tokens. read_file is handled separately (keyed by path, not full args).
+ */
+const IDEMPOTENT_DEDUP_TOOLS = new Set(["grep", "glob_search", "list_files"]);
+
 /**
  * The prune cutoff only advances once every N user turns so the pruned prefix
  * stays byte-stable between requests, keeping provider prompt caches warm.
@@ -28,13 +38,27 @@ export interface Tier1PruneOptions {
   preserveRecentMessages: number;
   minOutputChars?: number;
   quantizeUserTurns?: number;
+  /**
+   * Apply superseded-call dedup to the whole history, including the preserved
+   * recent window. Only safe when no prompt-cache prefix needs byte stability
+   * (the elision can touch any message, not just the quantized prefix).
+   */
+  dedupeAcrossFullHistory?: boolean;
+  /**
+   * Elide reasoning parts outside the recent window. Old chain-of-thought is
+   * never needed to continue a task; only worth the churn when uncached.
+   */
+  elideReasoningParts?: boolean;
 }
 
 export interface Tier1PruneResult {
   messages: UIMessage[];
   elidedToolOutputs: number;
   dedupedFileReads: number;
+  /** Superseded idempotent tool calls (grep/glob/list) elided, latest kept. */
+  dedupedToolCalls: number;
   elidedProgressNotes: number;
+  elidedReasoningParts: number;
   savedChars: number;
 }
 
@@ -115,6 +139,32 @@ export function computePruneCutoffIndex(
   return userIndices[quantizedOrdinal];
 }
 
+/**
+ * Dedup signature for a completed tool call: read_file keys on the normalized
+ * path (a later read of the same file supersedes any earlier one, regardless
+ * of range args), other idempotent tools key on their exact input.
+ */
+function getDedupSignature(part: UIMessagePart): string | null {
+  const toolName = getToolNameFromPart(part);
+  if (!toolName || getPartState(part) !== "output-available") {
+    return null;
+  }
+
+  if (toolName === "read_file") {
+    const key = normalizeReadPathKey(
+      isRecord(part) ? Reflect.get(part, "input") : undefined,
+    );
+    return key ? `read_file:${key}` : null;
+  }
+
+  if (!IDEMPOTENT_DEDUP_TOOLS.has(toolName)) {
+    return null;
+  }
+
+  const input = isRecord(part) ? Reflect.get(part, "input") : undefined;
+  return `${toolName}:${safeStringify(input)}`;
+}
+
 function withElidedOutput(
   part: UIMessagePart,
   stub: ToolOutputElisionStub,
@@ -126,7 +176,7 @@ function withElidedOutput(
 
 /**
  * Tier-1 context pruning: elides large tool outputs outside the recent window
- * and dedupes repeated read_file outputs (latest read wins). Pure and
+ * and dedupes repeated idempotent tool calls (latest result wins). Pure and
  * idempotent — operates on the provider view only and is never persisted.
  */
 export function pruneToolOutputs(
@@ -134,42 +184,39 @@ export function pruneToolOutputs(
   options: Tier1PruneOptions,
 ): Tier1PruneResult {
   const minOutputChars = options.minOutputChars ?? DEFAULT_PRUNE_MIN_OUTPUT_CHARS;
+  const dedupeAcrossFullHistory = options.dedupeAcrossFullHistory ?? false;
+  const elideReasoningParts = options.elideReasoningParts ?? false;
   const cutoff = computePruneCutoffIndex(
     messages,
     options.preserveRecentMessages,
     options.quantizeUserTurns,
   );
 
-  const latestReadByPath = new Map<
+  const latestCallBySignature = new Map<
     string,
     { messageIndex: number; partIndex: number }
   >();
   messages.forEach((message, messageIndex) => {
     message.parts.forEach((part, partIndex) => {
-      if (getToolNameFromPart(part) !== "read_file") {
-        return;
-      }
-
-      if (getPartState(part) !== "output-available") {
-        return;
-      }
-
-      const key = normalizeReadPathKey(
-        isRecord(part) ? Reflect.get(part, "input") : undefined,
-      );
-      if (key) {
-        latestReadByPath.set(key, { messageIndex, partIndex });
+      const signature = getDedupSignature(part);
+      if (signature) {
+        latestCallBySignature.set(signature, { messageIndex, partIndex });
       }
     });
   });
 
   let elidedToolOutputs = 0;
   let dedupedFileReads = 0;
+  let dedupedToolCalls = 0;
   let elidedProgressNotes = 0;
+  let elidedReasoningParts = 0;
   let savedChars = 0;
 
   const prunedMessages = messages.map((message, messageIndex) => {
-    if (messageIndex >= cutoff) {
+    // Above the cutoff (the preserved recent window) only superseded-call
+    // dedup may apply, and only when the caller opted into full-history dedup.
+    const inPrunedRegion = messageIndex < cutoff;
+    if (!inPrunedRegion && !dedupeAcrossFullHistory) {
       return message;
     }
 
@@ -177,12 +224,33 @@ export function pruneToolOutputs(
     // around tool orchestration). A standalone assistant text message with no
     // tool part is the user-facing answer / final summary — never pruned.
     const noteCandidate =
-      message.role === "assistant" && messageHasToolPart(message);
+      inPrunedRegion && message.role === "assistant" && messageHasToolPart(message);
 
     let changed = false;
     const parts = message.parts.map((part, partIndex) => {
       const toolName = getToolNameFromPart(part);
       if (!toolName || getPartState(part) !== "output-available") {
+        if (
+          elideReasoningParts &&
+          inPrunedRegion &&
+          isRecord(part) &&
+          Reflect.get(part, "type") === "reasoning"
+        ) {
+          const text = Reflect.get(part, "text");
+          if (
+            typeof text === "string" &&
+            text !== REASONING_ELISION_STUB &&
+            text.length > REASONING_ELISION_STUB.length
+          ) {
+            elidedReasoningParts += 1;
+            savedChars += text.length - REASONING_ELISION_STUB.length;
+            changed = true;
+            return {
+              ...(part as Record<string, unknown>),
+              text: REASONING_ELISION_STUB,
+            } as UIMessagePart;
+          }
+        }
         if (noteCandidate && toolName === null) {
           const text = getPlainTextPartContent(part);
           if (
@@ -210,37 +278,40 @@ export function pruneToolOutputs(
         return part;
       }
 
-      const readPathKey =
-        toolName === "read_file"
-          ? normalizeReadPathKey(Reflect.get(part, "input"))
-          : null;
-      const latestRead = readPathKey
-        ? latestReadByPath.get(readPathKey)
+      const signature = getDedupSignature(part);
+      const latestCall = signature
+        ? latestCallBySignature.get(signature)
         : undefined;
-      const isStaleRead = Boolean(
-        latestRead &&
+      const isSuperseded = Boolean(
+        latestCall &&
           !(
-            latestRead.messageIndex === messageIndex &&
-            latestRead.partIndex === partIndex
+            latestCall.messageIndex === messageIndex &&
+            latestCall.partIndex === partIndex
           ),
       );
 
       const serializedOutput = safeStringify(output);
-      const isLarge = serializedOutput.length > minOutputChars;
-      if (!isStaleRead && !isLarge) {
+      // Size-based elision stays confined to the pruned region; superseded
+      // duplicates are pure waste anywhere in the history.
+      const isLarge = inPrunedRegion && serializedOutput.length > minOutputChars;
+      if (!isSuperseded && !isLarge) {
         return part;
       }
 
       const stub: ToolOutputElisionStub = {
         lightcodeElided: true,
-        note: isStaleRead
-          ? "Earlier read of this file elided; its current content is already shown later in this conversation — do not read it again."
+        note: isSuperseded
+          ? toolName === "read_file"
+            ? "Earlier read of this file elided; its current content is already shown later in this conversation — do not read it again."
+            : `Earlier identical ${toolName} call elided; its latest result appears later in this conversation — do not re-run it.`
           : "Large tool output elided to preserve context budget. Re-run the tool only if this output is needed again.",
         originalChars: serializedOutput.length,
       };
 
-      if (isStaleRead) {
+      if (isSuperseded && toolName === "read_file") {
         dedupedFileReads += 1;
+      } else if (isSuperseded) {
+        dedupedToolCalls += 1;
       } else {
         elidedToolOutputs += 1;
       }
@@ -260,7 +331,9 @@ export function pruneToolOutputs(
     messages: prunedMessages,
     elidedToolOutputs,
     dedupedFileReads,
+    dedupedToolCalls,
     elidedProgressNotes,
+    elidedReasoningParts,
     savedChars,
   };
 }

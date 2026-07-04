@@ -26,6 +26,12 @@ import {
 } from "./sandbox/config";
 import { classifyBashCommand } from "./bash/command-classification";
 import {
+  agentDescription,
+  agentInputSchema,
+  agentOutputSchema,
+  agentProviderInputSchema,
+} from "./agent/schema";
+import {
   bashDescription,
   bashInputSchema,
   bashOutputSchema,
@@ -154,6 +160,7 @@ export const codingChatRequestSchema = z.object({
 });
 
 export const codingToolDescriptions = {
+  agent: agentDescription,
   list_files: listFilesDescription,
   glob_search: globSearchDescription,
   read_file: readFileDescription,
@@ -177,6 +184,7 @@ export const codingToolDescriptions = {
 } as const;
 
 export const codingToolInputSchemas = {
+  agent: agentInputSchema,
   list_files: listFilesInputSchema,
   glob_search: globSearchInputSchema,
   read_file: readFileInputSchema,
@@ -200,6 +208,7 @@ export const codingToolInputSchemas = {
 } as const;
 
 export const codingToolProviderInputSchemas = {
+  agent: agentProviderInputSchema,
   list_files: listFilesProviderInputSchema,
   glob_search: globSearchProviderInputSchema,
   read_file: readFileProviderInputSchema,
@@ -223,6 +232,7 @@ export const codingToolProviderInputSchemas = {
 } as const;
 
 export const codingToolOutputSchemas = {
+  agent: agentOutputSchema,
   list_files: listFilesOutputSchema,
   glob_search: globSearchOutputSchema,
   read_file: readFileOutputSchema,
@@ -247,6 +257,20 @@ export const codingToolOutputSchemas = {
 
 export type CodingToolName = keyof typeof codingToolInputSchemas;
 
+/**
+ * Tools executed inside the server's agent loop (via a tool `execute`
+ * function) instead of being streamed to the client for local execution. The
+ * client must skip these in its onToolCall handler — their output arrives
+ * in-stream from the server.
+ */
+const serverExecutedCodingToolNames: ReadonlySet<CodingToolName> = new Set([
+  "agent",
+]);
+
+export function isServerExecutedCodingTool(toolName: CodingToolName): boolean {
+  return serverExecutedCodingToolNames.has(toolName);
+}
+
 export type CodingToolInputByName = {
   [K in CodingToolName]: z.infer<(typeof codingToolInputSchemas)[K]>;
 };
@@ -256,6 +280,8 @@ export type CodingToolOutputByName = {
 };
 
 export const codingToolPermissionRequirements = {
+  // Subagents only get read-only tool profiles, so spawning one is read-safe.
+  agent: "read-only",
   list_files: "read-only",
   glob_search: "read-only",
   read_file: "read-only",
@@ -280,6 +306,8 @@ export const codingToolPermissionRequirements = {
 
 export const codingAgentCallOptionsSchema = z.object({
   cwd: z.string().min(1).max(4096),
+  /** Parent chat session id, used to attribute spawned subagent tasks. */
+  sessionId: z.string().min(1).max(200).optional(),
   mode: codingAgentModeSchema.optional(),
   permissionMode: permissionModeSchema.optional(),
   allowedTools: z.array(codingAgentToolNameSchema).optional(),

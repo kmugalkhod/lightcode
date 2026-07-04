@@ -2,11 +2,9 @@ import { z } from "zod";
 import { boundedPathSchema } from "../common/base-schemas";
 
 export const editFileDescription =
-  "Edit a file via search and replace. Use this for focused, small edits. " +
-  "Line endings (CRLF/LF) and surrounding whitespace are matched tolerantly, so " +
-  "copy the lines as shown by read_file. The search text must match exactly one " +
-  "place — include enough surrounding context to make it unique, or set " +
-  "replaceAll: true to change every occurrence.";
+  "Edit a file via search and replace; copy the search text as shown by read_file " +
+  "(whitespace and line endings are matched tolerantly). It must match exactly one " +
+  "place — add surrounding context to disambiguate, or set replaceAll: true.";
 
 export const editFileInputSchema = z.object({
   path: boundedPathSchema,

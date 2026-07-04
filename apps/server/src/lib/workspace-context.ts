@@ -177,3 +177,30 @@ export async function buildWorkspaceContext({
     ? `${block.slice(0, maxBlockChars)}\n… (environment truncated)\n</environment>`
     : block;
 }
+
+/**
+ * Compact per-turn refresh of the environment block. The first turn of a
+ * session gets the full snapshot (directory listing, project docs, skills);
+ * follow-up turns only need what actually drifts mid-session — git state and
+ * the date — so the fixed payload re-sent with every request stays small.
+ */
+export async function buildWorkspaceContextDelta({
+  cwd,
+}: {
+  cwd: string;
+}): Promise<string> {
+  const git = await buildGitSummary(cwd);
+
+  const today = new Date().toISOString().slice(0, 10);
+  return [
+    "<environment>",
+    `Working directory: ${cwd}`,
+    `Platform: ${describePlatform()}`,
+    `Date: ${today}`,
+    "(Full workspace snapshot was provided at the start of this session; current git state below.)",
+    "",
+    "Git:",
+    git,
+    "</environment>",
+  ].join("\n");
+}

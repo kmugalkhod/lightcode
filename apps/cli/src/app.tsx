@@ -21,6 +21,7 @@ import { useConfigBadge } from "./hooks/use-config-badge";
 import { cliTheme } from "./ui/cli-theme";
 import { StatusDot } from "./ui/components/status-dot";
 import { copyText } from "./lib/clipboard";
+import { formatUsd } from "./utils/usage-cost-utils";
 import {
   isBackspaceKey as isBackspaceKeyName,
   isDownKey as isDownKeyName,
@@ -105,6 +106,7 @@ function AppContent() {
     toggleReasoningExpansion,
     toggleChangesPanel,
     editorActive,
+    chatFooterStatus,
   } = useAppState();
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -449,6 +451,27 @@ function AppContent() {
         <text fg={ctrlCNotice ? cliTheme.semantic.warning : cliTheme.text.muted}>
           {ctrlCNotice ?? getFooterStatus()}
         </text>
+        {chatFooterStatus ? (
+          <text
+            fg={
+              chatFooterStatus.contextLevel === "critical"
+                ? cliTheme.semantic.error
+                : chatFooterStatus.contextLevel === "warning"
+                  ? cliTheme.semantic.warning
+                  : cliTheme.text.muted
+            }
+          >
+            {`ctx ${chatFooterStatus.contextPercentage}%`}
+            {chatFooterStatus.compactedMessages > 0
+              ? ` (${chatFooterStatus.compactedMessages} compacted)`
+              : ""}
+          </text>
+        ) : null}
+        {chatFooterStatus && chatFooterStatus.sessionCostUsd !== null ? (
+          <text fg={cliTheme.text.muted}>
+            {formatUsd(chatFooterStatus.sessionCostUsd)}
+          </text>
+        ) : null}
       </box>
     </box>
   );

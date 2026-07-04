@@ -65,7 +65,7 @@ import { ChatToolApprovalCard } from "../components/chat/chat-tool-approval-card
 import { LoadingTimer } from "../components/chat/loading-timer";
 import { CopyModeOverlay } from "../components/chat/copy-mode-overlay";
 import { useAutoContinueConfig } from "../hooks/use-auto-continue-config";
-import { useContextWindow } from "../hooks/use-context-window";
+import { useModelBudgetInfo } from "../hooks/use-context-window";
 import { useLoadingTimer } from "../hooks/use-loading-timer";
 import { client } from "../lib/client";
 import {
@@ -76,6 +76,10 @@ import { coerceSessionRouteLocationState } from "../navigation/route-state";
 import { useAppState } from "../state/app-state";
 import { borderStyleFor, cliTheme } from "../ui/cli-theme";
 import { estimateContextUsage } from "../utils/chat-context-utils";
+import {
+  computeSessionCostUsd,
+  computeUsageCostUsd,
+} from "../utils/usage-cost-utils";
 import { appendMentionAttachments } from "../utils/file-mentions";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../utils/key-utils";
 import { extractCodeBlocks } from "../utils/markdown-code";
@@ -201,6 +205,7 @@ export function ChatScreen() {
     setChangesPanelOpen,
     toggleChangesPanel,
     setEditorActive,
+    setChatFooterStatus,
   } = useAppState();
 
   const parsedRouteParams = useMemo(
@@ -420,7 +425,7 @@ export function ChatScreen() {
   });
 
   const elapsedSeconds = useLoadingTimer(isLoading || isStreaming);
-  const contextWindow = useContextWindow();
+  const { contextWindow, pricing } = useModelBudgetInfo();
   const [mentionCandidates, setMentionCandidates] = useState<string[]>([]);
 
   // Tick once a second while a retry is pending so the backoff notice can count
@@ -952,6 +957,11 @@ export function ChatScreen() {
 
   const modeDefinition = codingAgentModes[mode];
   const contextEstimate = estimateContextUsage(messages, contextWindow);
+  // Session $ from per-model pricing; null (hidden) when pricing is unknown.
+  const sessionCostUsd = useMemo(
+    () => computeSessionCostUsd(messages, pricing),
+    [messages, pricing],
+  );
   const contextMeterColor =
     contextEstimate.level === "critical"
       ? cliTheme.semantic.error
@@ -978,6 +988,33 @@ export function ChatScreen() {
     const text = collectMessageText(lastAssistantMessage);
     return text ? Math.ceil(text.length / 4) : 0;
   })();
+  // Per-turn cost shown next to the token count once the turn's usage lands.
+  const lastTurnCostUsd = lastAssistantMessage
+    ? computeUsageCostUsd(
+        getMessageUsageMetadata(lastAssistantMessage)?.usage,
+        pricing,
+      )
+    : null;
+
+  // Publish live chat metrics for the persistent app footer; cleared on
+  // unmount so other screens don't show a stale meter.
+  useEffect(() => {
+    setChatFooterStatus({
+      contextPercentage: contextEstimate.percentage,
+      contextLevel: contextEstimate.level,
+      compactedMessages: contextState?.coveredMessageCount ?? 0,
+      sessionCostUsd,
+    });
+  }, [
+    contextEstimate.percentage,
+    contextEstimate.level,
+    contextState?.coveredMessageCount,
+    sessionCostUsd,
+    setChatFooterStatus,
+  ]);
+  useEffect(() => {
+    return () => setChatFooterStatus(null);
+  }, [setChatFooterStatus]);
   const modelHasToolCallXmlLeak =
     !isLoading && !isStreaming && lastAssistantMessage
       ? hasToolCallXmlLeak(lastAssistantMessage)
@@ -1320,7 +1357,9 @@ export function ChatScreen() {
         messageCount={messages.length}
         errorMessage={errorMessage}
         headerRight={
-          panelFitsTerminal ? (
+          // Inside the IDE layout the top tab bar already offers Terminal/IDE
+          // switching, so the toggle would be redundant chrome in a tight column.
+          panelFitsTerminal && !panelVisible ? (
             <PanelToggleButton
               open={panelVisible}
               count={changesFiles.length}
@@ -1344,53 +1383,61 @@ export function ChatScreen() {
               />
             ) : null}
             footer={
-              <box flexDirection="row" justifyContent="space-between">
-                {copyModeOpen ? (
-                  <text fg={cliTheme.text.muted}>Copy mode: ↑/↓ select · Enter copy · c code · Esc exit</text>
-                ) : panelFocused ? (
-                  <text fg={cliTheme.text.muted}>
-                    {panelTab === "files"
-                      ? "Files: ↑/↓ move · →/Enter open · e edit · [ ] tabs · w close · d diff · Tab switch · Esc back"
-                      : "Changes: ↑/↓ select · Enter open diff · r refresh · Tab switch · Esc back"}
-                  </text>
-                ) : panelVisible ? (
-                  <text fg={cliTheme.text.muted}>IDE · Tab focus Explorer · click ✎ edit · F2 exit · Enter send</text>
-                ) : canRetryRecoverableResponse ? (
-                  <text fg={cliTheme.text.muted}>
-                    {errorMessage && /rate.?limit/i.test(errorMessage)
-                      ? "Rate-limited — wait a moment, /model to switch, or add provider credits"
-                      : "Type retry or regenerate to try again"}
-                  </text>
-                ) : pendingApprovals.length > 0 ? (
-                  <text fg={cliTheme.text.muted}>Use approval card or approve/deny commands</text>
-                ) : hasBlockingPopup ? (
-                  <text fg={cliTheme.text.muted}>Complete the inline prompt to continue</text>
-                ) : slashMenuOpen ? (
-                  <text fg={cliTheme.text.muted}>Choose a page or press Esc</text>
-                ) : (
-                  <text fg={cliTheme.text.muted}>Enter send · Ctrl+Enter newline</text>
-                )}
-                <box flexDirection="row" gap={1} alignItems="center">
+              <box flexDirection="row" justifyContent="space-between" alignItems="center" gap={2}>
+                {/* The hint shrinks (single row, clipped) so it can never wrap
+                    into the meta cluster in a narrow IDE chat column. */}
+                <box flexShrink={1} height={1} overflow="hidden">
+                  {copyModeOpen ? (
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Copy: ↑/↓ select · Enter copy · c code · Esc exit</text>
+                  ) : panelFocused ? (
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>
+                      {panelTab === "files"
+                        ? "↑/↓ · Enter open · e edit · Esc"
+                        : "↑/↓ · Enter diff · r refresh · Esc"}
+                    </text>
+                  ) : panelVisible ? (
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Enter send · Tab explorer · F2 exit</text>
+                  ) : canRetryRecoverableResponse ? (
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>
+                      {errorMessage && /rate.?limit/i.test(errorMessage)
+                        ? "Rate-limited — wait a moment, /model to switch, or add provider credits"
+                        : "Type retry or regenerate to try again"}
+                    </text>
+                  ) : pendingApprovals.length > 0 ? (
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Use approval card or approve/deny commands</text>
+                  ) : hasBlockingPopup ? (
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Complete the inline prompt to continue</text>
+                  ) : slashMenuOpen ? (
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Choose a page or press Esc</text>
+                  ) : (
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Enter send · Ctrl+Enter newline</text>
+                  )}
+                </box>
+                <box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
                   <text fg={contextMeterColor}>
                     {truncateInline(contextEstimate.displayText, 24)}
                   </text>
-                  <text>
-                    <span fg={cliTheme.accent.primary}>{modeDefinition.label}</span>
-                    <span fg={cliTheme.text.muted}> mode</span>
-                  </text>
-                  <text>
-                    <span fg={cliTheme.text.muted}>·</span>
-                  </text>
-                  <Badge
-                    tone={
-                      permissionMode === "danger-full-access"
-                        ? "error"
-                        : permissionMode === "read-only"
-                          ? "neutral"
-                          : "accent"
-                    }
-                    label={permissionMode ?? "default"}
-                  />
+                  {/* In the IDE layout the status bar already shows mode +
+                      permission; repeating them here just crowds the column. */}
+                  {panelVisible ? null : (
+                    <>
+                      <text>
+                        <span fg={cliTheme.text.muted}>· </span>
+                        <span fg={cliTheme.accent.primary}>{modeDefinition.label}</span>
+                        <span fg={cliTheme.text.muted}> mode</span>
+                      </text>
+                      <Badge
+                        tone={
+                          permissionMode === "danger-full-access"
+                            ? "error"
+                            : permissionMode === "read-only"
+                              ? "neutral"
+                              : "accent"
+                        }
+                        label={permissionMode ?? "default"}
+                      />
+                    </>
+                  )}
                 </box>
               </box>
             }
@@ -1472,6 +1519,7 @@ export function ChatScreen() {
           <LoadingTimer
             elapsedSeconds={elapsedSeconds}
             outputTokens={liveOutputTokens}
+            costUsd={lastTurnCostUsd}
           />
         ) : null}
         {pendingApprovals.length > 0 ? (
@@ -1615,7 +1663,7 @@ export function ChatScreen() {
       borderColor={explorerFocused ? cliTheme.borders.active : cliTheme.borders.subtle}
       backgroundColor={cliTheme.surfaces.inset}
     >
-      <box flexDirection="row" alignItems="center" gap={1} paddingX={1}>
+      <box flexDirection="row" alignItems="center" flexShrink={0} gap={1} paddingX={1}>
         <TabButton label="Explorer" active={panelTab === "files"} onPress={() => setPanelTab("files")} />
         <TabButton
           label={`Changes${changesFiles.length > 0 ? ` ${changesFiles.length}` : ""}`}

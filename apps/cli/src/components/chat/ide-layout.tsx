@@ -113,6 +113,7 @@ export function IdeLayout({
       <box
         flexDirection="row"
         alignItems="center"
+        flexShrink={0}
         gap={1}
         paddingX={1}
         borderStyle={borderStyleFor.chrome}
@@ -120,13 +121,13 @@ export function IdeLayout({
         borderColor={cliTheme.borders.default}
         backgroundColor={cliTheme.surfaces.panel}
       >
-        <TabButton label="Terminal" active={false} underline onPress={onExitIde} />
-        <TabButton label="IDE" active underline onPress={() => {}} />
+        <TabButton label="Terminal" active={false} onPress={onExitIde} />
+        <TabButton label="IDE" active onPress={() => {}} />
         <box flexGrow={1} />
         <text {...typeRole("caption")}>F2 exit IDE</text>
       </box>
 
-      <box flexDirection="row" flexGrow={1} width="100%" gap={1} paddingTop={1}>
+      <box flexDirection="row" flexGrow={1} width="100%" gap={2} paddingX={1} paddingTop={1}>
         <box width="22%" minWidth={22} height="100%" flexDirection="column">
           {explorer}
         </box>
