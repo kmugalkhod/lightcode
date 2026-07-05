@@ -263,9 +263,11 @@ export type CodingToolName = keyof typeof codingToolInputSchemas;
  * client must skip these in its onToolCall handler — their output arrives
  * in-stream from the server.
  */
-const serverExecutedCodingToolNames: ReadonlySet<CodingToolName> = new Set([
-  "agent",
-]);
+const serverExecutedCodingToolNames: ReadonlySet<CodingToolName> = new Set(
+  (Object.keys(codingToolDescriptions) as CodingToolName[]).filter(
+    (toolName) => toolName !== "request_user_input",
+  ),
+);
 
 export function isServerExecutedCodingTool(toolName: CodingToolName): boolean {
   return serverExecutedCodingToolNames.has(toolName);
@@ -315,6 +317,19 @@ export const codingAgentCallOptionsSchema = z.object({
   sandbox: sandboxConfigSchema.optional(),
   /** Per-turn workspace/environment block appended to the system prompt. */
   environmentContext: z.string().optional(),
+  /**
+   * Per-request output ceiling. The agent-level maxOutputTokens is a static
+   * per-model cap; some endpoints (OpenRouter minimax) serve a smaller total
+   * window than the catalog advertises, so input + max_tokens must be clamped
+   * per request against the learned window or the provider hard-rejects (400).
+   */
+  maxOutputTokens: z.number().int().min(1).optional(),
+  /**
+   * Identifies the user turn (derived from the last user message id) so
+   * server-executed file edits group into one checkpoint/undo unit and the
+   * repeat-call guard is scoped per turn, including approval continuations.
+   */
+  turnKey: z.string().min(1).max(200).optional(),
 });
 
 export type CodingAgentCallOptions = z.infer<typeof codingAgentCallOptionsSchema>;

@@ -23,9 +23,19 @@ export function hasDanglingToolParts(messages: readonly UIMessage[]): boolean {
   );
 }
 
+const unansweredApprovalDeniedReason =
+  "The approval request was never answered before the turn ended. Re-issue the tool call if it is still needed.";
+
 /**
  * Rewrites every tool call left without a terminal result to a synthesized
  * error result, so a provider never receives a dangling tool call.
+ *
+ * Approval states are the SDK's pause/resume mechanism for server-executed
+ * tools and are NOT dangling on the trailing assistant message: the follow-up
+ * request resumes from them (`approval-responded` executes the tool). Only
+ * stale approval states buried mid-history — a turn that ended without the
+ * approval round completing — are resolved, to `output-denied` (the provider
+ * sees "the user did not approve", which is accurate) rather than an error.
  *
  * Count-preserving: only part *states* change, never the number of messages,
  * so callers that rely on the message count (e.g. the finished-message merge,
@@ -35,15 +45,60 @@ export function resolveDanglingToolParts(
   messages: readonly UIMessage[],
   errorText = interruptedToolErrorText,
 ): UIMessage[] {
-  return messages.map((message) => {
+  const lastAssistantIndex = messages.findLastIndex(
+    (message) => message.role === "assistant",
+  );
+
+  return messages.map((message, messageIndex) => {
     if (message.role !== "assistant") {
       return message as UIMessage;
     }
+
+    const isTrailingAssistant = messageIndex === lastAssistantIndex;
 
     let changed = false;
     const parts = message.parts.map((part) => {
       if (!isToolUIPart(part) || terminalToolStates.has(part.state)) {
         return part;
+      }
+
+      if (
+        part.state === "approval-requested" ||
+        part.state === "approval-responded"
+      ) {
+        // Trailing approvals are live resume state — pass through untouched.
+        if (isTrailingAssistant) {
+          return part;
+        }
+
+        const approvalPart = part as typeof part & {
+          toolCallId: string;
+          approval?: { id: string; approved?: boolean; reason?: string };
+        };
+        changed = true;
+        if (
+          approvalPart.state === "approval-responded" &&
+          approvalPart.approval?.approved
+        ) {
+          // Approved but execution never completed: an interrupted call.
+          return {
+            ...part,
+            state: "output-error",
+            errorText,
+          } as unknown as typeof part;
+        }
+        return {
+          ...part,
+          state: "output-denied",
+          approval: {
+            ...(approvalPart.approval ?? {
+              id: `${approvalPart.toolCallId}-approval`,
+            }),
+            approved: false,
+            reason:
+              approvalPart.approval?.reason ?? unansweredApprovalDeniedReason,
+          },
+        } as unknown as typeof part;
       }
 
       changed = true;

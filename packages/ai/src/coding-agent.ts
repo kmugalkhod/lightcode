@@ -1,17 +1,22 @@
 import {
   type InferAgentUIMessage,
   type LanguageModel,
+  type ToolSet,
   stepCountIs,
   ToolLoopAgent,
   tool,
 } from "ai";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
+import type { z } from "zod";
 import { createLogger } from "@lightcode/shared";
 import {
   type CodingAgentCallOptions,
+  type CodingToolName,
   codingAgentCallOptionsSchema,
   codingToolDescriptions,
   codingToolProviderInputSchemas,
+  defaultPermissionModeForCodingMode,
+  evaluateCodingToolPermission,
   getActiveCodingToolsForPolicy,
 } from "./agent-tools";
 import type { AgentToolInput, AgentToolOutput } from "./agent/schema";
@@ -25,13 +30,30 @@ import {
   limitProviderActiveTools,
   selectCodingAgentIntentTools,
 } from "./intent-tool-selection";
+import type { PermissionMode, PermissionRules } from "./permissions";
+import {
+  executeCodingTool,
+  type CodingToolExecutionOptions,
+} from "./runtime-registry";
+import type { SandboxConfig } from "./sandbox/config";
 
 const codingAgentLogger = createLogger("coding-agent");
 
-/** Per-call context forwarded to server-executed tools (currently `agent`). */
+/**
+ * Per-call context forwarded to server-executed tools. Since the whole tool
+ * loop runs server-side (pi-style, one request per user turn), this carries
+ * everything the runtime needs: workspace, permission policy, and the turn
+ * key that scopes checkpoints and the repeat-call guard.
+ */
 export interface CodingAgentExecutionContext {
   cwd: string;
   parentSessionId?: string;
+  mode?: CodingAgentCallOptions["mode"];
+  permissionMode?: PermissionMode;
+  allowedTools?: readonly CodingToolName[];
+  permissionRules?: PermissionRules;
+  sandbox?: SandboxConfig;
+  turnKey?: string;
 }
 
 /**
@@ -44,136 +66,134 @@ export type RunSubagentTool = (
   context: CodingAgentExecutionContext & { abortSignal?: AbortSignal },
 ) => Promise<AgentToolOutput>;
 
-export function createCodingAgentTools(runSubagent?: RunSubagentTool) {
+/** Tools that need the interactive client and never execute server-side. */
+const clientInteractiveToolNames: ReadonlySet<CodingToolName> = new Set([
+  "request_user_input",
+]);
+
+function toExecutionOptions(
+  context: Partial<CodingAgentExecutionContext>,
+): CodingToolExecutionOptions {
+  const mode = context.mode ?? defaultCodingAgentMode;
   return {
-    // Unlike every other tool (streamed to the client for local execution),
-    // `agent` executes inside the server loop: the subagent needs the
-    // provider model, which only the server holds.
-    agent: tool({
-      description: codingToolDescriptions.agent,
-      inputSchema: codingToolProviderInputSchemas.agent,
+    mode,
+    permissionMode:
+      context.permissionMode ?? defaultPermissionModeForCodingMode(mode),
+    allowedTools: context.allowedTools,
+    permissionRules: context.permissionRules,
+    cwd: context.cwd,
+    sessionId: context.parentSessionId,
+    turnKey: context.turnKey,
+    sandbox: context.sandbox,
+  };
+}
+
+function readExecutionContext(
+  experimental_context: unknown,
+): Partial<CodingAgentExecutionContext> {
+  return (experimental_context ?? {}) as Partial<CodingAgentExecutionContext>;
+}
+
+function decideToolPermission(
+  toolName: CodingToolName,
+  input: unknown,
+  options: CodingToolExecutionOptions,
+) {
+  return evaluateCodingToolPermission({
+    toolName,
+    input,
+    mode: options.mode,
+    permissionMode: options.permissionMode,
+    allowedTools: options.allowedTools,
+    permissionRules: options.permissionRules,
+  });
+}
+
+export function createCodingAgentTools(runSubagent?: RunSubagentTool): ToolSet {
+  const tools: ToolSet = {};
+
+  for (const name of Object.keys(codingToolDescriptions) as CodingToolName[]) {
+    // `agent` executes inside the server loop with the injected runner: the
+    // subagent needs the provider model, which only the server holds.
+    if (name === "agent") {
+      tools.agent = tool({
+        description: codingToolDescriptions.agent,
+        inputSchema: codingToolProviderInputSchemas.agent,
+        strict: true,
+        execute: async (input, { experimental_context, abortSignal }) => {
+          if (!runSubagent) {
+            throw new Error(
+              "The agent tool requires a server-side subagent runner and is unavailable here.",
+            );
+          }
+
+          const context = readExecutionContext(experimental_context);
+          if (!context.cwd) {
+            throw new Error(
+              "The agent tool is missing its working directory context.",
+            );
+          }
+
+          return runSubagent(input as AgentToolInput, {
+            cwd: context.cwd,
+            parentSessionId: context.parentSessionId,
+            abortSignal,
+          });
+        },
+      });
+      continue;
+    }
+
+    // Interactive tools stream to the client without an execute function —
+    // the loop pauses until the client posts the answer.
+    if (clientInteractiveToolNames.has(name)) {
+      tools[name] = tool({
+        description: codingToolDescriptions[name],
+        inputSchema: codingToolProviderInputSchemas[name] as z.ZodType<unknown>,
+        strict: true,
+      });
+      continue;
+    }
+
+    // Everything else executes server-side inside the loop (pi-style): no
+    // per-step HTTP round trip. Permission policy still gates every call —
+    // "ask" defers to the SDK approval flow, "deny" throws (streams to the
+    // client as output-error with the policy reason).
+    tools[name] = tool({
+      description: codingToolDescriptions[name],
+      inputSchema: codingToolProviderInputSchemas[name] as z.ZodType<unknown>,
       strict: true,
-      execute: async (input, { experimental_context, abortSignal }) => {
-        if (!runSubagent) {
+      needsApproval: (input, { experimental_context }) => {
+        const options = toExecutionOptions(
+          readExecutionContext(experimental_context),
+        );
+        return decideToolPermission(name, input, options).outcome === "ask";
+      },
+      execute: async (input, { experimental_context }) => {
+        const context = readExecutionContext(experimental_context);
+        if (!context.cwd) {
           throw new Error(
-            "The agent tool requires a server-side subagent runner and is unavailable here.",
+            `The ${name} tool is missing its working directory context.`,
           );
         }
 
-        const context = (experimental_context ?? {}) as
-          Partial<CodingAgentExecutionContext>;
-        if (!context.cwd) {
-          throw new Error("The agent tool is missing its working directory context.");
-        }
+        const options = toExecutionOptions(context);
+        // Reaching execute with an "ask" decision means the SDK already
+        // collected the user's approval (needsApproval gated it); pass
+        // approved so escalation rules resolve to allow. "deny" is re-checked
+        // inside executeCodingTool and throws with the policy reason.
+        const approved =
+          decideToolPermission(name, input, options).outcome === "ask";
 
-        return runSubagent(input as AgentToolInput, {
-          cwd: context.cwd,
-          parentSessionId: context.parentSessionId,
-          abortSignal,
+        return executeCodingTool(name, input as never, {
+          ...options,
+          approved,
         });
       },
-    }),
-    list_files: tool({
-      description: codingToolDescriptions.list_files,
-      inputSchema: codingToolProviderInputSchemas.list_files,
-      strict: true,
-    }),
-    glob_search: tool({
-      description: codingToolDescriptions.glob_search,
-      inputSchema: codingToolProviderInputSchemas.glob_search,
-      strict: true,
-    }),
-    read_file: tool({
-      description: codingToolDescriptions.read_file,
-      inputSchema: codingToolProviderInputSchemas.read_file,
-      strict: true,
-    }),
-    grep: tool({
-      description: codingToolDescriptions.grep,
-      inputSchema: codingToolProviderInputSchemas.grep,
-      strict: true,
-    }),
-    git_status: tool({
-      description: codingToolDescriptions.git_status,
-      inputSchema: codingToolProviderInputSchemas.git_status,
-      strict: true,
-    }),
-    git_diff: tool({
-      description: codingToolDescriptions.git_diff,
-      inputSchema: codingToolProviderInputSchemas.git_diff,
-      strict: true,
-    }),
-    git_log: tool({
-      description: codingToolDescriptions.git_log,
-      inputSchema: codingToolProviderInputSchemas.git_log,
-      strict: true,
-    }),
-    git_show: tool({
-      description: codingToolDescriptions.git_show,
-      inputSchema: codingToolProviderInputSchemas.git_show,
-      strict: true,
-    }),
-    tool_search: tool({
-      description: codingToolDescriptions.tool_search,
-      inputSchema: codingToolProviderInputSchemas.tool_search,
-      strict: true,
-    }),
-    skill: tool({
-      description: codingToolDescriptions.skill,
-      inputSchema: codingToolProviderInputSchemas.skill,
-      strict: true,
-    }),
-    list_mcp_resources: tool({
-      description: codingToolDescriptions.list_mcp_resources,
-      inputSchema: codingToolProviderInputSchemas.list_mcp_resources,
-      strict: true,
-    }),
-    read_mcp_resource: tool({
-      description: codingToolDescriptions.read_mcp_resource,
-      inputSchema: codingToolProviderInputSchemas.read_mcp_resource,
-      strict: true,
-    }),
-    call_mcp_tool: tool({
-      description: codingToolDescriptions.call_mcp_tool,
-      inputSchema: codingToolProviderInputSchemas.call_mcp_tool,
-      strict: true,
-    }),
-    request_user_input: tool({
-      description: codingToolDescriptions.request_user_input,
-      inputSchema: codingToolProviderInputSchemas.request_user_input,
-      strict: true,
-    }),
-    todo_write: tool({
-      description: codingToolDescriptions.todo_write,
-      inputSchema: codingToolProviderInputSchemas.todo_write,
-      strict: true,
-    }),
-    write_file: tool({
-      description: codingToolDescriptions.write_file,
-      inputSchema: codingToolProviderInputSchemas.write_file,
-      strict: true,
-    }),
-    edit_file: tool({
-      description: codingToolDescriptions.edit_file,
-      inputSchema: codingToolProviderInputSchemas.edit_file,
-      strict: true,
-    }),
-    bash: tool({
-      description: codingToolDescriptions.bash,
-      inputSchema: codingToolProviderInputSchemas.bash,
-      strict: true,
-    }),
-    web_fetch: tool({
-      description: codingToolDescriptions.web_fetch,
-      inputSchema: codingToolProviderInputSchemas.web_fetch,
-      strict: true,
-    }),
-    web_search: tool({
-      description: codingToolDescriptions.web_search,
-      inputSchema: codingToolProviderInputSchemas.web_search,
-      strict: true,
-    }),
-  };
+    });
+  }
+
+  return tools;
 }
 
 export type CodingAgentTools = ReturnType<typeof createCodingAgentTools>;
@@ -245,13 +265,25 @@ export function createCodingAgent({
         ...settings,
         prompt,
         messages,
+        // Per-request clamp beats the static per-model ceiling: the server
+        // sizes it against what is actually left in the (learned) context
+        // window after the input, so input + max_tokens can never overflow.
+        ...(options.maxOutputTokens
+          ? { maxOutputTokens: options.maxOutputTokens }
+          : {}),
         tools: activeTools.length > 0 ? settings.tools : undefined,
         activeTools: activeTools.length > 0 ? activeTools : undefined,
-        // Server-executed tools (agent) read the per-request context from
-        // here; other tools execute on the client and never see it.
+        // Server-executed tools read the per-request context from here; the
+        // interactive tools execute on the client and never see it.
         experimental_context: {
           cwd: options.cwd,
           parentSessionId: options.sessionId,
+          mode,
+          permissionMode: options.permissionMode,
+          allowedTools: options.allowedTools,
+          permissionRules: options.permissionRules,
+          sandbox: options.sandbox,
+          turnKey: options.turnKey,
         } satisfies CodingAgentExecutionContext,
         instructions: buildCodingAgentSystemPrompt({
           cwd: options.cwd,

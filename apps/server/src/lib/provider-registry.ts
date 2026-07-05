@@ -18,6 +18,18 @@ import {
   type ModelPricing,
   type StoredCredentials,
 } from "@lightcode/ai";
+import {
+  createIdleTimeoutFetch,
+  resolveIdleTimeoutsFromEnv,
+} from "./idle-timeout-fetch";
+
+// One shared wrapper for every provider call site (chat loop, fast path,
+// compaction, subagents, auto-title): a stream that stops producing bytes is
+// aborted after the idle window instead of hanging the session forever.
+// Providers keep legitimate silence alive with SSE comments/pings, so only
+// dead connections trip this. Override/disable via
+// LIGHTCODE_HTTP_IDLE_TIMEOUT_MS / LIGHTCODE_HTTP_HEADERS_TIMEOUT_MS.
+const providerFetch = createIdleTimeoutFetch(resolveIdleTimeoutsFromEnv());
 
 export interface ProviderModelCapabilities {
   /** True when the model handles native function/tool calls itself. */
@@ -213,6 +225,7 @@ function resolveAnthropicModel({
     apiKey,
     authToken,
     baseURL: effectiveBaseUrl ?? undefined,
+    fetch: providerFetch,
   });
 
   return {
@@ -331,6 +344,7 @@ function resolveOpenAITransportModel({
     baseURL: effectiveBaseUrl ?? baseUrl,
     apiKey,
     headers,
+    fetch: providerFetch,
   });
 
   // The XML middleware stays on for every OpenAI-compatible model: it passes

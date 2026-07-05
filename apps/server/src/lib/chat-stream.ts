@@ -7,6 +7,7 @@ import {
   lightcodeConfigDefaults,
   listSkills,
   normalizeProviderMessages,
+  resolveContextWindowTokens,
   resolveMaxOutputTokens,
   selectCodingAgentIntentTools,
   type CodingAgentMode,
@@ -86,8 +87,12 @@ const fastChatMaxOutputTokens = 512;
 const fastChatRecentMessageCount = 6;
 // Upper bound on iterative Tier-2 compaction rounds per turn. The anchor
 // advances each round so compaction terminates on its own; this only caps
-// worst-case latency from repeated summarizer calls.
-const MAX_COMPACTION_ROUNDS = 3;
+// worst-case latency from repeated summarizer calls. One round: each
+// summarizer call is a blocking LLM request (~30s worst case) paid BEFORE the
+// first token streams, so extra rounds read as a stalled agent. Whatever one
+// round doesn't cover, the fit-to-budget clamp bounds this request and the
+// advanced anchor lets the next turn (or the post-turn rolling pass) continue.
+const MAX_COMPACTION_ROUNDS = 1;
 
 // Sessions with a background rolling compaction in flight. One writer per
 // session at a time; a skipped run is retried after the next turn anyway.
@@ -201,11 +206,32 @@ export async function streamSessionChat(
   permissionRules: PermissionRules | undefined,
   sandbox: SandboxConfig | undefined,
 ) {
+  // A request that dies before streaming any part leaves an empty assistant
+  // message in the client's history; the SDK schema rejects zero-part
+  // messages, which would wedge the session on every subsequent send. Drop
+  // them — they carry nothing.
+  const messagesPayloadWithoutEmpties = (
+    messagesPayload as Array<{ role?: unknown; parts?: unknown }>
+  ).filter(
+    (message) =>
+      !(
+        message?.role === "assistant" &&
+        Array.isArray(message.parts) &&
+        message.parts.length === 0
+      ),
+  ) as SessionMessagesResponse["messages"];
+
   const validatedMessagesResult = await safeValidateUIMessages({
-    messages: messagesPayload,
+    messages: messagesPayloadWithoutEmpties,
   });
 
   if (!validatedMessagesResult.success) {
+    logger.warn("chat_invalid_messages_payload", {
+      sessionIdentifier,
+      // The SDK error embeds the full payload before the cause; keep the tail
+      // (the actual validation issue), not the dump.
+      error: validatedMessagesResult.error.message.slice(-1_500),
+    });
     return c.json({ error: "Invalid chat messages payload." }, 400);
   }
 
@@ -274,17 +300,28 @@ export async function streamSessionChat(
   // cache_control set) needs a byte-stable prefix to hit; elsewhere there is
   // nothing to protect, so Tier-1 may prune more aggressively.
   const cacheActive = resolvedProviderModel.supportsPromptCaching;
-  // The provider counts input + output against the same window, so the input
-  // budget must subtract what we reserve for output (resolveMaxOutputTokens
-  // grants the model's full advertised cap when the user left the default).
-  const reservedOutputTokens = resolveMaxOutputTokens(
-    lightcodeConfigResult.config.maxOutputTokens,
-    lightcodeConfigDefaults.maxOutputTokens,
-    resolvedProviderModel.maxCompletionTokens,
-  );
   // A hard limit learned from a prior overflow on this model, clamping an
   // optimistic catalog window down to the real serving limit.
   const endpointLimitTokens = getLearnedContextLimit(chatModelId);
+  const effectiveContextWindow = resolveContextWindowTokens({
+    config: contextConfig,
+    modelContextWindow: resolvedProviderModel.contextWindow,
+    endpointLimitTokens,
+  });
+  // The provider counts input + output against the same window, so the input
+  // budget must subtract what we reserve for output (resolveMaxOutputTokens
+  // grants the model's full advertised cap when the user left the default).
+  // Cap the reservation at half the effective window: a model whose advertised
+  // output cap rivals the endpoint's whole window (minimax-m3: 512K output on
+  // a 524K serving limit) would otherwise starve the input budget to nothing.
+  const reservedOutputTokens = Math.min(
+    resolveMaxOutputTokens(
+      lightcodeConfigResult.config.maxOutputTokens,
+      lightcodeConfigDefaults.maxOutputTokens,
+      resolvedProviderModel.maxCompletionTokens,
+    ),
+    Math.max(1024, Math.floor(effectiveContextWindow / 2)),
+  );
   const pendingInteractionCount = await countPendingChatInteractions(sessionId);
   let contextState = await loadSessionContextStateSafe(sessionId);
   let view = buildProviderView({
@@ -452,6 +489,19 @@ export async function streamSessionChat(
   // the provider a dangling tool call. Count-preserving, so
   // providerMessages.length stays valid for the finished-message merge below.
   const providerMessages = normalizeProviderMessages(fitted.messages);
+
+  // Per-request output ceiling: input + max_tokens share one window, so ask
+  // only for what is actually left after the input (with a margin for
+  // estimation error). Without this, a large advertised output cap overflows
+  // the endpoint's real window as soon as the history grows (HTTP 400
+  // "maximum context length is N tokens").
+  const requestMaxOutputTokens = Math.max(
+    1024,
+    Math.min(
+      reservedOutputTokens,
+      view.contextWindow - view.estimate.tokens - 4096,
+    ),
+  );
 
   // onFinish fires even when the stream ends with an error part, so track
   // overflow within this request — otherwise the finish handler would clear
@@ -771,6 +821,12 @@ export async function streamSessionChat(
         permissionRules,
         sandbox,
         environmentContext,
+        maxOutputTokens: requestMaxOutputTokens,
+        // Scope checkpoints and the repeat-call guard to the user turn, so an
+        // approval continuation keeps grouping with the turn it belongs to.
+        turnKey: [...validatedMessages]
+          .reverse()
+          .find((message) => message.role === "user")?.id,
       },
       // Stop the agent loop (including pending tool turns) on disconnect.
       abortSignal: c.req.raw.signal,

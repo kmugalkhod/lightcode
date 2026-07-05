@@ -120,10 +120,12 @@ export const lightcodeConfigDefaults = {
   // far more than the text alone suggests.
   maxOutputTokens: 32_768,
   maxSteps: 30, // safety net only — the client-driven loop is budgeted by autoContinue
-  // SDK-level retries (Retry-After-aware exponential backoff). Moderate: enough
-  // to ride out transient blips so work isn't stopped to ask the user, without
-  // re-stacking the old 5x depth that compounded backoff under the client layer.
-  maxRetries: 3,
+  // SDK-level retries (Retry-After-aware exponential backoff) happen INSIDE a
+  // single request, invisible to the user — deep stacks read as "the agent
+  // stalled". One quick retry rides out connection blips; everything else
+  // surfaces to the client's visible retry loop (classified, backed off, with
+  // progress shown), pi-style: the SDK fails fast, the loop layer recovers.
+  maxRetries: 1,
   autoContinue: defaultAutoContinueConfig,
   headroom: defaultHeadroomConfig,
 } satisfies Pick<

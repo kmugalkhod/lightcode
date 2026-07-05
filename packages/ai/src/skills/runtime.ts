@@ -73,11 +73,39 @@ function findSkillFiles(root: SkillDiscoveryRoot): string[] {
   return files;
 }
 
+// Skills are listed on every chat request (workspace context + fast-path
+// routing) and rarely change mid-session; a short TTL turns the recursive
+// directory walk + frontmatter reads into a lookup. New skills appear within
+// the TTL; `clearSkillsCache` exists for tests and explicit refreshes.
+const skillsCacheTtlMs = 30_000;
+const skillsCache = new Map<
+  string,
+  { expiresAt: number; skills: SkillSummary[] }
+>();
+
+export function clearSkillsCache(): void {
+  skillsCache.clear();
+}
+
 export function listSkills({
   cwd = process.cwd(),
 }: {
   cwd?: string;
 } = {}): SkillSummary[] {
+  const cached = skillsCache.get(cwd);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.skills;
+  }
+
+  const skills = listSkillsUncached(cwd);
+  skillsCache.set(cwd, {
+    expiresAt: Date.now() + skillsCacheTtlMs,
+    skills,
+  });
+  return skills;
+}
+
+function listSkillsUncached(cwd: string): SkillSummary[] {
   const seen = new Set<string>();
   const summaries: SkillSummary[] = [];
 

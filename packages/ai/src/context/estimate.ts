@@ -75,8 +75,21 @@ export function estimateTextTokens(text: string): number {
   return Math.ceil(text.length / ESTIMATED_CHARS_PER_TOKEN) + 1;
 }
 
+// Per-object memo: one request estimates the same (immutable) message objects
+// 4-6 times across buildProviderView, compaction re-views, and the fit clamp —
+// and serializing every message is the dominant cost. WeakMap keys the exact
+// object, so pruned/rewritten copies (new objects) correctly miss.
+const messageTokenEstimateCache = new WeakMap<UIMessage, number>();
+
 export function estimateMessageTokens(message: UIMessage): number {
-  return estimateTextTokens(safeStringify(message));
+  const cached = messageTokenEstimateCache.get(message);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const estimate = estimateTextTokens(safeStringify(message));
+  messageTokenEstimateCache.set(message, estimate);
+  return estimate;
 }
 
 export function getMessageUsageMetadata(

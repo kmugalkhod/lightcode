@@ -242,7 +242,20 @@ export function isDisconnectOrTimeoutError(error: unknown) {
     message.includes("connection") ||
     message.includes("aborted") ||
     message.includes("broken pipe") ||
-    message.includes("econnreset")
+    message.includes("econnreset") ||
+    // Transport/gateway wording for dropped provider streams (pi's classifier
+    // covers the same set; see badlogic/pi-mono utils/retry.ts). Matching them
+    // here turns a mid-stream OpenRouter drop into a retryable network error
+    // instead of an unclassified dead end the client won't auto-retry.
+    message.includes("other side closed") ||
+    message.includes("fetch failed") ||
+    message.includes("network error") ||
+    message.includes("terminated") ||
+    message.includes("reset before headers") ||
+    message.includes("upstream connect") ||
+    message.includes("provider returned error") ||
+    message.includes("ended without") ||
+    message.includes("stream ended before")
   );
 }
 

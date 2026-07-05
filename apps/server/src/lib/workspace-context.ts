@@ -78,7 +78,31 @@ async function buildDirectoryListing(cwd: string): Promise<string> {
   }
 }
 
-async function buildGitSummary(cwd: string): Promise<string> {
+// The git summary spawns a `git status` subprocess and is rebuilt on every
+// chat request (full snapshot on turn one, delta afterwards). A short TTL
+// makes rapid-fire requests — retries, approval continuations — reuse the
+// summary while staying fresh enough to reflect the agent's own file edits.
+const gitSummaryCacheTtlMs = 5_000;
+const gitSummaryCache = new Map<
+  string,
+  { expiresAt: number; summary: Promise<string> }
+>();
+
+function buildGitSummary(cwd: string): Promise<string> {
+  const cached = gitSummaryCache.get(cwd);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.summary;
+  }
+
+  const summary = buildGitSummaryUncached(cwd);
+  gitSummaryCache.set(cwd, {
+    expiresAt: Date.now() + gitSummaryCacheTtlMs,
+    summary,
+  });
+  return summary;
+}
+
+async function buildGitSummaryUncached(cwd: string): Promise<string> {
   try {
     const context = createWorkspaceContext(cwd);
     const status = await executeGitStatus({}, context);

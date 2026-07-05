@@ -135,14 +135,41 @@ describe("sanitizeMessagesForRetry", () => {
     expect(texts).toEqual(["Step 1.", "Step 2."]);
   });
 
-  test("rewrites approval-state tool calls left behind by an abort", () => {
+  test("preserves a trailing approval request as live resume state", () => {
+    // Server-executed tools pause on approval-requested; the follow-up request
+    // resumes from that part, so a retry must not clobber it.
     const sanitized = sanitizeMessagesForRetry([
       userMessage(),
-      assistantWithToolPart("approval-requested"),
+      assistantWithToolPart("approval-requested", {
+        approval: { id: "approval-1" },
+      }),
     ]);
 
     const [toolPart] = toolPartsOf(sanitized[1]);
-    expect(Reflect.get(toolPart, "state")).toBe("output-error");
+    expect(Reflect.get(toolPart, "state")).toBe("approval-requested");
+  });
+
+  test("denies stale approval requests buried mid-history", () => {
+    const staleAssistant = assistantWithToolPart("approval-requested", {
+      approval: { id: "approval-1" },
+    });
+    const laterAssistant = {
+      id: "a2",
+      role: "assistant",
+      parts: [{ type: "text", text: "Moved on.", state: "done" }],
+    } as unknown as UIMessage;
+
+    const sanitized = sanitizeMessagesForRetry([
+      userMessage(),
+      staleAssistant,
+      laterAssistant,
+    ]);
+
+    const [toolPart] = toolPartsOf(sanitized[1]);
+    expect(Reflect.get(toolPart, "state")).toBe("output-denied");
+    expect(Reflect.get(toolPart, "approval")).toMatchObject({
+      approved: false,
+    });
   });
 
   test("keeps terminal tool parts untouched", () => {

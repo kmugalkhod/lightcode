@@ -288,6 +288,31 @@ export interface PersistChatMessagesResult {
   staleSkip: boolean;
 }
 
+/**
+ * Last-persisted message hashes per session, so a persist call that only
+ * appends (the common case: every chat turn re-sends the full history) writes
+ * just the divergent tail instead of delete-and-rewriting O(history) rows.
+ * The revision optimistic lock guards correctness: any write this cache did
+ * not observe changes the revision, which forces a full rewrite. Entries are
+ * dropped on stale skips, errors, and session deletion.
+ */
+const persistedMessageHashCache = new Map<
+  string,
+  { revision: number; hashes: string[] }
+>();
+
+export function clearPersistedMessageHashCache(): void {
+  persistedMessageHashCache.clear();
+}
+
+function hashStoredMessage(
+  stored: Prisma.ChatMessageUncheckedCreateInput,
+): string {
+  // The payload embeds the message id and role; model is the only other
+  // column that can change for an identical payload.
+  return String(Bun.hash(`${stored.model ?? ""}|${JSON.stringify(stored.payload)}`));
+}
+
 export async function persistChatMessages({
   sessionId,
   messages,
@@ -310,6 +335,7 @@ export async function persistChatMessages({
   const storedMessages = normalizedMessages.map((message, sequence) =>
     toStoredMessage(sessionId, sequence, message, assistantModel)
   );
+  const messageHashes = storedMessages.map(hashStoredMessage);
 
   const maxTransactionAttempts = 3;
 
@@ -336,20 +362,55 @@ export async function persistChatMessages({
           });
 
           if (expectedRevision !== undefined && session.revision !== expectedRevision) {
+            persistedMessageHashCache.delete(sessionId);
             return {
               revision: session.revision,
               staleSkip: true,
             };
           }
 
-          await tx.chatMessage.deleteMany({
-            where: { sessionId },
-          });
+          // Incremental write: when this process persisted the current
+          // revision, only the tail past the longest unchanged prefix needs
+          // touching. Any revision this cache did not observe (other writer,
+          // restart) falls back to the full delete + rewrite.
+          const cached = persistedMessageHashCache.get(sessionId);
+          const canWriteIncrementally =
+            cached !== undefined && cached.revision === session.revision;
 
-          if (storedMessages.length > 0) {
-            await tx.chatMessage.createMany({
-              data: storedMessages,
+          if (canWriteIncrementally) {
+            let firstDivergent = 0;
+            const comparable = Math.min(
+              cached.hashes.length,
+              messageHashes.length,
+            );
+            while (
+              firstDivergent < comparable &&
+              cached.hashes[firstDivergent] === messageHashes[firstDivergent]
+            ) {
+              firstDivergent += 1;
+            }
+
+            if (firstDivergent < cached.hashes.length) {
+              await tx.chatMessage.deleteMany({
+                where: { sessionId, sequence: { gte: firstDivergent } },
+              });
+            }
+            const tail = storedMessages.slice(firstDivergent);
+            if (tail.length > 0) {
+              await tx.chatMessage.createMany({
+                data: tail,
+              });
+            }
+          } else {
+            await tx.chatMessage.deleteMany({
+              where: { sessionId },
             });
+
+            if (storedMessages.length > 0) {
+              await tx.chatMessage.createMany({
+                data: storedMessages,
+              });
+            }
           }
 
           const updatedSession = await tx.chatSession.update({
@@ -389,6 +450,11 @@ export async function persistChatMessages({
             },
           });
 
+          persistedMessageHashCache.set(sessionId, {
+            revision: updatedSession.revision,
+            hashes: messageHashes,
+          });
+
           return {
             revision: updatedSession.revision,
             staleSkip: false,
@@ -400,6 +466,9 @@ export async function persistChatMessages({
         }
       );
     } catch (error) {
+      // The transaction may have died anywhere; never trust the cache after.
+      persistedMessageHashCache.delete(sessionId);
+
       if (isPrismaUniqueConstraintError(error)) {
         incrementChatFailureCounter("db_unique_conflict", {
           sessionId,
@@ -705,6 +774,7 @@ export async function forkChatSession(sessionId: string): Promise<{
 }
 
 export async function deleteChatSession(sessionId: string) {
+  persistedMessageHashCache.delete(sessionId);
   return prisma.$transaction(async (tx) => {
     const existingSession = await tx.chatSession.findUnique({
       where: { id: sessionId },

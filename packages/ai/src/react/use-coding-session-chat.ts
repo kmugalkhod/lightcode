@@ -2,7 +2,9 @@ import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
   type FileUIPart,
+  getToolName,
   isToolUIPart,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
   lastAssistantMessageIsCompleteWithToolCalls,
   safeValidateUIMessages,
   type UIMessage,
@@ -12,7 +14,6 @@ import {
   codingToolInputSchemas,
   evaluateCodingToolPermission,
   isServerExecutedCodingTool,
-  resolveCodingPermissionMode,
   type CodingToolInputByName,
   type CodingToolName,
   type CodingToolOutputByName,
@@ -24,8 +25,6 @@ import {
 } from "../chat-error";
 import type { SessionMessagesResponse } from "../chat-schemas";
 import {
-  chatInteractionToolApprovalPayloadSchema,
-  chatInteractionResolveRequestSchema,
   chatInteractionUpsertRequestSchema,
   chatInteractionUserPromptPayloadSchema,
   type ChatInteraction,
@@ -35,18 +34,12 @@ import {
 } from "../chat-interaction-schemas";
 import { toSingleLinePreview } from "../common/output-utils";
 import { createWorkspaceContext } from "../common/resolve-within-workspace";
-import {
-  executeCodingTool as executeCodingToolRuntime,
-  type CodingToolExecutionOptions,
-  parseCodingToolInput,
-} from "../runtime-registry";
+import { parseCodingToolInput } from "../runtime-registry";
 import {
   defaultCodingAgentMode,
   type CodingAgentMode,
 } from "../coding-agent-modes";
 import {
-  formatPermissionDecision,
-  isPermissionDeniedError,
   type PermissionDecision,
   type PermissionMode,
   type PermissionRules,
@@ -85,6 +78,12 @@ type RequestUserInputToolInput = CodingToolInputByName["request_user_input"];
 
 export interface PendingToolApproval {
   toolCallId: string;
+  /**
+   * The SDK approval id from the `approval-requested` part. Tools execute
+   * server-side; approving/denying posts this id back via
+   * addToolApprovalResponse instead of executing locally.
+   */
+  approvalId: string;
   toolName: CodingToolName;
   input: CodingToolInput;
   summary: string;
@@ -266,53 +265,6 @@ function summarizeToolCall(toolName: CodingToolName, input: CodingToolInput): st
   return `${toolName} ${toSingleLinePreview(input)}`.trim();
 }
 
-async function executeCodingTool(
-  toolName: CodingToolName,
-  input: CodingToolInput,
-  options: CodingToolExecutionOptions,
-): Promise<CodingToolOutput> {
-  return executeCodingToolRuntime(toolName, input, options);
-}
-
-function getToolErrorMessage(error: unknown, fallback: string) {
-  if (isPermissionDeniedError(error)) {
-    return formatPermissionDecision(error.decision);
-  }
-
-  return getErrorMessage(error, fallback);
-}
-
-function buildExecutionOptions({
-  mode,
-  cwd,
-  sessionId,
-  permissionMode,
-  allowedTools,
-  permissionRules,
-  approved,
-  sandbox,
-}: {
-  mode: CodingAgentMode;
-  cwd: string;
-  sessionId: string;
-  permissionMode?: PermissionMode;
-  allowedTools?: readonly CodingToolName[];
-  permissionRules?: PermissionRules;
-  approved?: boolean;
-  sandbox?: SandboxConfig;
-}): CodingToolExecutionOptions {
-  return {
-    mode,
-    permissionMode: resolveCodingPermissionMode({ mode, permissionMode }),
-    allowedTools,
-    permissionRules,
-    approved,
-    cwd,
-    sessionId,
-    sandbox,
-  };
-}
-
 function isTodoWriteOutput(
   toolName: CodingToolName,
   output: CodingToolOutput,
@@ -366,15 +318,6 @@ function isRetryCommand(input: string) {
   return retryCommandPattern.test(input.trim());
 }
 
-function queueToolOutput(outputResult: void | PromiseLike<void>) {
-  if (!outputResult) {
-    return;
-  }
-
-  void Promise.resolve(outputResult).catch((outputError) => {
-    console.warn("Failed to add tool output.", outputError);
-  });
-}
 
 /**
  * True for a single part that was still streaming when the turn was cut off:
@@ -497,10 +440,18 @@ export function countCompletedWork(messages: UIMessage[]): number {
  * Postcondition: hasUnresolvedToolParts(result) === false.
  */
 export function sanitizeMessagesForRetry(messages: UIMessage[]): UIMessage[] {
+  // Zero-part assistant messages (a request that died before any part
+  // streamed) fail the SDK's message schema and would poison every resend.
+  const withoutEmptyAssistants = messages.filter(
+    (message) => !(message.role === "assistant" && message.parts.length === 0),
+  );
+
   // Drop only the incomplete trailing parts (preserving finished steps), then
   // resolve any remaining dangling tool call via the shared server/client
   // normalizer so retry and first-send produce identical, valid histories.
-  return resolveDanglingToolParts(pruneIncompleteTrailingAssistantParts(messages));
+  return resolveDanglingToolParts(
+    pruneIncompleteTrailingAssistantParts(withoutEmptyAssistants),
+  );
 }
 
 function hasActiveClientToolWork({
@@ -589,39 +540,6 @@ async function validatePersistedMessages(
   }
 
   return validated;
-}
-
-function restorePendingApproval(
-  interaction: ChatInteraction,
-): PendingToolApproval | null {
-  if (interaction.kind !== "tool_approval" || interaction.status !== "pending") {
-    return null;
-  }
-
-  const payloadResult = chatInteractionToolApprovalPayloadSchema.safeParse(
-    interaction.payload,
-  );
-  if (!payloadResult.success) {
-    return null;
-  }
-
-  try {
-    const input = parseCodingToolInput(
-      payloadResult.data.toolName,
-      payloadResult.data.input,
-    );
-
-    return {
-      toolCallId: interaction.toolCallId,
-      toolName: payloadResult.data.toolName,
-      input,
-      summary: payloadResult.data.summary,
-      permissionDecision: payloadResult.data.permissionDecision,
-      cwd: payloadResult.data.cwd,
-    };
-  } catch {
-    return null;
-  }
 }
 
 function restorePendingUserPrompt(
@@ -853,11 +771,33 @@ export function useCodingSessionChat({
     [resolveInteraction],
   );
 
+  // Delivery failures for prompt answers must be visible, not console noise:
+  // a lost answer leaves the model waiting on a tool result forever, and the
+  // user needs to know the turn dead-ended rather than watch it idle.
+  const queueToolOutput = useCallback(
+    (outputResult: void | PromiseLike<void>) => {
+      if (!outputResult) {
+        return;
+      }
+
+      void Promise.resolve(outputResult).catch((outputError) => {
+        setToolExecutionError(
+          getErrorMessage(
+            outputError,
+            "Failed to deliver the tool response to the model. Retry or resend your message.",
+          ),
+        );
+      });
+    },
+    [],
+  );
+
   const {
     messages,
     setMessages,
     sendMessage,
     addToolOutput,
+    addToolApprovalResponse,
     clearError,
     error,
     status,
@@ -867,23 +807,35 @@ export function useCodingSessionChat({
       id: sessionId,
       transport,
       experimental_throttle: chatMessageUpdateThrottleMs,
-      sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+      // Tool results and approval responses both complete a turn: results
+      // arrive in-stream from the server loop; approval responses are posted
+      // by the client and must auto-resend so the server executes the tool.
+      sendAutomaticallyWhen: (options) =>
+        lastAssistantMessageIsCompleteWithToolCalls(options) ||
+        lastAssistantMessageIsCompleteWithApprovalResponses(options),
       onToolCall: async ({ toolCall }) => {
         if (toolCall.dynamic || !isCodingToolName(toolCall.toolName)) {
           return;
         }
 
-        // Server-executed tools (agent) run inside the server loop; their
-        // output arrives in-stream, so the client must not execute or answer.
+        // Every tool except request_user_input executes inside the server
+        // loop; output (or an approval request) arrives in-stream, so the
+        // client must not execute or answer.
         if (isServerExecutedCodingTool(toolCall.toolName)) {
           return;
         }
 
         const toolName = toolCall.toolName;
-        let parsedInput: CodingToolInput;
+        if (!isRequestUserInputToolName(toolName)) {
+          return;
+        }
 
+        let promptInput: RequestUserInputToolInput;
         try {
-          parsedInput = parseCodingToolInput(toolName, toolCall.input);
+          promptInput = parseCodingToolInput(
+            "request_user_input",
+            toolCall.input,
+          );
         } catch (toolError) {
           queueToolOutput(
             addToolOutput({
@@ -896,216 +848,170 @@ export function useCodingSessionChat({
           return;
         }
 
-        if (isRequestUserInputToolName(toolName)) {
-          if (mode !== "plan") {
-            queueToolOutput(
-              addToolOutput({
-                tool: "request_user_input",
-                toolCallId: toolCall.toolCallId,
-                output: {
-                  answer: buildModeAutoPromptResponse,
-                  source: "custom",
-                },
-              }),
-            );
-            return;
-          }
-
-          const promptInput = parsedInput as RequestUserInputToolInput;
-          const pendingPrompt: PendingUserPrompt = {
-            toolCallId: toolCall.toolCallId,
-            header: promptInput.header,
-            question: promptInput.question,
-            options: promptInput.options ?? [],
-            allowCustomResponse: promptInput.allowCustomResponse,
-            placeholder: promptInput.placeholder,
-          };
-
-          void checkpointInteraction(
-            chatInteractionUpsertRequestSchema.parse({
-              kind: "user_prompt",
-              toolCallId: toolCall.toolCallId,
-              payload: promptInput,
-            }),
-          );
-
-          setPendingUserPrompts((current) => {
-            if (current.some((item) => item.toolCallId === toolCall.toolCallId)) {
-              return current;
-            }
-
-            return [...current, pendingPrompt];
-          });
-
-          return;
-        }
-
-        const permissionDecision = evaluateCodingToolPermission({
-          toolName,
-          input: parsedInput,
-          mode,
-          permissionMode,
-          allowedTools,
-          permissionRules,
-        });
-
-        if (permissionDecision.outcome === "deny") {
+        if (mode !== "plan") {
           queueToolOutput(
             addToolOutput({
-              tool: toolName,
+              tool: "request_user_input",
               toolCallId: toolCall.toolCallId,
-              state: "output-error",
-              errorText: formatPermissionDecision(permissionDecision),
-            }),
-          );
-          return;
-        }
-
-        if (permissionDecision.outcome === "ask") {
-          const pendingApproval: PendingToolApproval = {
-            toolCallId: toolCall.toolCallId,
-            toolName,
-            input: parsedInput,
-            summary: summarizeToolCall(toolName, parsedInput),
-            permissionDecision,
-            cwd,
-          };
-
-          void checkpointInteraction(
-            chatInteractionUpsertRequestSchema.parse({
-              kind: "tool_approval",
-              toolCallId: toolCall.toolCallId,
-              payload: {
-                toolName,
-                input: parsedInput,
-                summary: pendingApproval.summary,
-                permissionDecision,
-                cwd,
+              output: {
+                answer: buildModeAutoPromptResponse,
+                source: "custom",
               },
             }),
           );
-
-          setPendingApprovals((previousApprovals) => {
-            if (
-              previousApprovals.some(
-                (item) => item.toolCallId === toolCall.toolCallId,
-              )
-            ) {
-              return previousApprovals;
-            }
-
-            return [...previousApprovals, pendingApproval];
-          });
-
           return;
         }
 
-        try {
-          const output = await executeCodingTool(
-            toolName,
-            parsedInput,
-            {
-              ...buildExecutionOptions({
-                mode,
-                cwd,
-                sessionId,
-                permissionMode,
-                allowedTools,
-                permissionRules,
-                sandbox,
-              }),
-              turnKey: turnKeyRef.current,
-            },
-          );
-          if (isTodoWriteOutput(toolName, output)) {
-            setTodos(output.todos);
+        const pendingPrompt: PendingUserPrompt = {
+          toolCallId: toolCall.toolCallId,
+          header: promptInput.header,
+          question: promptInput.question,
+          options: promptInput.options ?? [],
+          allowCustomResponse: promptInput.allowCustomResponse,
+          placeholder: promptInput.placeholder,
+        };
+
+        void checkpointInteraction(
+          chatInteractionUpsertRequestSchema.parse({
+            kind: "user_prompt",
+            toolCallId: toolCall.toolCallId,
+            payload: promptInput,
+          }),
+        );
+
+        setPendingUserPrompts((current) => {
+          if (current.some((item) => item.toolCallId === toolCall.toolCallId)) {
+            return current;
           }
-          queueToolOutput(
-            addToolOutput({
-              tool: toolName,
-              toolCallId: toolCall.toolCallId,
-              output,
-            }),
-          );
-        } catch (toolError) {
-          queueToolOutput(
-            addToolOutput({
-              tool: toolName,
-              toolCallId: toolCall.toolCallId,
-              state: "output-error",
-              errorText: getToolErrorMessage(toolError, "Tool execution failed."),
-            }),
-          );
-        }
+
+          return [...current, pendingPrompt];
+        });
       },
     });
 
   const setMessagesRef = useRef(setMessages);
   setMessagesRef.current = setMessages;
 
-  const runApprovedTool = useCallback(
-    async (approval: PendingToolApproval) => {
-      try {
-        const output = await executeCodingTool(
-          approval.toolName,
-          approval.input,
-          {
-            ...buildExecutionOptions({
-              mode,
-              cwd,
-              sessionId,
-              permissionMode,
-              allowedTools,
-              permissionRules,
-              approved: true,
-              sandbox,
-            }),
-            turnKey: turnKeyRef.current,
-          },
-        );
-        if (isTodoWriteOutput(approval.toolName, output)) {
-          setTodos(output.todos);
+  // Approvals are derived from the stream: server-executed tools pause with an
+  // `approval-requested` part and resume when the client posts the response.
+  // Deriving from message parts (instead of accumulating in onToolCall) makes
+  // reload/resume free — persisted histories carry the parts.
+  const checkpointedApprovalIdsRef = useRef(new Set<string>());
+  useEffect(() => {
+    const derived: PendingToolApproval[] = [];
+    for (const message of messages) {
+      if (message.role !== "assistant") {
+        continue;
+      }
+      for (const part of message.parts) {
+        if (!isToolUIPart(part) || part.state !== "approval-requested") {
+          continue;
         }
-        await addToolOutput({
-          tool: approval.toolName,
-          toolCallId: approval.toolCallId,
-          output,
-        });
-        await markInteractionResolved(
-          approval.toolCallId,
-          chatInteractionResolveRequestSchema.parse({
-            status: "approved",
-            response: output,
+        const toolName = getToolName(part);
+        if (!isCodingToolName(toolName)) {
+          continue;
+        }
+        const approvalId = (part as { approval?: { id?: string } }).approval?.id;
+        if (!approvalId) {
+          continue;
+        }
+
+        let parsedInput: CodingToolInput;
+        try {
+          parsedInput = parseCodingToolInput(toolName, part.input);
+        } catch {
+          continue;
+        }
+
+        derived.push({
+          toolCallId: part.toolCallId,
+          approvalId,
+          toolName,
+          input: parsedInput,
+          summary: summarizeToolCall(toolName, parsedInput),
+          // Display-only: the server made the same decision to raise the
+          // approval; recompute so the card can show what rule tripped.
+          permissionDecision: evaluateCodingToolPermission({
+            toolName,
+            input: parsedInput,
+            mode,
+            permissionMode,
+            allowedTools,
+            permissionRules,
           }),
-        );
-      } catch (toolError) {
-        const errorText = getToolErrorMessage(toolError, "Tool execution failed.");
-        await addToolOutput({
-          tool: approval.toolName,
-          toolCallId: approval.toolCallId,
-          state: "output-error",
-          errorText,
-        });
-        await markInteractionResolved(approval.toolCallId, {
-          status: "approved",
-          response: {
-            errorText,
-          },
+          cwd,
         });
       }
-    },
-    [
-      addToolOutput,
-      allowedTools,
-      cwd,
-      markInteractionResolved,
-      mode,
-      permissionMode,
-      permissionRules,
-      sandbox,
-      sessionId,
-    ],
-  );
+    }
+
+    setPendingApprovals((current) => {
+      if (
+        current.length === derived.length &&
+        current.every(
+          (item, index) => item.toolCallId === derived[index].toolCallId,
+        )
+      ) {
+        return current;
+      }
+      return derived;
+    });
+
+    // Checkpoint each approval once: pending interactions block compaction
+    // server-side, so the approval part can never be summarized away.
+    for (const approval of derived) {
+      if (checkpointedApprovalIdsRef.current.has(approval.toolCallId)) {
+        continue;
+      }
+      checkpointedApprovalIdsRef.current.add(approval.toolCallId);
+      void checkpointInteraction(
+        chatInteractionUpsertRequestSchema.parse({
+          kind: "tool_approval",
+          toolCallId: approval.toolCallId,
+          payload: {
+            toolName: approval.toolName,
+            input: approval.input,
+            summary: approval.summary,
+            permissionDecision: approval.permissionDecision,
+            cwd,
+          },
+        }),
+      );
+    }
+  }, [
+    allowedTools,
+    checkpointInteraction,
+    cwd,
+    messages,
+    mode,
+    permissionMode,
+    permissionRules,
+  ]);
+
+  // todo_write executes server-side now; mirror the latest streamed output
+  // into the session todo panel.
+  useEffect(() => {
+    for (let m = messages.length - 1; m >= 0; m -= 1) {
+      const message = messages[m];
+      if (message.role !== "assistant") {
+        continue;
+      }
+      for (let p = message.parts.length - 1; p >= 0; p -= 1) {
+        const part = message.parts[p];
+        if (
+          !isToolUIPart(part) ||
+          part.state !== "output-available" ||
+          getToolName(part) !== "todo_write"
+        ) {
+          continue;
+        }
+        const output = part.output as CodingToolOutput;
+        if (isTodoWriteOutput("todo_write", output)) {
+          setTodos(output.todos);
+        }
+        return;
+      }
+    }
+  }, [messages]);
 
   const resolveToolApproval = useCallback(
     (action: ToolApprovalAction, index: number) => {
@@ -1126,32 +1032,31 @@ export function useCodingSessionChat({
       }
 
       const selectedApproval = pendingApprovals[index];
+      // Optimistic removal for immediate feedback; the derived effect
+      // reconciles from message parts once the SDK records the response.
       setPendingApprovals((current) =>
         current.filter((item) => item.toolCallId !== selectedApproval.toolCallId),
       );
       setToolExecutionError(null);
 
-      if (action === "deny") {
-        void (async () => {
-          await addToolOutput({
-            tool: selectedApproval.toolName,
-            toolCallId: selectedApproval.toolCallId,
-            state: "output-error",
-            errorText: "Tool execution denied by user.",
-          });
-          await markInteractionResolved(selectedApproval.toolCallId, {
-            status: "denied",
-            response: {
-              errorText: "Tool execution denied by user.",
-            },
-          });
-        })();
-        return;
-      }
-
-      void runApprovedTool(selectedApproval);
+      // The tool executes server-side: post the approval response and let the
+      // auto-resend continue the loop. Denials stream back as output-denied.
+      void addToolApprovalResponse({
+        id: selectedApproval.approvalId,
+        approved: action === "approve",
+        ...(action === "deny"
+          ? { reason: "Tool execution denied by user." }
+          : {}),
+      });
+      void markInteractionResolved(selectedApproval.toolCallId, {
+        status: action === "approve" ? "approved" : "denied",
+        response:
+          action === "deny"
+            ? { errorText: "Tool execution denied by user." }
+            : undefined,
+      });
     },
-    [addToolOutput, markInteractionResolved, pendingApprovals, runApprovedTool],
+    [addToolApprovalResponse, markInteractionResolved, pendingApprovals],
   );
 
   const resolveAllToolApprovals = useCallback(
@@ -1165,33 +1070,27 @@ export function useCodingSessionChat({
       setPendingApprovals([]);
       setToolExecutionError(null);
 
-      if (action === "deny") {
-        void (async () => {
-          for (const approval of selectedApprovals) {
-            await addToolOutput({
-              tool: approval.toolName,
-              toolCallId: approval.toolCallId,
-              state: "output-error",
-              errorText: "Tool execution denied by user.",
-            });
-            await markInteractionResolved(approval.toolCallId, {
-              status: "denied",
-              response: {
-                errorText: "Tool execution denied by user.",
-              },
-            });
-          }
-        })();
-        return;
+      // Responses are instant (no local execution): post them all, then the
+      // auto-resend fires once every request has an answer and the server
+      // executes the approved tools inside one continued loop.
+      for (const approval of selectedApprovals) {
+        void addToolApprovalResponse({
+          id: approval.approvalId,
+          approved: action === "approve",
+          ...(action === "deny"
+            ? { reason: "Tool execution denied by user." }
+            : {}),
+        });
+        void markInteractionResolved(approval.toolCallId, {
+          status: action === "approve" ? "approved" : "denied",
+          response:
+            action === "deny"
+              ? { errorText: "Tool execution denied by user." }
+              : undefined,
+        });
       }
-
-      void (async () => {
-        for (const approval of selectedApprovals) {
-          await runApprovedTool(approval);
-        }
-      })();
     },
-    [addToolOutput, markInteractionResolved, pendingApprovals, runApprovedTool],
+    [addToolApprovalResponse, markInteractionResolved, pendingApprovals],
   );
 
   const respondToUserPrompt = useCallback(
@@ -1215,19 +1114,21 @@ export function useCodingSessionChat({
       setPendingUserPrompts((current) =>
         current.filter((prompt) => prompt.toolCallId !== toolCallId),
       );
-      void (async () => {
-        await addToolOutput({
-          tool: "request_user_input",
-          toolCallId,
-          output: parsedResponse.data,
-        });
-        await markInteractionResolved(toolCallId, {
-          status: "answered",
-          response: parsedResponse.data,
-        });
-      })();
+      queueToolOutput(
+        (async () => {
+          await addToolOutput({
+            tool: "request_user_input",
+            toolCallId,
+            output: parsedResponse.data,
+          });
+          await markInteractionResolved(toolCallId, {
+            status: "answered",
+            response: parsedResponse.data,
+          });
+        })(),
+      );
     },
-    [addToolOutput, markInteractionResolved, pendingUserPrompts],
+    [addToolOutput, markInteractionResolved, pendingUserPrompts, queueToolOutput],
   );
 
   const canRetryRecoverableResponse = Boolean(
@@ -1602,9 +1503,9 @@ export function useCodingSessionChat({
         const validatedMessages = await validatePersistedMessages(
           messagePayload.messages,
         );
-        const restoredApprovals = interactionPayload.interactions
-          .map(restorePendingApproval)
-          .filter((approval): approval is PendingToolApproval => approval !== null);
+        // Approvals restore from the persisted approval-requested parts (the
+        // derived effect picks them up); only user prompts still need the
+        // interaction store, since their tool calls carry no approval state.
         const restoredPrompts = interactionPayload.interactions
           .map(restorePendingUserPrompt)
           .filter((prompt): prompt is PendingUserPrompt => prompt !== null);
@@ -1618,12 +1519,11 @@ export function useCodingSessionChat({
         // starts from a clean state while keeping every finished step.
         // Keep everything when pending interactions reference its tool calls.
         const resumableMessages =
-          restoredApprovals.length === 0 && restoredPrompts.length === 0
+          restoredPrompts.length === 0
             ? pruneIncompleteTrailingAssistantParts(validatedMessages)
             : validatedMessages;
 
         setMessagesRef.current(resumableMessages);
-        setPendingApprovals(restoredApprovals);
         setPendingUserPrompts(restoredPrompts);
       } catch (historyLoadError) {
         if (cancelled) {
@@ -1660,26 +1560,34 @@ export function useCodingSessionChat({
     }
 
     for (const pendingPrompt of pendingUserPrompts) {
-      void (async () => {
-        const output = {
-          answer: buildModeAutoPromptResponse,
-          source: "custom" as const,
-        };
-        await addToolOutput({
-          tool: "request_user_input",
-          toolCallId: pendingPrompt.toolCallId,
-          output,
-        });
-        await markInteractionResolved(pendingPrompt.toolCallId, {
-          status: "answered",
-          response: output,
-        });
-      })();
+      queueToolOutput(
+        (async () => {
+          const output = {
+            answer: buildModeAutoPromptResponse,
+            source: "custom" as const,
+          };
+          await addToolOutput({
+            tool: "request_user_input",
+            toolCallId: pendingPrompt.toolCallId,
+            output,
+          });
+          await markInteractionResolved(pendingPrompt.toolCallId, {
+            status: "answered",
+            response: output,
+          });
+        })(),
+      );
     }
 
     setPendingUserPrompts([]);
     setToolExecutionError(null);
-  }, [addToolOutput, markInteractionResolved, mode, pendingUserPrompts]);
+  }, [
+    addToolOutput,
+    markInteractionResolved,
+    mode,
+    pendingUserPrompts,
+    queueToolOutput,
+  ]);
 
   useEffect(() => {
     let active = true;
