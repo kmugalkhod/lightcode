@@ -11,6 +11,7 @@ import { appendFileSync } from "node:fs";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cliTheme, borderStyleFor } from "../../ui/cli-theme";
+import { activeGlyphs } from "../../ui/cli-theme-capabilities";
 import { readClipboardImage } from "../../utils/clipboard-image";
 import { fuzzyFilter } from "../../utils/fuzzy-match";
 import {
@@ -244,8 +245,15 @@ export function ChatTextArea({
         return;
       }
 
-      if (event.name === "tab") {
+      // While the picker is open, Enter attaches the highlighted file —
+      // without this, Enter submits the message with the half-typed @query.
+      if (event.name === "tab" || isEnterLike) {
         event.preventDefault();
+        if (isEnterLike) {
+          // Same belt-and-suspenders as Ctrl+Enter: if the submit keybinding
+          // fires despite preventDefault, handleSubmit bails inside 100ms.
+          lastManualNewlineAt.current = Date.now();
+        }
         acceptMention(mentionMatches[selectedMentionIndex]);
       } else if (event.name === "down") {
         event.preventDefault();
@@ -356,11 +364,11 @@ export function ChatTextArea({
                   : TextAttributes.NONE
               }
             >
-              {`${index === selectedMentionIndex ? "> " : "  "}${mentionPath}`}
+              {`${index === selectedMentionIndex ? `${activeGlyphs.roleUser} ` : "  "}${mentionPath}`}
             </text>
           ))}
           <text {...typeRole("caption")}>
-            Tab attach · ↑/↓ select · Esc dismiss
+            ↑/↓ select · Enter attach · Esc dismiss
           </text>
         </box>
       ) : null}

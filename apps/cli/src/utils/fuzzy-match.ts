@@ -35,6 +35,24 @@ export function fuzzyScore(query: string, candidate: string): number | null {
     candidateIndex = foundIndex + 1;
   }
 
+  // The greedy walk above takes the EARLIEST occurrence of each character, so
+  // for path candidates it burns "app…" on the "apps/" prefix and never sees
+  // a literal "approval" later in the name. Reward exact substrings directly
+  // so "approval" ranks chat-tool-approval-card.tsx above chat-observability.
+  const substringIndex = normalizedCandidate.indexOf(normalizedQuery);
+  if (substringIndex !== -1) {
+    score += 8 + normalizedQuery.length * 2;
+    if (
+      substringIndex === 0 ||
+      BOUNDARY_CHARS.has(normalizedCandidate[substringIndex - 1])
+    ) {
+      score += 4; // substring starts a path/word segment
+    }
+    if (substringIndex > normalizedCandidate.lastIndexOf("/")) {
+      score += 4; // substring is in the file name, not a parent directory
+    }
+  }
+
   return score - candidate.length / 100;
 }
 

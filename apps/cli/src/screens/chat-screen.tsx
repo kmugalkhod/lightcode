@@ -84,6 +84,7 @@ import { appendMentionAttachments } from "../utils/file-mentions";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../utils/key-utils";
 import { extractCodeBlocks } from "../utils/markdown-code";
 import { truncateInline } from "../utils/text-utils";
+import { listWorkspaceFiles } from "../utils/workspace-files";
 import { Badge } from "../ui/components/badge";
 
 const autoImplementationInstruction =
@@ -464,19 +465,11 @@ export function ChatScreen() {
 
     async function loadMentionCandidates() {
       try {
-        const { createWorkspaceContext, executeGlobSearch } = await import(
-          "@lightcode/ai/runtime"
-        );
-        const output = await executeGlobSearch(
-          { pattern: "**/*", maxResults: 200 },
-          createWorkspaceContext(process.cwd()),
-        );
+        // Dedicated walker: the glob-search tool caps results at 200, which
+        // silently hid most files from the picker in larger repos.
+        const files = await listWorkspaceFiles(process.cwd());
         if (!cancelled) {
-          setMentionCandidates(
-            output.matches
-              .filter((match) => match.type === "file")
-              .map((match) => match.path),
-          );
+          setMentionCandidates(files);
         }
       } catch {
         // The mention picker simply stays empty.
