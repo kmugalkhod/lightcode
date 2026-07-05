@@ -3,16 +3,18 @@ import {
   cycleCodingAgentMode,
   defaultCodingAgentMode,
   sessionCreateResponseSchema,
+  type PermissionMode,
 } from "@lightcode/ai";
 import { useKeyboard } from "@opentui/react";
+import { getSlashMenuItems } from "../commands/slash-menu-items";
 import { SlashPageMenu } from "../commands/slash-page-menu";
 import { client } from "../lib/client";
 import { ChatTextArea } from "./chat/chat-text-area";
-import { getSlashPageRoutes } from "../navigation/route-registry";
+import { PermissionModeSelector } from "./chat/permission-mode-selector";
 import { useAppState } from "../state/app-state";
 import { cliTheme } from "../ui/cli-theme";
 import { getErrorMessage } from "../utils/text-utils";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 
 export function HomeTextArea() {
@@ -25,14 +27,31 @@ export function HomeTextArea() {
     setSlashMenuSelected,
     openSlashMenu,
     closeSlashMenu,
+    requestedChatActionId,
+    clearRequestedChatAction,
   } = useAppState();
   const [sessionCreateError, setSessionCreateError] = useState<string | null>(null);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   const [mode, setMode] = useState(defaultCodingAgentMode);
+  // Permission mode for the next session; undefined defers to the server default.
+  const [permissionMode, setPermissionMode] = useState<PermissionMode | undefined>(undefined);
+  const [permissionSelectorOpen, setPermissionSelectorOpen] = useState(false);
 
-  const slashRoutes = getSlashPageRoutes(slashMenuQuery);
+  const slashRoutes = getSlashMenuItems(slashMenuQuery, { host: "home" });
   const selectedIndex = Math.min(slashMenuSelected, Math.max(slashRoutes.length - 1, 0));
   const modeDefinition = codingAgentModes[mode];
+
+  // Picking /permission in the slash menu lands here (only the chat screen or
+  // this component can host the selector; the global key handler just requests it).
+  useEffect(() => {
+    if (!requestedChatActionId) {
+      return;
+    }
+    clearRequestedChatAction();
+    if (requestedChatActionId === "permission") {
+      setPermissionSelectorOpen(true);
+    }
+  }, [clearRequestedChatAction, requestedChatActionId]);
 
   const syncSlashMenuFromInput = (text: string) => {
     const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
@@ -69,7 +88,7 @@ export function HomeTextArea() {
       !keyEvent.hyper &&
       !keyEvent.shift;
 
-    if ((!isPlainTab && !isCtrlT) || slashMenuOpen || isCreatingSession) {
+    if ((!isPlainTab && !isCtrlT) || slashMenuOpen || permissionSelectorOpen || isCreatingSession) {
       return;
     }
 
@@ -92,6 +111,7 @@ export function HomeTextArea() {
         json: {
           cwd: process.cwd(),
           mode,
+          permissionMode,
         },
       });
 
@@ -110,6 +130,7 @@ export function HomeTextArea() {
           input: text,
           skipHistoryLoad: true,
           mode,
+          permissionMode,
         },
       });
     } catch (sessionCreateFailure) {
@@ -126,11 +147,20 @@ export function HomeTextArea() {
         allowEmpty
         trimOnSubmit={false}
         placeholder={'Ask anything... "What is the tech stack of this project?"'}
-        focused={!isCreatingSession}
-        disabled={isCreatingSession}
+        focused={!isCreatingSession && !permissionSelectorOpen}
+        disabled={isCreatingSession || permissionSelectorOpen}
         slashMenuOpen={slashMenuOpen}
         onTextChange={syncSlashMenuFromInput}
-        beforeInput={slashMenuOpen ? (
+        beforeInput={permissionSelectorOpen ? (
+          <PermissionModeSelector
+            currentMode={permissionMode}
+            onSelect={(newMode) => {
+              setPermissionMode(newMode);
+              setPermissionSelectorOpen(false);
+            }}
+            onClose={() => setPermissionSelectorOpen(false)}
+          />
+        ) : slashMenuOpen ? (
           <SlashPageMenu
             query={slashMenuQuery}
             selectedIndex={selectedIndex}
@@ -148,6 +178,17 @@ export function HomeTextArea() {
             <text>
               <span fg={cliTheme.accent.primary}>{modeDefinition.label}</span>
               <span fg={cliTheme.text.muted}> mode</span>
+              {permissionMode ? (
+                <span
+                  fg={
+                    permissionMode === "danger-full-access"
+                      ? cliTheme.semantic.warning
+                      : cliTheme.text.muted
+                  }
+                >
+                  {" · "}{permissionMode}
+                </span>
+              ) : null}
             </text>
           </box>
         }

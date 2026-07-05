@@ -35,6 +35,8 @@ export interface ChatSlashActionDefinition {
   description: string;
   /** Display + matching string, e.g. "/compact". */
   shortcut: string;
+  /** Also offered in the home-screen slash menu, before a session exists. */
+  availableOnHome?: boolean;
   run: (context: ChatSlashActionContext) => Promise<void>;
 }
 
@@ -296,9 +298,10 @@ export const chatSlashActions: ChatSlashActionDefinition[] = [
     label: "Permission mode",
     description: "Switch permission level: read-only, workspace-write, or danger-full-access",
     shortcut: "/permission",
-    // This action is handled specially by the chat screen to open the selector
+    availableOnHome: true,
+    // This action is handled specially by the hosting screen to open the selector
     run: async () => {
-      // Placeholder - actual handling happens in chat-screen via requestedChatActionId
+      // Placeholder - actual handling happens via requestedChatActionId
     },
   },
 ];
@@ -335,10 +338,11 @@ export function filterChatSlashActions(
     return chatSlashActions;
   }
 
+  // Match on the command name and label only; matching descriptions keeps
+  // unrelated entries around and makes the menu feel like it never filters.
   return chatSlashActions.filter(
     (action) =>
-      action.shortcut.replace(/^\//, "").toLowerCase().includes(normalized) ||
-      action.label.toLowerCase().includes(normalized) ||
-      action.description.toLowerCase().includes(normalized),
+      action.shortcut.replace(/^\//, "").toLowerCase().startsWith(normalized) ||
+      action.label.toLowerCase().includes(normalized),
   );
 }

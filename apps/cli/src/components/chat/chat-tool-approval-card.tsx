@@ -6,7 +6,8 @@ import type {
   ToolApprovalAction,
 } from "@lightcode/ai/react";
 import { useEffect, useState } from "react";
-import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../../utils/key-utils";
+import { activeGlyphs } from "../../ui/cli-theme-capabilities";
+import { isDownKey, isEnterKey, isUpKey } from "../../utils/key-utils";
 import {
   getNumberProperty,
   getStringProperty,
@@ -18,6 +19,12 @@ interface ChatToolApprovalCardProps {
   approvals: PendingToolApproval[];
   onResolve: (action: ToolApprovalAction, index: number) => void;
   onResolveAll: (action: ToolApprovalAction) => void;
+  /**
+   * True while the chat reply box holds text. The card then yields the
+   * keyboard so Enter submits the typed reply (e.g. an approve/deny command)
+   * instead of silently approving a tool call.
+   */
+  hasDraftText?: boolean;
 }
 
 function getApprovalTarget(approval: PendingToolApproval): string {
@@ -63,9 +70,9 @@ export function ChatToolApprovalCard({
   approvals,
   onResolve,
   onResolveAll,
+  hasDraftText = false,
 }: ChatToolApprovalCardProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [keyboardActive, setKeyboardActive] = useState(false);
   const safeSelectedIndex = Math.min(
     selectedIndex,
     Math.max(approvals.length - 1, 0),
@@ -78,7 +85,11 @@ export function ChatToolApprovalCard({
   }, [approvals.length]);
 
   useKeyboard((keyEvent) => {
-    if (approvals.length === 0) {
+    // Only keys that are no-ops in an empty reply box are claimed here
+    // (Enter, ↑/↓). Letters and digits always flow to the reply box, so
+    // typing "add tests" or "deny 2" can never trigger an approval action.
+    // Once the draft has text, everything (including Enter) belongs to it.
+    if (approvals.length === 0 || hasDraftText) {
       return;
     }
 
@@ -87,13 +98,6 @@ export function ChatToolApprovalCard({
     if (isDownKey(keyName)) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
-      if (!keyboardActive) {
-        setKeyboardActive(true);
-        setSelectedIndex(0);
-        return;
-      }
-
-      setKeyboardActive(true);
       setSelectedIndex((currentIndex) =>
         Math.min(currentIndex + 1, approvals.length - 1),
       );
@@ -103,18 +107,7 @@ export function ChatToolApprovalCard({
     if (isUpKey(keyName)) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
-      if (!keyboardActive) {
-        setKeyboardActive(true);
-        setSelectedIndex(0);
-        return;
-      }
-
-      setKeyboardActive(true);
       setSelectedIndex((currentIndex) => Math.max(currentIndex - 1, 0));
-      return;
-    }
-
-    if (!keyboardActive) {
       return;
     }
 
@@ -122,27 +115,6 @@ export function ChatToolApprovalCard({
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
       onResolve("approve", safeSelectedIndex);
-      return;
-    }
-
-    if (keyName === "d") {
-      keyEvent.preventDefault();
-      keyEvent.stopPropagation();
-      onResolve("deny", safeSelectedIndex);
-      return;
-    }
-
-    if (keyName === "a") {
-      keyEvent.preventDefault();
-      keyEvent.stopPropagation();
-      onResolveAll("approve");
-      return;
-    }
-
-    if (isEscapeKey(keyName)) {
-      keyEvent.preventDefault();
-      keyEvent.stopPropagation();
-      setKeyboardActive(false);
     }
   });
 
@@ -150,33 +122,41 @@ export function ChatToolApprovalCard({
     return null;
   }
 
+  const hint = hasDraftText
+    ? "Finish your reply below — approve/deny commands work there"
+    : [
+        approvals.length > 1 ? "↑/↓ select" : null,
+        "Enter approve",
+        "type deny to reject",
+        approvals.length > 1 ? "approve all / deny all" : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+
   return (
     <box
       width="100%"
       flexDirection="column"
       borderStyle="single"
-      borderColor={keyboardActive ? cliTheme.accent.primary : cliTheme.semantic.warning}
+      borderColor={cliTheme.semantic.warning}
       backgroundColor={cliTheme.surfaces.panel}
-      paddingX={1}
+      paddingX={2}
       paddingY={1}
       gap={1}
     >
       <box width="100%" flexDirection="row" justifyContent="space-between">
         <text fg={cliTheme.semantic.warning} attributes={typeRole("title").attributes}>
-          Tool Approval
+          {activeGlyphs.toolApproval} Tool access request
         </text>
-        <text fg={keyboardActive ? cliTheme.accent.primary : cliTheme.text.muted}>
-          {keyboardActive
-            ? `keyboard focus - ${approvals.length} pending`
-            : `${approvals.length} pending - press Down to focus`}
+        <text fg={cliTheme.text.muted}>
+          {approvals.length === 1 ? "1 pending" : `${approvals.length} pending`}
         </text>
       </box>
 
       <box width="100%" flexDirection="column">
         {approvals.map((approval, index) => {
-          const rowColors = getOverlayRowColors(
-            keyboardActive && index === safeSelectedIndex,
-          );
+          const selected = index === safeSelectedIndex;
+          const rowColors = getOverlayRowColors(selected);
           const target = truncateInline(getApprovalTarget(approval));
 
           return (
@@ -189,19 +169,20 @@ export function ChatToolApprovalCard({
             >
               <text
                 fg={rowColors.primaryTextColor}
-                attributes={
-                  keyboardActive && index === safeSelectedIndex
-                    ? TextAttributes.BOLD
-                    : TextAttributes.NONE
-                }
+                attributes={selected ? TextAttributes.BOLD : TextAttributes.NONE}
               >
-                {keyboardActive && index === safeSelectedIndex ? "> " : "  "}
-                {index + 1}. {approval.toolName} {target}
+                <span fg={selected ? cliTheme.accent.primary : cliTheme.text.muted}>
+                  {selected ? `${activeGlyphs.roleUser} ` : "  "}
+                  {index + 1}.{" "}
+                </span>
+                <span>{approval.toolName}</span>
+                <span fg={rowColors.secondaryTextColor}> {target}</span>
               </text>
               <text
                 fg={rowColors.secondaryTextColor}
                 attributes={TextAttributes.DIM}
               >
+                {"     "}
                 {getApprovalDescription(approval)}
               </text>
             </box>
@@ -209,16 +190,7 @@ export function ChatToolApprovalCard({
         })}
       </box>
 
-      <box width="100%" flexDirection="row" justifyContent="space-between">
-        <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
-          {keyboardActive
-            ? "Enter approve | d deny | a approve all | Esc release focus"
-            : "Down focus card | or type approve/deny below"}
-        </text>
-        <text fg={cliTheme.text.secondary}>
-          approve/deny also works in reply
-        </text>
-      </box>
+      <text {...typeRole("caption")}>{hint}</text>
     </box>
   );
 }

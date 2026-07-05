@@ -106,7 +106,7 @@ export function CommandPalette({ query, setQuery, selectedIndex }: CommandPalett
         borderColor={cliTheme.overlay.border}
       >
         <box flexDirection="row" gap={2}>
-          <PaletteHint text="Up/Down" description="navigate" />
+          <PaletteHint text="↑/↓" description="navigate" />
           <PaletteHint text="Enter" description="run" />
           <PaletteHint text="Esc" description="close" />
         </box>

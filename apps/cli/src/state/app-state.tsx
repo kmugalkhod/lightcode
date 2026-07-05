@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 
 /**
  * Live chat metrics published by the chat screen so the persistent app
@@ -27,7 +27,7 @@ export interface AppStateValue {
   closePalette: () => void;
   slashMenuOpen: boolean;
   slashMenuQuery: string;
-  setSlashMenuQuery: (q: string) => void;
+  setSlashMenuQuery: Dispatch<SetStateAction<string>>;
   slashMenuSelected: number;
   setSlashMenuSelected: (i: number) => void;
   openSlashMenu: () => void;

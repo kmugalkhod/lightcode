@@ -4,6 +4,7 @@ import type { PermissionMode } from "@lightcode/ai";
 import { useEffect, useState } from "react";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../../utils/key-utils";
 import { borderStyleFor, cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
+import { activeGlyphs } from "../../ui/cli-theme-capabilities";
 
 interface PermissionModeSelectorProps {
   currentMode: PermissionMode | undefined;
@@ -43,7 +44,6 @@ export function PermissionModeSelector({
   onClose,
 }: PermissionModeSelectorProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [keyboardActive, setKeyboardActive] = useState(false);
 
   useEffect(() => {
     // Initialize selection to current mode
@@ -65,10 +65,21 @@ export function PermissionModeSelector({
       return;
     }
 
+    if (keyName === "tab" || keyEvent.sequence === "\t") {
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+      // Tab cycles through the modes, wrapping back to the first.
+      setSelectedIndex((current) =>
+        keyEvent.shift
+          ? (current - 1 + permissionModes.length) % permissionModes.length
+          : (current + 1) % permissionModes.length,
+      );
+      return;
+    }
+
     if (isDownKey(keyName)) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
-      setKeyboardActive(true);
       setSelectedIndex((current) => Math.min(current + 1, permissionModes.length - 1));
       return;
     }
@@ -76,7 +87,6 @@ export function PermissionModeSelector({
     if (isUpKey(keyName)) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
-      setKeyboardActive(true);
       setSelectedIndex((current) => Math.max(current - 1, 0));
       return;
     }
@@ -114,7 +124,7 @@ export function PermissionModeSelector({
           Permission Mode
         </text>
         <text fg={cliTheme.overlay.footerText}>
-          ↑/↓ select | Enter confirm | Esc cancel
+          Tab/↑/↓ select · Enter confirm · Esc cancel
         </text>
       </box>
 
@@ -122,7 +132,7 @@ export function PermissionModeSelector({
       <box flexDirection="column" paddingY={1}>
         {permissionModes.map((modeOption, index) => {
           const isSelected = index === selectedIndex;
-          const rowColors = getOverlayRowColors(isSelected && keyboardActive);
+          const rowColors = getOverlayRowColors(isSelected);
 
           return (
             <box
@@ -132,13 +142,6 @@ export function PermissionModeSelector({
               paddingX={2}
               paddingY={1}
               backgroundColor={rowColors.backgroundColor}
-              borderStyle="single"
-              border={isSelected ? ["left"] : undefined}
-              borderColor={
-                isSelected
-                  ? cliTheme.accent.primary
-                  : cliTheme.overlay.border
-              }
             >
               <box width="100%" flexDirection="row" alignItems="center">
                 <text
@@ -150,7 +153,7 @@ export function PermissionModeSelector({
                   }
                   attributes={TextAttributes.BOLD}
                 >
-                  {isSelected ? "> " : "  "}
+                  {isSelected ? `${activeGlyphs.roleUser} ` : "  "}
                 </text>
                 <text
                   fg={
@@ -192,7 +195,7 @@ export function PermissionModeSelector({
                     }
                     attributes={TextAttributes.DIM}
                   >
-                    • {risk}
+                    {activeGlyphs.bullet} {risk}
                   </text>
                 ))}
               </box>

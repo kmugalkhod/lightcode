@@ -1,5 +1,6 @@
 import { TextAttributes, typeRole } from "../ui/cli-theme";
 import { borderStyleFor, cliTheme } from "../ui/cli-theme";
+import { activeGlyphs } from "../ui/cli-theme-capabilities";
 
 /** Minimal shape the menu needs; satisfied by routes and chat actions. */
 export interface SlashMenuDisplayItem {
@@ -20,7 +21,8 @@ export function SlashPageMenu({
   selectedIndex,
   routes,
 }: SlashPageMenuProps) {
-  const normalizedQuery = query.trim();
+  // A bare "/" only opens the menu — it isn't a filter yet.
+  const normalizedQuery = query.trim().replace(/^\//, "");
   const isFiltering = normalizedQuery.length > 0;
 
   return (
@@ -38,7 +40,7 @@ export function SlashPageMenu({
         ) : (
           routes.map((route, index) => (
             <MenuItem
-              key={route.id}
+              key={route.shortcut}
               route={route}
               selected={index === selectedIndex}
             />
@@ -57,13 +59,11 @@ export function SlashPageMenu({
       >
         <text fg={cliTheme.overlay.footerText}>
           {isFiltering
-            ? `Showing: "${normalizedQuery.replace(/^\//, "")}" - ${routes.length} result${routes.length !== 1 ? "s" : ""}`
+            ? `"${normalizedQuery}" · ${routes.length} result${routes.length !== 1 ? "s" : ""}`
             : `${routes.length} page${routes.length !== 1 ? "s" : ""}`}
         </text>
         <box flexGrow={1} />
-        <text {...typeRole("caption")}>Enter open | </text>
-        <text {...typeRole("emphasis")}>Up/Down</text>
-        <text {...typeRole("caption")}> select | Esc close</text>
+        <text {...typeRole("caption")}>↑/↓ select · Enter open · Esc close</text>
       </box>
     </box>
   );
@@ -98,7 +98,7 @@ function MenuItem({ route, selected }: MenuItemProps) {
             : cliTheme.text.muted
         }
       >
-        {selected ? ">" : " "}
+        {selected ? activeGlyphs.roleUser : " "}
       </text>
 
       {/* Shortcut Badge */}
@@ -107,6 +107,7 @@ function MenuItem({ route, selected }: MenuItemProps) {
         paddingX={1}
         paddingY={0}
         marginRight={1}
+        flexShrink={0}
       >
         <text
           fg={cliTheme.overlay.badgeText}
@@ -117,6 +118,9 @@ function MenuItem({ route, selected }: MenuItemProps) {
 
       {/* Route Label */}
       <text
+        wrapMode="none"
+        truncate
+        flexShrink={0}
         fg={
           selected
             ? cliTheme.overlay.selectedRowText
@@ -128,8 +132,11 @@ function MenuItem({ route, selected }: MenuItemProps) {
         {route.label}
       </text>
 
-      {/* Description - right aligned, fills remaining space */}
+      {/* Description - truncates instead of wrapping over the next row */}
       <text
+        wrapMode="none"
+        truncate
+        flexShrink={1}
         fg={
           selected
             ? cliTheme.overlay.selectedRowText

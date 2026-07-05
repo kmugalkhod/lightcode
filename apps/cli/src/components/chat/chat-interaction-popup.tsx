@@ -1,6 +1,7 @@
 import { useKeyboard } from "@opentui/react";
 import { useMemo, useState } from "react";
 import { typeRole, borderStyleFor, cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
+import { activeGlyphs } from "../../ui/cli-theme-capabilities";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../../utils/key-utils";
 
 interface InteractionOption {
@@ -45,9 +46,6 @@ export function ChatInteractionPopup({
   const [customAnswer, setCustomAnswer] = useState("");
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
   const submitVerb = submitLabel.toLowerCase();
-  const hintLabel = onCancel
-    ? `Up/Down select | Enter ${submitVerb} | Esc dismiss`
-    : `Up/Down select | Enter ${submitVerb}`;
 
   const rows = useMemo(() => {
     const optionRows = options.map((option) => ({
@@ -72,6 +70,11 @@ export function ChatInteractionPopup({
     ];
   }, [allowCustomResponse, options]);
 
+  // With no real options the row list is just the synthetic custom entry —
+  // skip the list and show the input directly.
+  const inputOnly = options.length === 0 && allowCustomResponse;
+  const visibleRows = inputOnly ? [] : rows;
+
   const safeSelectedIndex = Math.min(selectedIndex, Math.max(rows.length - 1, 0));
   const selectedRow = rows[safeSelectedIndex];
 
@@ -80,8 +83,16 @@ export function ChatInteractionPopup({
       (selectedRow && requireCustomResponseForValues.includes(selectedRow.value)),
   );
 
-  const canShowInput =
-    requiresCustomResponse || (rows.length === 0 && allowCustomResponse);
+  const canShowInput = inputOnly || requiresCustomResponse;
+
+  const hintLabel = [
+    visibleRows.length > 1 ? "↑/↓ select" : null,
+    visibleRows.length > 1 ? "1-9 pick" : null,
+    `Enter ${submitVerb}`,
+    onCancel ? "Esc dismiss" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const submitCurrentSelection = () => {
     if (!selectedRow && !canShowInput) {
@@ -91,7 +102,11 @@ export function ChatInteractionPopup({
     if (canShowInput) {
       const answer = customAnswer.trim();
       if (answer.length === 0) {
-        setValidationMessage("Please enter a response before submitting.");
+        setValidationMessage(
+          selectedRow && !selectedRow.isCustom && !inputOnly
+            ? "This choice needs a short note — type it below."
+            : "Type an answer first, then press Enter.",
+        );
         return;
       }
 
@@ -99,9 +114,13 @@ export function ChatInteractionPopup({
       onSubmit({
         answer,
         selectedOption:
-          selectedRow && !selectedRow.isCustom ? selectedRow.label : undefined,
+          selectedRow && !selectedRow.isCustom && !inputOnly
+            ? selectedRow.label
+            : undefined,
         selectedValue:
-          selectedRow && !selectedRow.isCustom ? selectedRow.value : undefined,
+          selectedRow && !selectedRow.isCustom && !inputOnly
+            ? selectedRow.value
+            : undefined,
         source:
           selectedRow?.isCustom || !selectedRow || requiresCustomResponse
             ? "custom"
@@ -119,6 +138,11 @@ export function ChatInteractionPopup({
     });
   };
 
+  const selectRow = (index: number) => {
+    setValidationMessage(null);
+    setSelectedIndex(Math.min(Math.max(index, 0), Math.max(rows.length - 1, 0)));
+  };
+
   useKeyboard((keyEvent) => {
     if (rows.length === 0 && !canShowInput) {
       if (isEscapeKey(keyEvent.name.toLowerCase()) && onCancel) {
@@ -134,18 +158,39 @@ export function ChatInteractionPopup({
     if (isDownKey(keyName)) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
-      setValidationMessage(null);
-      setSelectedIndex((currentIndex) =>
-        Math.min(currentIndex + 1, Math.max(rows.length - 1, 0)),
-      );
+      selectRow(safeSelectedIndex + 1);
       return;
     }
 
     if (isUpKey(keyName)) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
-      setValidationMessage(null);
-      setSelectedIndex((currentIndex) => Math.max(currentIndex - 1, 0));
+      selectRow(safeSelectedIndex - 1);
+      return;
+    }
+
+    // Quick pick: 1-9 jumps straight to an option (and submits it when it
+    // needs no typed follow-up). Disabled while the input is showing so
+    // digits type into the answer instead.
+    if (!canShowInput && visibleRows.length > 1 && /^[1-9]$/.test(keyName)) {
+      const index = Number(keyName) - 1;
+      if (index < rows.length) {
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        selectRow(index);
+        const row = rows[index];
+        const needsInput =
+          row.isCustom || requireCustomResponseForValues.includes(row.value);
+        if (!needsInput) {
+          setValidationMessage(null);
+          onSubmit({
+            answer: row.label,
+            selectedOption: row.label,
+            selectedValue: row.value,
+            source: "option",
+          });
+        }
+      }
       return;
     }
 
@@ -170,17 +215,21 @@ export function ChatInteractionPopup({
       borderStyle={borderStyleFor.modal}
       borderColor={cliTheme.borders.active}
       backgroundColor={cliTheme.surfaces.panel}
-      paddingX={1}
+      paddingX={2}
       paddingY={1}
       gap={1}
     >
-      <text {...typeRole("title")}>{title}</text>
+      <box width="100%" flexDirection="row" justifyContent="space-between">
+        <text {...typeRole("title")}>{title}</text>
+        <text fg={cliTheme.text.muted}>{submitLabel}</text>
+      </box>
       <text fg={cliTheme.text.primary}>{question}</text>
 
-      {rows.length > 0 ? (
+      {visibleRows.length > 0 ? (
         <box width="100%" flexDirection="column">
-          {rows.map((row, index) => {
-            const rowColors = getOverlayRowColors(index === safeSelectedIndex);
+          {visibleRows.map((row, index) => {
+            const selected = index === safeSelectedIndex;
+            const rowColors = getOverlayRowColors(selected);
 
             return (
               <box
@@ -190,11 +239,18 @@ export function ChatInteractionPopup({
                 paddingX={1}
                 backgroundColor={rowColors.backgroundColor}
               >
-                <text fg={rowColors.primaryTextColor}>
-                  {index + 1}. {row.label}
+                <text fg={selected ? cliTheme.accent.primary : rowColors.primaryTextColor}>
+                  <span>{selected ? `${activeGlyphs.roleUser} ` : "  "}</span>
+                  <span fg={selected ? cliTheme.accent.primary : cliTheme.text.muted}>
+                    {index + 1}.{" "}
+                  </span>
+                  <span fg={rowColors.primaryTextColor}>{row.label}</span>
                 </text>
                 {row.description ? (
-                  <text {...typeRole("caption")}>{row.description}</text>
+                  <text fg={rowColors.secondaryTextColor}>
+                    {"     "}
+                    {row.description}
+                  </text>
                 ) : null}
               </box>
             );
@@ -204,14 +260,17 @@ export function ChatInteractionPopup({
 
       {canShowInput ? (
         <box width="100%" flexDirection="column" gap={1}>
-          {selectedRow && !selectedRow.isCustom ? (
-            <text fg={cliTheme.text.secondary}>Additional details required</text>
+          {selectedRow && !selectedRow.isCustom && !inputOnly ? (
+            <text fg={cliTheme.text.secondary}>Add a short note to continue:</text>
           ) : null}
           <input
             value={customAnswer}
-            onChange={(value: string) => {
+            onInput={(value: string) => {
               setValidationMessage(null);
               setCustomAnswer(value ?? "");
+            }}
+            onSubmit={() => {
+              submitCurrentSelection();
             }}
             placeholder={placeholder}
             width="100%"
@@ -226,12 +285,7 @@ export function ChatInteractionPopup({
         <text fg={cliTheme.semantic.warning}>{validationMessage}</text>
       ) : null}
 
-      <box width="100%" flexDirection="row" justifyContent="space-between">
-        <text {...typeRole("caption")}>
-          {hintLabel}
-        </text>
-        <text fg={cliTheme.text.secondary}>{submitLabel}</text>
-      </box>
+      <text {...typeRole("caption")}>{hintLabel}</text>
     </box>
   );
 }

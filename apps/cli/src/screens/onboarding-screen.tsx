@@ -247,7 +247,7 @@ export function OnboardingScreen() {
                       : cliTheme.text.muted
                   }
                 >
-                  {index === selectedIndex ? ">" : " "}
+                  {index === selectedIndex ? activeGlyphs.roleUser : " "}
                 </text>
                 <text
                   fg={
@@ -265,7 +265,7 @@ export function OnboardingScreen() {
               </box>
             ))}
             <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
-              Up/Down select - Enter continue
+              ↑/↓ select · Enter continue
             </text>
           </box>
         ) : null}

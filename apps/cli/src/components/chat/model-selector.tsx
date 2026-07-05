@@ -10,6 +10,7 @@ import {
 } from "../../utils/key-utils";
 import { client } from "../../lib/client";
 import { borderStyleFor, cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
+import { activeGlyphs } from "../../ui/cli-theme-capabilities";
 
 interface ModelSelectorProps {
   onClose: () => void;
@@ -228,7 +229,7 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
           Switch Model (OpenRouter)
         </text>
         <text fg={cliTheme.overlay.footerText}>
-          type to filter | ↑/↓ select | Enter confirm | Esc cancel
+          type to filter · ↑/↓ select · Enter confirm · Esc cancel
         </text>
       </box>
 
@@ -268,7 +269,7 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
                   fg={isSelected ? cliTheme.accent.primary : cliTheme.text.muted}
                   attributes={TextAttributes.BOLD}
                 >
-                  {isSelected ? ">" : " "}
+                  {isSelected ? activeGlyphs.roleUser : " "}
                 </text>
                 <text
                   fg={
@@ -282,8 +283,8 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
                 </text>
                 <text fg={cliTheme.text.muted} marginLeft={2}>
                   {`${formatContextLength(model.contextLength)}${
-                    model.supportsTools ? " | tools" : ""
-                  }${model.supportsReasoning ? " | reasoning" : ""}`}
+                    model.supportsTools ? " · tools" : ""
+                  }${model.supportsReasoning ? " · reasoning" : ""}`}
                 </text>
                 {model.id === currentModel && (
                   <text fg={cliTheme.accent.primary} marginLeft={2}>
@@ -297,7 +298,7 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
             <text fg={cliTheme.overlay.footerText}>
               {`${filteredModels.length} model${
                 filteredModels.length === 1 ? "" : "s"
-              }${isApplying ? " | switching..." : ""}`}
+              }${isApplying ? " · switching..." : ""}`}
             </text>
           </box>
         </box>

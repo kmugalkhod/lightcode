@@ -1,5 +1,5 @@
 import { TextAttributes, typeRole } from "../ui/cli-theme";
-import { useKeyboard } from "@opentui/react";
+import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import {
   sessionDeleteResponseSchema,
   sessionExportJsonSchema,
@@ -17,6 +17,7 @@ import {
   sessionToMarkdown,
 } from "../commands/export-session-markdown";
 import { ChatTextArea } from "../components/chat/chat-text-area";
+import { activeGlyphs } from "../ui/cli-theme-capabilities";
 import { cliTheme, getOverlayRowColors } from "../ui/cli-theme";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../utils/key-utils";
 import { formatDate, getErrorMessage, truncateInline } from "../utils/text-utils";
@@ -60,6 +61,27 @@ export function SessionListScreen() {
   );
   const selectedSession = visibleSessions[safeSelectedIndex] ?? null;
   const inputActive = filterOpen || renamingSessionId !== null;
+
+  // Window the list around the selection: rows past the screen edge used to
+  // get flex-squeezed to zero height and paint over each other.
+  const { height: terminalHeight } = useTerminalDimensions();
+  const maxVisibleRows = Math.max(5, terminalHeight - 12);
+  const windowStart = Math.max(
+    0,
+    Math.min(
+      safeSelectedIndex - Math.floor(maxVisibleRows / 2),
+      visibleSessions.length - maxVisibleRows,
+    ),
+  );
+  const windowedSessions = visibleSessions.slice(
+    windowStart,
+    windowStart + maxVisibleRows,
+  );
+  const hiddenAbove = windowStart;
+  const hiddenBelow = Math.max(
+    0,
+    visibleSessions.length - (windowStart + windowedSessions.length),
+  );
 
   const applyLoadedSessions = useCallback(
     (loadedSessions: SessionSummary[], droppedCount: number) => {
@@ -372,10 +394,10 @@ export function SessionListScreen() {
 
   const footerText = useMemo(() => {
     if (sessions.length === 0) {
-      return `u refresh | l resume latest | ${BACK_SHORTCUT_LABEL} back`;
+      return `u refresh · l resume latest · ${BACK_SHORTCUT_LABEL} back`;
     }
 
-    return "Enter resume | r rename | f fork | / filter | e export | d delete | u refresh";
+    return "Enter resume · r rename · f fork · / filter · e export · d delete · u refresh";
   }, [sessions.length]);
 
   return (
@@ -398,7 +420,7 @@ export function SessionListScreen() {
           <text fg={cliTheme.accent.primary}>
             {`Filter: "${filterQuery}" (${visibleSessions.length} match${
               visibleSessions.length === 1 ? "" : "es"
-            }) - Esc clears`}
+            }) · Esc clears`}
           </text>
         </box>
       ) : null}
@@ -413,7 +435,7 @@ export function SessionListScreen() {
             gap={1}
           >
             <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>
-              {sessions.length === 0 ? "◆ No sessions yet" : "No matches"}
+              {sessions.length === 0 ? `${activeGlyphs.roleAssistant} No sessions yet` : "No matches"}
             </text>
             <text fg={cliTheme.text.muted}>
               {sessions.length === 0
@@ -423,7 +445,15 @@ export function SessionListScreen() {
           </box>
         ) : null}
 
-        {visibleSessions.map((session, index) => {
+        {hiddenAbove > 0 ? (
+          <box paddingX={1} flexShrink={0}>
+            <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+              {`↑ ${hiddenAbove} more`}
+            </text>
+          </box>
+        ) : null}
+        {windowedSessions.map((session, windowIndex) => {
+          const index = windowStart + windowIndex;
           const isSelected = index === safeSelectedIndex;
           const rowColors = getOverlayRowColors(isSelected);
           const selectedForDelete = pendingDeleteId === session.id;
@@ -433,31 +463,55 @@ export function SessionListScreen() {
               key={session.id}
               flexDirection="column"
               paddingX={1}
+              flexShrink={0}
               backgroundColor={rowColors.backgroundColor}
             >
               <box flexDirection="row" justifyContent="space-between">
+                <box flexShrink={1} height={1} overflow="hidden">
+                  <text
+                    wrapMode="none"
+                    truncate
+                    fg={
+                      selectedForDelete
+                        ? cliTheme.semantic.error
+                        : rowColors.primaryTextColor
+                    }
+                    attributes={TextAttributes.BOLD}
+                  >
+                    {isSelected ? `${activeGlyphs.roleUser} ` : "  "}{index + 1}. {truncateInline(getSessionLabel(session), 64)}
+                  </text>
+                </box>
                 <text
-                  fg={
-                    selectedForDelete
-                      ? cliTheme.semantic.error
-                      : rowColors.primaryTextColor
-                  }
-                  attributes={TextAttributes.BOLD}
+                  wrapMode="none"
+                  truncate
+                  flexShrink={0}
+                  fg={rowColors.secondaryTextColor}
+                  attributes={TextAttributes.DIM}
                 >
-                  {index + 1}. {truncateInline(getSessionLabel(session), 64)}
-                </text>
-                <text fg={rowColors.secondaryTextColor} attributes={TextAttributes.DIM}>
-                  {`${session.messageCount} msgs - ${session.mode} - ${formatDate(session.updatedAt)}`}
+                  {`${session.messageCount} msgs · ${session.mode} · ${formatDate(session.updatedAt)}`}
                 </text>
               </box>
               {isSelected && session.latestUserPromptPreview ? (
-                <text fg={rowColors.secondaryTextColor} attributes={TextAttributes.DIM}>
+                <text
+                  wrapMode="none"
+                  truncate
+                  fg={rowColors.secondaryTextColor}
+                  attributes={TextAttributes.DIM}
+                >
+                  {"    "}
                   {truncateInline(session.latestUserPromptPreview, 110)}
                 </text>
               ) : null}
             </box>
           );
         })}
+        {hiddenBelow > 0 ? (
+          <box paddingX={1} flexShrink={0}>
+            <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
+              {`↓ ${hiddenBelow} more`}
+            </text>
+          </box>
+        ) : null}
       </box>
 
       {actionMessage ? (
@@ -485,7 +539,7 @@ export function SessionListScreen() {
       <box paddingX={1}>
         <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
           {inputActive
-            ? "Enter confirm | Esc cancel"
+            ? "Enter confirm · Esc cancel"
             : footerText}
         </text>
       </box>

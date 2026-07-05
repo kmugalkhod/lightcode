@@ -96,6 +96,7 @@ function AppContent() {
     closePalette,
     slashMenuOpen,
     slashMenuQuery,
+    setSlashMenuQuery,
     slashMenuSelected,
     setSlashMenuSelected,
     openSlashMenu,
@@ -180,7 +181,13 @@ function AppContent() {
         openPalette();
         break;
       case "system:slashPalette":
-        openSlashMenu();
+        // On screens whose text input hosts the menu, typing "/" in the input
+        // opens and drives it. Opening from the global binding there produces
+        // a menu the input never syncs (e.g. while it is disabled mid-stream),
+        // so typing can't filter it.
+        if (!inputHostsSlashMenu) {
+          openSlashMenu();
+        }
         break;
       case "system:back":
         if (canGoBack) {
@@ -212,8 +219,15 @@ function AppContent() {
   };
 
   const filteredCommands = searchCommands(paletteQuery.trim());
+  // Must mirror the host each screen passes when rendering its own menu, or
+  // Enter would select a different item than the one highlighted.
+  const slashMenuHost = inChatSession
+    ? ("chat" as const)
+    : location.pathname === "/" || location.pathname === "/home"
+      ? ("home" as const)
+      : ("other" as const);
   const filteredSlashRoutes = getSlashMenuItems(slashMenuQuery, {
-    includeChatActions: inChatSession,
+    host: slashMenuHost,
   });
   const selectedSlashRouteIndex = Math.min(
     slashMenuSelected,
@@ -260,10 +274,39 @@ function AppContent() {
   const handleSlashMenuKeyDown = (keyEvent: KeyboardEventLike) => {
     const maxIndex = filteredSlashRoutes.length - 1;
 
-    if (isBackspaceKey(keyEvent) && !inputHostsSlashMenu && slashMenuQuery.trim().length <= 1) {
-      captureKeyEvent(keyEvent);
-      closeSlashMenu();
-      return;
+    // On pages without a text input hosting the menu, the overlay owns the
+    // query: printable keys extend it and backspace edits it, so typing
+    // "/skill" filters here just like it does in the chat input.
+    if (!inputHostsSlashMenu) {
+      if (isBackspaceKey(keyEvent)) {
+        captureKeyEvent(keyEvent);
+        if (slashMenuQuery.trim().length <= 1) {
+          closeSlashMenu();
+        } else {
+          // Functional update: rapid keystrokes outrun the re-render, so
+          // reading slashMenuQuery here would drop all but the first key.
+          setSlashMenuQuery((query) => (query.length > 1 ? query.slice(0, -1) : query));
+          setSlashMenuSelected(0);
+        }
+        return;
+      }
+
+      const typed = keyEvent.sequence ?? "";
+      if (
+        typed.length === 1 &&
+        typed >= " " &&
+        typed !== "\x7f" &&
+        !keyEvent.ctrl &&
+        !isEnterKey(keyEvent) &&
+        !isEscapeKey(keyEvent) &&
+        !isUpKey(keyEvent) &&
+        !isDownKey(keyEvent)
+      ) {
+        captureKeyEvent(keyEvent);
+        setSlashMenuQuery((query) => query + typed);
+        setSlashMenuSelected(0);
+        return;
+      }
     }
 
     if (maxIndex < 0) {
@@ -356,11 +399,11 @@ function AppContent() {
 
   const getFooterStatus = () => {
     if (slashMenuOpen) {
-      return "Slash pages open | Enter Open | Backspace Close | Esc Cancel";
+      return "Slash pages · ↑/↓ select · Enter open · Esc close";
     }
 
-    const backHint = canGoBack ? `Esc/${BACK_SHORTCUT_LABEL} Back | ` : "";
-    return backHint + "/ Pages | Ctrl+P Cmd | F1 Help | Ctrl+C Quit";
+    const backHint = canGoBack ? `Esc/${BACK_SHORTCUT_LABEL} back · ` : "";
+    return backHint + "/ pages · Ctrl+P commands · F1 help · Ctrl+C quit";
   };
 
   return (

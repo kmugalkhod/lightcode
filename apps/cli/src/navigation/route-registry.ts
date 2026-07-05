@@ -103,12 +103,12 @@ export function getSlashPageRoutes(query = ""): AnyRouteDefinition[] {
     return getNavigationRoutes();
   }
 
+  // Match on the command name and label only; matching descriptions keeps
+  // unrelated entries around and makes the menu feel like it never filters.
   return getNavigationRoutes().filter((route) => {
     return (
-      route.path.toLowerCase().includes(normalizedQuery) ||
-      route.shortcut.replace(/^\//, "").toLowerCase().includes(normalizedQuery) ||
-      route.label.toLowerCase().includes(normalizedQuery) ||
-      route.description.toLowerCase().includes(normalizedQuery)
+      route.shortcut.replace(/^\//, "").toLowerCase().startsWith(normalizedQuery) ||
+      route.label.toLowerCase().includes(normalizedQuery)
     );
   });
 }

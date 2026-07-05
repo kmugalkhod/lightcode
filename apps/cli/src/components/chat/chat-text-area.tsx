@@ -360,7 +360,7 @@ export function ChatTextArea({
             </text>
           ))}
           <text {...typeRole("caption")}>
-            Tab attach | Up/Down select | Esc dismiss
+            Tab attach · ↑/↓ select · Esc dismiss
           </text>
         </box>
       ) : null}

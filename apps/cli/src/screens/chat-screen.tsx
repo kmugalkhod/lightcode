@@ -235,8 +235,11 @@ export function ChatScreen() {
     tone: ChatActionTone;
   } | null>(null);
   const [permissionSelectorOpen, setPermissionSelectorOpen] = useState(false);
+  // Whether the reply box holds text — the tool-approval card yields the
+  // keyboard (Enter, d, a, …) to the reply box while a reply is in progress.
+  const [draftHasText, setDraftHasText] = useState(false);
   const slashRoutes = getSlashMenuItems(slashMenuQuery, {
-    includeChatActions: true,
+    host: "chat",
   });
   const selectedSlashRouteIndex = Math.min(
     slashMenuSelected,
@@ -245,6 +248,7 @@ export function ChatScreen() {
 
   const syncSlashMenuFromInput = useCallback(
     (text: string) => {
+      setDraftHasText(text.trim().length > 0);
       const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
 
       if (!firstLine.startsWith("/")) {
@@ -1280,6 +1284,7 @@ export function ChatScreen() {
         !isSessionIdValid ||
         hasBlockingPopup ||
         slashMenuOpen ||
+        permissionSelectorOpen ||
         copyableMessages.length === 0
       ) {
         return;
@@ -1310,7 +1315,8 @@ export function ChatScreen() {
       return;
     }
 
-    if (!isSessionIdValid || hasBlockingPopup || slashMenuOpen) {
+    // The permission selector owns Tab (cycles modes) while it is open.
+    if (!isSessionIdValid || hasBlockingPopup || slashMenuOpen || permissionSelectorOpen) {
       return;
     }
 
@@ -1370,8 +1376,8 @@ export function ChatScreen() {
         inputArea={
           <ChatTextArea
             placeholder={isLoading ? "Waiting for response..." : "Reply... (@ to attach files)"}
-            focused={canTypeInChat && !copyModeOpen && !panelFocused && !isEditingFile}
-            disabled={!canTypeInChat || copyModeOpen || panelFocused || isEditingFile}
+            focused={canTypeInChat && !copyModeOpen && !permissionSelectorOpen && !panelFocused && !isEditingFile}
+            disabled={!canTypeInChat || copyModeOpen || permissionSelectorOpen || panelFocused || isEditingFile}
             slashMenuOpen={slashMenuOpen}
             mentionCandidates={mentionCandidates}
             onTextChange={syncSlashMenuFromInput}
@@ -1404,11 +1410,11 @@ export function ChatScreen() {
                         : "Type retry or regenerate to try again"}
                     </text>
                   ) : pendingApprovals.length > 0 ? (
-                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Use approval card or approve/deny commands</text>
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Enter approve · type deny to reject · or reply</text>
                   ) : hasBlockingPopup ? (
                     <text wrapMode="none" truncate fg={cliTheme.text.muted}>Complete the inline prompt to continue</text>
                   ) : slashMenuOpen ? (
-                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Choose a page or press Esc</text>
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>↑/↓ select · Enter open · Esc close</text>
                   ) : (
                     <text wrapMode="none" truncate fg={cliTheme.text.muted}>Enter send · Ctrl+Enter newline</text>
                   )}
@@ -1527,6 +1533,7 @@ export function ChatScreen() {
             approvals={pendingApprovals}
             onResolve={resolveToolApproval}
             onResolveAll={resolveAllToolApprovals}
+            hasDraftText={draftHasText}
           />
         ) : null}
         {todos.length > 0 ? <ChatTodoStatusCard todos={todos} /> : null}
