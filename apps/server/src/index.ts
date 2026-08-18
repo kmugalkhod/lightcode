@@ -17,7 +17,7 @@ function isChatStreamingRoute(request: Request) {
   }
 
   const pathname = new URL(request.url).pathname;
-  return /^\/sessions\/[^/]+\/chat$/.test(pathname);
+  return /^\/sessions\/[^/]+\/(?:chat|turns)$/.test(pathname);
 }
 
 async function startServer() {
@@ -74,6 +74,13 @@ async function startServer() {
 
   let server: ReturnType<typeof Bun.serve>;
   try {
+    const { recoverInterruptedChatRuns } = await import(
+      "./lib/chat-run-store"
+    );
+    const recoveredRuns = await recoverInterruptedChatRuns();
+    if (recoveredRuns > 0) {
+      logger.warn("interrupted_chat_runs_recovered", { count: recoveredRuns });
+    }
     server = Bun.serve({
       idleTimeout: httpIdleTimeoutSeconds,
       port,

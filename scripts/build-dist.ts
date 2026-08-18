@@ -333,6 +333,13 @@ writeFileSync(
         "Lightcode — a personal AI coding agent with a terminal UI and local session storage.",
       type: "module",
       license: "MIT",
+      repository: {
+        type: "git",
+        url: "git+https://github.com/kmugalkhod/lightcode.git",
+      },
+      homepage: "https://github.com/kmugalkhod/lightcode#readme",
+      bugs: { url: "https://github.com/kmugalkhod/lightcode/issues" },
+      publishConfig: { access: "public" },
       bin: { lightcode: "./lightcode.cjs" },
       engines: { bun: ">=1.3.0" },
       files: ["cli.js", "lightcode.cjs", "server.js", "assets", "README.md", "LICENSE"],

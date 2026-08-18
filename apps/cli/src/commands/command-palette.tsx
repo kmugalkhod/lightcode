@@ -1,19 +1,30 @@
 import { TextAttributes, typeRole } from "../ui/cli-theme";
-import { commandRegistry, searchCommands, type Command } from "./command-registry";
+import {
+  getCommands,
+  searchCommands,
+  type Command,
+  type CommandHost,
+} from "./command-registry";
 import { borderStyleFor, cliTheme } from "../ui/cli-theme";
 
 interface CommandPaletteProps {
   query: string;
   setQuery: (q: string) => void;
   selectedIndex: number;
+  host: CommandHost;
 }
 
 const INDICATOR_SELECTED = ">";
 const INDICATOR_DEFAULT = " ";
 
-export function CommandPalette({ query, setQuery, selectedIndex }: CommandPaletteProps) {
-  const commands: Command[] = searchCommands(query.trim());
-  const totalCommands = commandRegistry.length;
+export function CommandPalette({
+  query,
+  setQuery,
+  selectedIndex,
+  host,
+}: CommandPaletteProps) {
+  const commands: Command[] = searchCommands(query, host);
+  const totalCommands = getCommands(host).length;
 
   return (
     <box

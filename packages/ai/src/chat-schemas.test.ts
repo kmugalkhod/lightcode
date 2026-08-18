@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   sessionExportJsonSchema,
   sessionPathParamsSchema,
+  sessionTurnRequestSchema,
 } from "./chat-schemas";
+import { codingChatRequestSchema } from "./agent-tools";
 
 const sessionMetadata = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -49,5 +51,36 @@ describe("session chat schemas", () => {
     });
 
     expect(parsed.success).toBe(true);
+  });
+
+  test("accepts only explicit provider web-search decisions", () => {
+    const turn = {
+      clientTurnId: "turn-1",
+      expectedRevision: 3,
+      messageId: "message-1",
+      role: "user",
+      parts: [{ type: "text", text: "Search for this" }],
+      providerWebSearchDecision: "approved",
+    } as const;
+    expect(sessionTurnRequestSchema.safeParse(turn).success).toBe(true);
+    expect(
+      sessionTurnRequestSchema.safeParse({
+        ...turn,
+        providerWebSearchDecision: "allow",
+      }).success,
+    ).toBe(false);
+
+    const legacyChat = {
+      messages: [
+        {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "text", text: "Search for this" }],
+        },
+      ],
+      cwd: "/workspace",
+      providerWebSearchDecision: "denied",
+    } as const;
+    expect(codingChatRequestSchema.safeParse(legacyChat).success).toBe(true);
   });
 });

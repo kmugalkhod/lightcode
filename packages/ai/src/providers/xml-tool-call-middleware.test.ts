@@ -164,8 +164,21 @@ describe("xmlToolCallMiddleware streaming", () => {
     expect(finish?.providerMetadata?.lightcode?.toolIntent).toBe("unparsed");
   });
 
-  test("streams bare JSON through as text (bare-JSON calls are generate-only)", async () => {
-    const text = '{"name": "read_file", "arguments": {"path": "a.ts"}}';
+  test("parses a streamed bare trailing JSON call", async () => {
+    const parts = await runStream([
+      '{"na',
+      'me": "read_file", "arguments": {"path": "a.ts"}}',
+    ]);
+    const calls = toolCallsOf(parts);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.toolName).toBe("read_file");
+    expect(JSON.parse(calls[0]?.input ?? "{}")).toEqual({ path: "a.ts" });
+    expect(textOf(parts)).toBe("");
+    expect(finishOf(parts)?.finishReason.unified).toBe("tool-calls");
+  });
+
+  test("streams bare JSON with an unknown tool name as ordinary text", async () => {
+    const text = '{"name": "lightcode", "version": "1.0.0"}';
     const parts = await runStream([text]);
     expect(toolCallsOf(parts)).toHaveLength(0);
     expect(textOf(parts)).toBe(text);
@@ -221,7 +234,7 @@ describe("xmlToolCallMiddleware streaming", () => {
     // The first delta must arrive BEFORE the stream finishes — no latch.
     const firstDelta = collected.find((p) => p.type === "text-delta");
     expect(firstDelta).toBeDefined();
-    expect((firstDelta as { delta: string }).delta).toContain('{"name": "lightcode"');
+    expect((firstDelta as { delta: string }).delta).toContain("package.json needs");
 
     releaseRest?.();
     for (;;) {
@@ -230,6 +243,7 @@ describe("xmlToolCallMiddleware streaming", () => {
       collected.push(value);
     }
     expect(toolCallsOf(collected)).toHaveLength(0);
+    expect(textOf(collected)).toContain('{"name": "lightcode"');
     expect(textOf(collected)).toContain("Then run npm pack.");
   });
 

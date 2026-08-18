@@ -7,8 +7,12 @@ import type {
   LanguageModelV3Usage,
 } from "@ai-sdk/provider";
 import {
+  bareToolCallMarkerHoldbackLength,
+  confirmBareToolCallCandidate,
   confirmToolCallMarker,
   extractToolCalls,
+  findBareToolCallMarker,
+  findLeadingJsonObjectEnd,
   findToolBlockEnd,
   findToolCallMarkerMatch,
   looksLikeTruncatedToolCall,
@@ -112,7 +116,7 @@ export const xmlToolCallMiddleware: LanguageModelMiddleware = {
         // Text not yet emitted: a short holdback tail, or — while a marker is
         // being confirmed / a block is being completed — the candidate block.
         let pending = "";
-        let mode: "text" | "tool" = "text";
+        let mode: "text" | "tool" | "bare" = "text";
         let activeMarker: ToolCallMarker | null = null;
         // ``` parity of everything emitted so far; markers inside fenced code
         // blocks are prose, not tool calls.
@@ -153,7 +157,7 @@ export const xmlToolCallMiddleware: LanguageModelMiddleware = {
         const processPending = async (atStreamEnd: boolean) => {
           for (;;) {
             if (mode === "text") {
-              // Find the earliest marker that is outside a code fence.
+              // Find the earliest XML or bare-JSON marker outside a code fence.
               let searchFrom = 0;
               let found: ReturnType<typeof findToolCallMarkerMatch> = null;
               for (;;) {
@@ -169,8 +173,28 @@ export const xmlToolCallMiddleware: LanguageModelMiddleware = {
                 break;
               }
 
-              if (!found) {
-                const holdback = atStreamEnd ? 0 : markerHoldbackLength(pending);
+              let bareIndex = -1;
+              searchFrom = 0;
+              for (;;) {
+                const index = findBareToolCallMarker(pending, searchFrom);
+                if (index === -1) break;
+                const fenceParity =
+                  (emittedFenceCount + countFences(pending.slice(0, index))) % 2;
+                if (fenceParity === 1) {
+                  searchFrom = index + 1;
+                  continue;
+                }
+                bareIndex = index;
+                break;
+              }
+
+              if (!found && bareIndex === -1) {
+                const holdback = atStreamEnd
+                  ? 0
+                  : Math.max(
+                      markerHoldbackLength(pending),
+                      bareToolCallMarkerHoldbackLength(pending),
+                    );
                 if (pending.length > holdback) {
                   emitText(pending.slice(0, pending.length - holdback));
                   pending = pending.slice(pending.length - holdback);
@@ -178,13 +202,71 @@ export const xmlToolCallMiddleware: LanguageModelMiddleware = {
                 return;
               }
 
-              if (found.index > 0) {
-                emitText(pending.slice(0, found.index));
-                pending = pending.slice(found.index);
+              const markerIndex =
+                found && (bareIndex === -1 || found.index <= bareIndex)
+                  ? found.index
+                  : bareIndex;
+              if (markerIndex > 0) {
+                emitText(pending.slice(0, markerIndex));
+                pending = pending.slice(markerIndex);
               }
-              mode = "tool";
-              activeMarker = found.marker;
+              if (found && markerIndex === found.index) {
+                mode = "tool";
+                activeMarker = found.marker;
+              } else {
+                mode = "bare";
+                activeMarker = null;
+              }
               continue;
+            }
+
+            if (mode === "bare") {
+              const confirmation = confirmBareToolCallCandidate(
+                pending,
+                toolNames,
+              );
+
+              if (confirmation === "rejected") {
+                // It is ordinary JSON (most commonly package metadata). Flush
+                // one character and rescan without latching the stream.
+                emitText(pending.slice(0, 1));
+                pending = pending.slice(1);
+                mode = "text";
+                continue;
+              }
+
+              if (confirmation === "confirmed") {
+                const objectEnd = findLeadingJsonObjectEnd(pending);
+                if (
+                  objectEnd !== -1 &&
+                  pending.slice(objectEnd).trim().length > 0
+                ) {
+                  // Bare calls are valid only at the end of the assistant
+                  // message. Completed JSON followed by prose is visible text.
+                  emitText(pending.slice(0, 1));
+                  pending = pending.slice(1);
+                  mode = "text";
+                  continue;
+                }
+              }
+
+              if (!atStreamEnd) {
+                return;
+              }
+
+              const extraction = await extractToolCalls(pending, toolNames);
+              if (extraction.calls.length > 0) {
+                emitText(extraction.cleanText);
+                emitParsedCalls(extraction.calls);
+              } else if (confirmation === "confirmed") {
+                // Known-tool intent that could not be repaired: do not leak
+                // malformed JSON into the transcript; request continuation.
+                unparsedIntent = true;
+              } else {
+                emitText(pending);
+              }
+              pending = "";
+              return;
             }
 
             // mode === "tool": pending starts at the marker.

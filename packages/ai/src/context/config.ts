@@ -13,6 +13,18 @@ export const contextOptimizerConfigSchema = z
     compactAtFraction: z.number().min(0.3).max(0.95).optional(),
     /** Fraction of the context window at which Tier-1 pruning starts. */
     pruneAtFraction: z.number().min(0.2).max(0.9).optional(),
+    /**
+     * Token budget for the recent, complete conversation turns that remain
+     * verbatim after compaction. The effective value is capped at 20% of the
+     * active model's input budget, so a large default cannot crowd out the
+     * system prompt or tool grammar on smaller models.
+     */
+    preserveRecentTokens: z.number().int().min(512).max(200_000).optional(),
+    /**
+     * @deprecated Token-bounded complete-turn retention replaces message-count
+     * retention. Kept only so existing settings continue to parse during the
+     * compatibility window.
+     */
     preserveRecentMessages: z.number().int().min(2).max(100).optional(),
     /**
      * Max estimated tokens a single Tier-2 compaction round folds into the
@@ -59,6 +71,7 @@ export const resolvedContextOptimizerConfigSchema = z.object({
   autoCompact: z.boolean(),
   compactAtFraction: z.number().min(0.3).max(0.95),
   pruneAtFraction: z.number().min(0.2).max(0.9),
+  preserveRecentTokens: z.number().int().min(512).max(200_000),
   preserveRecentMessages: z.number().int().min(2).max(100),
   maxCoverageTokensPerCompaction: z.number().int().min(2_000).max(200_000),
   contextWindowOverride: z
@@ -84,6 +97,7 @@ export const defaultContextOptimizerConfig = {
   autoCompact: true,
   compactAtFraction: 0.7,
   pruneAtFraction: 0.6,
+  preserveRecentTokens: 12_000,
   preserveRecentMessages: 6,
   maxCoverageTokensPerCompaction: 12_000,
   contextWindowOverride: null,
@@ -181,4 +195,29 @@ export function resolveInputBudgetTokens({
   const clampedFraction = Math.min(1, Math.max(0.1, safetyFraction));
   const usable = Math.max(0, contextWindow - reserved);
   return Math.max(0, Math.floor(usable * clampedFraction));
+}
+
+/**
+ * Resolves the recent-context tail for one concrete model request.
+ *
+ * A fixed 12K tail is useful on large coding models but disproportionate on a
+ * small endpoint. Capping it at one fifth of the real input budget keeps the
+ * recent turns useful without allowing retention policy to consume the whole
+ * request. At least one complete turn is still retained by the callers even
+ * when this value is very small.
+ */
+export function resolvePreserveRecentTokens({
+  config,
+  inputBudgetTokens,
+}: {
+  config: ResolvedContextOptimizerConfig;
+  inputBudgetTokens: number;
+}): number {
+  return Math.max(
+    0,
+    Math.min(
+      config.preserveRecentTokens,
+      Math.floor(Math.max(0, inputBudgetTokens) * 0.2),
+    ),
+  );
 }

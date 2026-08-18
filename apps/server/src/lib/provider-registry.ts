@@ -1,13 +1,18 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import {
+  createOpenRouter,
+  type OpenRouterProvider,
+} from "@openrouter/ai-sdk-provider";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
-import type { LanguageModel } from "ai";
+import type { LanguageModel, ToolSet } from "ai";
 import {
   getAnthropicModelPricing,
   getModelContextWindow,
   lightcodeConfigDefaults,
   lightcodeConfigStatusSchema,
   readStoredCredentials,
+  resolveWebSearchCapability,
   resolveContextWindowTokens,
   resolveMaxOutputTokens,
   withAnthropicPromptCaching,
@@ -16,6 +21,7 @@ import {
   type LightcodeResolvedConfig,
   type LoadedConfigFile,
   type ModelPricing,
+  type ResolvedWebSearchCapability,
   type StoredCredentials,
 } from "@lightcode/ai";
 import {
@@ -31,6 +37,11 @@ import {
 // LIGHTCODE_HTTP_IDLE_TIMEOUT_MS / LIGHTCODE_HTTP_HEADERS_TIMEOUT_MS.
 const providerFetch = createIdleTimeoutFetch(resolveIdleTimeoutsFromEnv());
 
+type ProviderFetch = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
 export interface ProviderModelCapabilities {
   /** True when the model handles native function/tool calls itself. */
   supportsNativeTools?: boolean;
@@ -43,6 +54,8 @@ export interface ProviderModelCapabilities {
     inputPerMTok: number;
     outputPerMTok: number;
   } | null;
+  /** Explicit catalog signal for Anthropic dynamic-filtering web search. */
+  supportsAnthropicWebSearch20260209?: boolean;
 }
 
 export interface ResolvedProviderModel {
@@ -75,6 +88,10 @@ export interface ResolvedProviderModel {
   supportsPromptCaching: boolean;
   /** Per-token pricing (USD per million tokens); null when unknown. */
   pricing: ModelPricing | null;
+  /** Search backend selected from config, credentials, and active provider. */
+  webSearchCapability: ResolvedWebSearchCapability;
+  /** Provider-executed tools to merge into the agent toolset for this model. */
+  providerTools?: ToolSet;
 }
 
 const anthropicModelAliases = {
@@ -168,6 +185,64 @@ function getOpenRouterProviderOptions(modelId: string): SharedV3ProviderOptions 
   };
 }
 
+interface OpenRouterWebSearchParameters {
+  engine: "auto";
+  max_results: number;
+  max_total_results: number;
+  max_uses: number;
+  max_characters: number;
+}
+
+/**
+ * The OpenRouter provider package knows the provider-tool id and result format,
+ * but its 2.10 public args type predates the current nested `parameters` wire
+ * shape. Keep the compatibility cast isolated here and assert the exact args
+ * in provider-registry tests.
+ */
+export function createOpenRouterWebSearchTool(
+  provider: OpenRouterProvider,
+  capability: ResolvedWebSearchCapability,
+) {
+  const parameters: OpenRouterWebSearchParameters = {
+    engine: "auto",
+    max_results: capability.limits.maxResults,
+    max_total_results: capability.limits.maxTotalResults,
+    max_uses: capability.limits.maxUsesPerTurn,
+    max_characters: capability.limits.maxCharactersPerResult,
+  };
+
+  return provider.tools.webSearch({ parameters } as never);
+}
+
+export function supportsAnthropicWebSearch20260209(modelId: string): boolean {
+  const match = modelId
+    .toLowerCase()
+    .match(/claude-(?:opus|sonnet|haiku)-(\d+)[.-](\d+)/);
+  if (!match) {
+    return false;
+  }
+
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 4 || (major === 4 && minor >= 6);
+}
+
+function createAnthropicWebSearchTool(
+  provider: ReturnType<typeof createAnthropic>,
+  modelId: string,
+  capability: ResolvedWebSearchCapability,
+  capabilities?: ProviderModelCapabilities,
+) {
+  const args = { maxUses: capability.limits.maxUsesPerTurn };
+  const useDynamicFiltering =
+    capabilities?.supportsAnthropicWebSearch20260209 ??
+    supportsAnthropicWebSearch20260209(modelId);
+
+  return useDynamicFiltering
+    ? provider.tools.webSearch_20260209(args)
+    : provider.tools.webSearch_20250305(args);
+}
+
 /**
  * Decides the base URL actually sent to the provider SDK. When the headroom
  * facility is enabled (and covers this provider), traffic is redirected to the
@@ -197,10 +272,14 @@ function resolveAnthropicModel({
   config,
   env,
   storedCredentials,
+  capabilities,
+  fetch,
 }: {
   config: LightcodeResolvedConfig;
   env: Record<string, string | undefined>;
   storedCredentials: StoredCredentials;
+  capabilities?: ProviderModelCapabilities;
+  fetch: ProviderFetch;
 }): ResolvedProviderModel {
   const configuredModel = config.model ?? null;
   const modelId = resolveModelAlias(
@@ -225,7 +304,13 @@ function resolveAnthropicModel({
     apiKey,
     authToken,
     baseURL: effectiveBaseUrl ?? undefined,
-    fetch: providerFetch,
+    fetch: fetch as typeof globalThis.fetch,
+  });
+  const webSearchCapability = resolveWebSearchCapability({
+    config: config.webSearch,
+    provider: "anthropic",
+    env,
+    storedCredentials,
   });
 
   return {
@@ -243,6 +328,18 @@ function resolveAnthropicModel({
     missingCredentialHints,
     supportsPromptCaching: true,
     pricing: getAnthropicModelPricing(modelId),
+    webSearchCapability,
+    providerTools:
+      webSearchCapability.execution === "provider"
+        ? {
+            web_search: createAnthropicWebSearchTool(
+              provider,
+              modelId,
+              webSearchCapability,
+              capabilities,
+            ),
+          }
+        : undefined,
   };
 }
 
@@ -274,11 +371,13 @@ function resolveOpenAITransportModel({
   env,
   storedCredentials,
   capabilities,
+  fetch,
 }: {
   config: LightcodeResolvedConfig;
   env: Record<string, string | undefined>;
   storedCredentials: StoredCredentials;
   capabilities?: ProviderModelCapabilities;
+  fetch: ProviderFetch;
 }): ResolvedProviderModel {
   const isOpenCodeZen = config.provider === "opencode-zen";
   const isOpenRouter = config.provider === "openrouter";
@@ -339,12 +438,29 @@ function resolveOpenAITransportModel({
     headers["HTTP-Referer"] = referer ?? "https://github.com/kmugalkhod/lightcode";
     headers["X-Title"] = title ?? "Lightcode";
   }
-  const provider = createOpenAICompatible({
-    name: config.provider,
-    baseURL: effectiveBaseUrl ?? baseUrl,
-    apiKey,
-    headers,
-    fetch: providerFetch,
+  const openRouterProvider = isOpenRouter
+    ? createOpenRouter({
+        baseURL: effectiveBaseUrl ?? baseUrl,
+        apiKey,
+        headers,
+        compatibility: "strict",
+        fetch: fetch as typeof globalThis.fetch,
+      })
+    : null;
+  const provider = openRouterProvider
+    ? null
+    : createOpenAICompatible({
+        name: config.provider,
+        baseURL: effectiveBaseUrl ?? baseUrl,
+        apiKey,
+        headers,
+        fetch: fetch as typeof globalThis.fetch,
+      });
+  const webSearchCapability = resolveWebSearchCapability({
+    config: config.webSearch,
+    provider: config.provider,
+    env,
+    storedCredentials,
   });
 
   // The XML middleware stays on for every OpenAI-compatible model: it passes
@@ -359,7 +475,11 @@ function resolveOpenAITransportModel({
     baseUrl,
     effectiveBaseUrl,
     headroomRouted,
-    model: withXmlToolCallSupport(provider(configuredModel)),
+    model: withXmlToolCallSupport(
+      openRouterProvider
+        ? openRouterProvider.chat(configuredModel)
+        : provider!(configuredModel),
+    ),
     needsToolCallDiscipline: true,
     // Let OpenRouter fail over to a healthy upstream when one drops a stream.
     providerOptions: isOpenRouter
@@ -386,6 +506,16 @@ function resolveOpenAITransportModel({
         ? 0.1
         : null,
     ),
+    webSearchCapability,
+    providerTools:
+      openRouterProvider && webSearchCapability.execution === "provider"
+        ? {
+            web_search: createOpenRouterWebSearchTool(
+              openRouterProvider,
+              webSearchCapability,
+            ),
+          }
+        : undefined,
   };
 }
 
@@ -393,10 +523,12 @@ export function resolveConfiguredProviderModel({
   config,
   env = Bun.env,
   capabilities,
+  fetch = providerFetch,
 }: {
   config: LightcodeResolvedConfig;
   env?: Record<string, string | undefined>;
   capabilities?: ProviderModelCapabilities;
+  fetch?: ProviderFetch;
 }): ResolvedProviderModel {
   const storedCredentials = readStoredCredentials(env);
 
@@ -410,10 +542,17 @@ export function resolveConfiguredProviderModel({
       env,
       storedCredentials,
       capabilities,
+      fetch,
     });
   }
 
-  return resolveAnthropicModel({ config, env, storedCredentials });
+  return resolveAnthropicModel({
+    config,
+    env,
+    storedCredentials,
+    capabilities,
+    fetch,
+  });
 }
 
 export function createConfigStatus({
@@ -454,6 +593,7 @@ export function createConfigStatus({
       // fails open it re-resolves with routing off and this drops to false.
       routed: resolvedProviderModel.headroomRouted,
     },
+    webSearch: resolvedProviderModel.webSearchCapability,
     missingCredentialHints: resolvedProviderModel.missingCredentialHints,
   });
 }

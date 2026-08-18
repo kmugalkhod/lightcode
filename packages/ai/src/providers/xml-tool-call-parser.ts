@@ -53,6 +53,94 @@ const MAX_MARKER_LENGTH = Math.max(
   ...TOOL_CALL_OPEN_MARKERS.map((m) => m.length),
 );
 
+export const BARE_TOOL_CALL_MARKER = '{"name"';
+
+/** Earliest exact bare-JSON tool prefix, or -1 when absent. */
+export function findBareToolCallMarker(text: string, fromIndex = 0): number {
+  return text.indexOf(BARE_TOOL_CALL_MARKER, fromIndex);
+}
+
+/** Hold back a split `{"name"` prefix without delaying ordinary JSON. */
+export function bareToolCallMarkerHoldbackLength(text: string): number {
+  const maxCheck = Math.min(BARE_TOOL_CALL_MARKER.length - 1, text.length);
+  for (let length = maxCheck; length > 0; length--) {
+    if (BARE_TOOL_CALL_MARKER.startsWith(text.slice(-length))) {
+      return length;
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Confirms a bare candidate only after its name is complete and matches an
+ * advertised tool. This keeps package.json and arbitrary JSON streaming.
+ */
+export function confirmBareToolCallCandidate(
+  buffer: string,
+  knownToolNames: readonly string[],
+): MarkerConfirmation {
+  if (!buffer.startsWith(BARE_TOOL_CALL_MARKER) || knownToolNames.length === 0) {
+    return "rejected";
+  }
+
+  let rest = buffer.slice(BARE_TOOL_CALL_MARKER.length);
+  rest = rest.replace(/^\s*/, "");
+  if (!rest) return "pending";
+  if (!rest.startsWith(":")) return "rejected";
+
+  rest = rest.slice(1).replace(/^\s*/, "");
+  if (!rest) return "pending";
+  if (!rest.startsWith('"')) return "rejected";
+
+  const closingQuote = rest.indexOf('"', 1);
+  if (closingQuote === -1) {
+    return buffer.length > BARE_TOOL_CALL_MARKER.length + MARKER_CONFIRMATION_WINDOW
+      ? "rejected"
+      : "pending";
+  }
+
+  const toolName = rest.slice(1, closingQuote);
+  return knownToolNames.includes(toolName) ? "confirmed" : "rejected";
+}
+
+/**
+ * End offset of a complete leading JSON object, respecting quoted braces.
+ * Returns -1 while the object is incomplete or syntactically implausible.
+ */
+export function findLeadingJsonObjectEnd(text: string): number {
+  if (!text.startsWith("{")) return -1;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+    } else if (character === "{") {
+      depth += 1;
+    } else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+      if (depth < 0) return -1;
+    }
+  }
+
+  return -1;
+}
+
 /** Earliest full open marker in `text` at or after `fromIndex`, or null. */
 export function findToolCallMarkerMatch(
   text: string,

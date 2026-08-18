@@ -163,4 +163,118 @@ describe("compactSessionContext", () => {
       await deleteChatSession(session.id);
     }
   });
+
+  test("propagates cancellation instead of persisting a fallback", async () => {
+    const { compactSessionContext } = await import("./context-compaction");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      compactSessionContext({
+        sessionId: crypto.randomUUID(),
+        coveredMessages,
+        previousState: null,
+        model: createParityMockLanguageModel({
+          scenario: llmScenario("This must never run."),
+        }),
+        modelId: "lightcode-parity-model",
+        cwd: process.cwd(),
+        config,
+        estimatedTokens: 1_000,
+        abortSignal: controller.signal,
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("does not call the provider when the compaction request is over budget", async () => {
+    const { createChatSession, deleteChatSession } = await import("./chat-store");
+    const { compactSessionContext } = await import("./context-compaction");
+    const session = await createChatSession({
+      cwd: process.cwd(),
+      title: "context compaction budget test",
+    });
+    const model = createParityMockLanguageModel({
+      scenario: llmScenario("This must never run."),
+    });
+    const largeCoverage: UIMessage[] = [];
+    for (let index = 0; index < 10; index += 1) {
+      largeCoverage.push(
+        textMessage("user", `u-large-${index}`, "q".repeat(4_000)),
+        textMessage("assistant", `a-large-${index}`, "r".repeat(4_000)),
+      );
+    }
+
+    try {
+      const result = await compactSessionContext({
+        sessionId: session.id,
+        coveredMessages: largeCoverage,
+        previousState: null,
+        model,
+        modelId: "lightcode-parity-model",
+        cwd: process.cwd(),
+        config,
+        estimatedTokens: 20_000,
+        contextWindow: 8_000,
+      });
+
+      expect(result.usedFallback).toBe(true);
+      expect(model.doGenerateCalls).toHaveLength(0);
+    } finally {
+      await deleteChatSession(session.id);
+    }
+  });
+});
+
+describe("buildCompactionTranscript", () => {
+  test("keeps bounded head/tail evidence from tool outputs and errors", async () => {
+    const { buildCompactionTranscript } = await import("./context-compaction");
+    const output = `BEGIN-${"x".repeat(2_000)}-END`;
+    const messages: UIMessage[] = [
+      textMessage("user", "u-tool", "Inspect the failing command."),
+      {
+        id: "a-tool",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-bash",
+            toolCallId: "bash-1",
+            state: "output-available",
+            input: { command: "bun test" },
+            output,
+          } as unknown as UIMessage["parts"][number],
+        ],
+      },
+    ];
+
+    const transcript = buildCompactionTranscript(messages);
+
+    expect(transcript).toContain("BEGIN-");
+    expect(transcript).toContain("-END");
+    expect(transcript).toContain("middle omitted");
+    expect(transcript).toContain("state=output-available");
+  });
+
+  test("drops only complete turns when bounding a long transcript", async () => {
+    const { buildCompactionTranscript } = await import("./context-compaction");
+    const messages: UIMessage[] = Array.from({ length: 80 }, (_, index) => [
+      textMessage(
+        "user",
+        `u-${index}`,
+        `USER_${index} ${"u".repeat(4_000)}`,
+      ),
+      textMessage(
+        "assistant",
+        `a-${index}`,
+        `ASSISTANT_${index} ${"a".repeat(4_000)}`,
+      ),
+    ]).flat();
+
+    const transcript = buildCompactionTranscript(messages);
+
+    expect(transcript.length).toBeLessThanOrEqual(120_000);
+    expect(transcript).toContain("complete turns omitted");
+    for (const match of transcript.matchAll(/ASSISTANT_(\d+)/g)) {
+      expect(transcript).toContain(`USER_${match[1]}`);
+    }
+  });
 });

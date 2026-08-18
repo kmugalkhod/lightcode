@@ -47,8 +47,11 @@ export function createSubagentToolset(
       description: codingToolDescriptions[toolName],
       inputSchema,
       strict: true,
-      execute: (input) =>
-        executeCodingTool(toolName, input as never, executionOptions),
+      execute: (input, { abortSignal }) =>
+        executeCodingTool(toolName, input as never, {
+          ...executionOptions,
+          abortSignal,
+        }),
     });
   }
 

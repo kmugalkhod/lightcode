@@ -1,8 +1,10 @@
 import {
+  artifactizeLargeToolOutputs,
   buildSubagentSystemPrompt,
   capSubagentSummary,
   createSubagentToolset,
   defaultSubagentProfile,
+  ProviderTurnAssembler,
   subagentProfileTools,
   type AgentToolInput,
   type AgentToolOutput,
@@ -14,6 +16,7 @@ import type { LanguageModel } from "ai";
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider";
 import { generateText, stepCountIs } from "ai";
 import { createSubagentTask, updateSubagentTask } from "./subagent-task-store";
+import { buildWorkspaceInstructionBaseline } from "./workspace-context";
 
 const logger = createLogger("subagent-runner");
 
@@ -27,6 +30,8 @@ export interface SubagentRunnerDeps {
   modelId: string;
   providerOptions?: SharedV3ProviderOptions;
   maxRetries: number;
+  contextWindow: number;
+  preserveRecentTokens: number;
 }
 
 function isAbortError(error: unknown): boolean {
@@ -58,8 +63,9 @@ async function updateTaskSafe(
 /**
  * Runs the `agent` tool: one subagent loop in a fresh context (LC-050). The
  * subagent shares nothing with the parent conversation — it gets only the
- * prompt, a profile-restricted read-only toolset, and the workspace cwd — and
- * only its capped final summary flows back into the parent context.
+ * prompt, the source-hashed root instructions, a profile-restricted read-only
+ * toolset, and the workspace cwd — and only its capped final summary flows
+ * back into the parent context.
  *
  * Task rows are persisted best-effort so the lifecycle is inspectable
  * (LC-048/LC-053); a store failure never blocks the run itself.
@@ -99,16 +105,71 @@ export async function runSubagentToolTask(
   });
 
   try {
+    context.abortSignal?.throwIfAborted();
+    const instructionBaseline = await buildWorkspaceInstructionBaseline({
+      cwd: context.cwd,
+    });
+    const system = [
+      buildSubagentSystemPrompt({ profile, cwd: context.cwd }),
+      instructionBaseline.block,
+    ].join("\n\n");
+    const tools = createSubagentToolset(profile, { cwd: context.cwd });
+    const activeTools = [...subagentProfileTools[profile]];
+    const assembler = new ProviderTurnAssembler({
+      system,
+      tools,
+      activeTools,
+      contextWindow: deps.contextWindow,
+      reservedOutputTokens: subagentMaxOutputTokens,
+    });
+    const preserveRecentTokens = Math.min(
+      Math.max(0, deps.preserveRecentTokens),
+      Math.floor(assembler.messageBudgetTokens * 0.2),
+    );
+
     const result = await generateText({
       model: deps.model,
-      system: buildSubagentSystemPrompt({ profile, cwd: context.cwd }),
+      system,
       prompt: input.prompt,
-      tools: createSubagentToolset(profile, { cwd: context.cwd }),
+      tools,
+      activeTools,
       stopWhen: stepCountIs(subagentMaxSteps),
       maxOutputTokens: subagentMaxOutputTokens,
       maxRetries: deps.maxRetries,
       providerOptions: deps.providerOptions,
       abortSignal: context.abortSignal,
+      prepareStep: async ({ messages }) => {
+        const artifactized = await artifactizeLargeToolOutputs(messages, {
+          signal: context.abortSignal,
+        });
+        const turn = assembler.assembleModelMessages(artifactized.messages, {
+          preserveRecentTokens,
+        });
+        logger.debug("subagent_provider_turn", {
+          taskId,
+          inputTokens: turn.breakdown.inputTokens,
+          inputBudgetTokens: turn.breakdown.inputBudgetTokens,
+          systemTokens: turn.breakdown.systemTokens,
+          toolTokens: turn.breakdown.toolTokens,
+          messageTokens: turn.breakdown.messageTokens,
+          mediaTokens: turn.breakdown.mediaTokens,
+          remainingTokens: turn.breakdown.remainingTokens,
+          fitted: turn.fit.fitted,
+          withinBudget: turn.withinBudget,
+        });
+
+        if (!turn.withinBudget) {
+          throw new Error(
+            "context_input_too_large: the subagent request cannot fit the model context window without truncating its task.",
+          );
+        }
+
+        return {
+          system,
+          messages: turn.messages,
+          activeTools,
+        };
+      },
     });
 
     const { summary, truncated } = capSubagentSummary(
@@ -129,7 +190,7 @@ export async function runSubagentToolTask(
 
     return { taskId, status: "completed", summary, truncated };
   } catch (error) {
-    if (isAbortError(error)) {
+    if (context.abortSignal?.aborted || isAbortError(error)) {
       await updateTaskSafe(taskId, { status: "cancelled" });
       throw error;
     }

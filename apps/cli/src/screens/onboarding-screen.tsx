@@ -1,9 +1,10 @@
-import { writeStoredCredentials, type StoredCredentials } from "@lightcode/ai";
+import {
+  updateUserSettings,
+  writeStoredCredentials,
+  type StoredCredentials,
+} from "@lightcode/ai";
 import { TextAttributes, typeRole } from "../ui/cli-theme";
 import { useKeyboard } from "@opentui/react";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { useCallback, useState } from "react";
 import { useNavigate } from "react-router";
 import { ChatTextArea } from "../components/chat/chat-text-area";
@@ -16,6 +17,7 @@ import { activeGlyphs } from "../ui/cli-theme-capabilities";
 const ONBOARDING_STEP_SEQUENCE = ["provider", "apiKey", "model", "done"] as const;
 import { getErrorMessage } from "../utils/text-utils";
 import { isDownKey, isEnterKey, isUpKey } from "../utils/key-utils";
+import { buildProviderSettingsUpdate } from "../utils/provider-settings";
 
 interface ProviderChoice {
   id: "anthropic" | "openrouter" | "opencode-zen" | "openai-compatible";
@@ -68,35 +70,6 @@ const providerChoices: ProviderChoice[] = [
 
 type OnboardingStep = "provider" | "apiKey" | "model" | "baseUrl" | "saving" | "done";
 
-function getUserSettingsPath(): string {
-  const configured = process.env.LIGHTCODE_USER_CONFIG?.trim();
-  return configured ?? path.join(os.homedir(), ".lightcode", "settings.json");
-}
-
-function mergeUserSettings(update: Record<string, unknown>): string {
-  const settingsPath = getUserSettingsPath();
-  let existing: Record<string, unknown> = {};
-
-  if (existsSync(settingsPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(settingsPath, "utf8"));
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        existing = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // Unreadable settings are preserved nowhere; the merged write wins.
-    }
-  }
-
-  mkdirSync(path.dirname(settingsPath), { recursive: true });
-  writeFileSync(
-    settingsPath,
-    `${JSON.stringify({ ...existing, ...update }, null, 2)}\n`,
-    "utf8",
-  );
-  return settingsPath;
-}
-
 export function OnboardingScreen() {
   const navigate = useNavigate();
   const { bumpConfigRefresh } = useAppState();
@@ -124,11 +97,11 @@ export function OnboardingScreen() {
 
       try {
         writeStoredCredentials({ [provider.credentialKey]: key });
-        mergeUserSettings({
+        updateUserSettings(buildProviderSettingsUpdate({
           provider: provider.id,
-          ...(finalModel ? { model: finalModel } : {}),
-          ...(finalBaseUrl ? { baseUrl: finalBaseUrl } : {}),
-        });
+          model: finalModel,
+          baseUrl: finalBaseUrl,
+        }));
 
         // Best-effort restart for the owned-server case (also recovers a
         // crashed server). When the server is not owned by this CLI (e.g. an

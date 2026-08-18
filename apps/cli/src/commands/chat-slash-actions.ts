@@ -2,7 +2,10 @@ import {
   collectMessageText,
   permissionModeSchema,
   sessionCompactResponseSchema,
+  sessionContextResponseSchema,
   sessionExportJsonSchema,
+  skillListOutputSchema,
+  sessionTurnHistoryActionResponseSchema,
   type PermissionMode,
   type SessionContextState,
 } from "@lightcode/ai";
@@ -26,6 +29,9 @@ export interface ChatSlashActionContext {
   notify: (message: string, tone?: ChatActionTone) => void;
   setPermissionMode: (mode: PermissionMode) => void;
   copyToClipboard: (text: string) => Promise<boolean>;
+  isStreaming: boolean;
+  abortActiveRun: () => Promise<void>;
+  refreshMessages: () => Promise<void>;
 }
 
 export interface ChatSlashActionDefinition {
@@ -79,30 +85,165 @@ async function runCompactAction({
   }
 }
 
-async function runUndoAction({
+function formatContextTokens(tokens: number): string {
+  return tokens >= 1_000
+    ? `${(tokens / 1_000).toFixed(tokens >= 10_000 ? 0 : 1)}k`
+    : String(tokens);
+}
+
+async function runContextAction({
   sessionId,
+  setContextState,
   notify,
 }: ChatSlashActionContext): Promise<void> {
   try {
-    const { undoLastTurn } = await import("@lightcode/ai/runtime");
-    const result = await undoLastTurn({ sessionId });
-
-    if (!result) {
-      notify("Nothing to undo - no checkpointed file edits in this session.", "error");
+    const response = await client.sessions[":id"].context.$get({
+      param: { id: sessionId },
+    });
+    if (!response.ok) {
+      notify(`Context inspection failed (HTTP ${response.status}).`, "error");
+      return;
+    }
+    const parsed = sessionContextResponseSchema.safeParse(await response.json());
+    if (!parsed.success) {
+      notify("Server returned an invalid context report.", "error");
       return;
     }
 
+    const { breakdown, contextState, withinBudget } = parsed.data;
+    setContextState(contextState);
     notify(
-      `Reverted ${result.restoredFiles.length} file${
-        result.restoredFiles.length === 1 ? "" : "s"
-      }: ${result.restoredFiles.join(", ")}`,
+      [
+        `Provider request: ${formatContextTokens(breakdown.inputTokens)} / ${formatContextTokens(breakdown.inputBudgetTokens)} input tokens${withinBudget ? "" : " (too large)"}`,
+        `Prompt ${formatContextTokens(breakdown.systemTokens)} · tools ${formatContextTokens(breakdown.toolTokens)} · messages ${formatContextTokens(breakdown.messageTokens)} · attachments ${formatContextTokens(breakdown.mediaTokens)}`,
+        `Output reserve ${formatContextTokens(breakdown.reservedOutputTokens)} · remaining ${formatContextTokens(breakdown.remainingTokens)} · compaction saved ${formatContextTokens(breakdown.compactedTokens)}`,
+      ].join("\n"),
+      withinBudget ? "info" : "error",
     );
+  } catch {
+    notify("Context inspection failed: server unreachable.", "error");
+  }
+}
+
+async function runAbortAction({
+  isStreaming,
+  abortActiveRun,
+  notify,
+}: ChatSlashActionContext): Promise<void> {
+  if (!isStreaming) {
+    notify("No active run to abort.", "error");
+    return;
+  }
+
+  notify("Aborting the active run...");
+  try {
+    await abortActiveRun();
+    notify("Active run aborted.");
   } catch (error) {
     notify(
-      `Undo failed: ${error instanceof Error ? error.message : "unknown error"}`,
+      `Abort failed: ${error instanceof Error ? error.message : "unknown error"}`,
       "error",
     );
   }
+}
+
+interface HistoryActionResponseLike {
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+}
+
+interface ExecuteSessionHistoryActionOptions {
+  action: "undo" | "redo";
+  post: () => Promise<HistoryActionResponseLike>;
+  refreshMessages: () => Promise<void>;
+  notify: ChatSlashActionContext["notify"];
+}
+
+function responseErrorMessage(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+
+  const error = Reflect.get(payload, "error");
+  return typeof error === "string" && error.trim() ? error : null;
+}
+
+export async function executeSessionHistoryAction({
+  action,
+  post,
+  refreshMessages,
+  notify,
+}: ExecuteSessionHistoryActionOptions): Promise<void> {
+  const label = action === "undo" ? "Undo" : "Redo";
+
+  try {
+    const response = await post();
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      const reason = responseErrorMessage(payload);
+      notify(
+        reason ?? `${label} failed (HTTP ${response.status}).`,
+        "error",
+      );
+      return;
+    }
+
+    const parsed = sessionTurnHistoryActionResponseSchema.safeParse(payload);
+    if (!parsed.success) {
+      notify(`${label} failed: server returned an invalid response.`, "error");
+      return;
+    }
+
+    try {
+      await refreshMessages();
+    } catch {
+      notify(
+        `${label} completed, but the transcript could not be refreshed. Reopen the session to sync it.`,
+        "error",
+      );
+      return;
+    }
+
+    const fileCount = parsed.data.restoredFiles.length;
+    notify(
+      `${label} complete: ${fileCount} file${fileCount === 1 ? "" : "s"} restored · ${parsed.data.messageCount} messages in the conversation.`,
+    );
+  } catch (error) {
+    notify(
+      `${label} failed: ${error instanceof Error ? error.message : "server unreachable"}`,
+      "error",
+    );
+  }
+}
+
+async function runUndoAction({
+  sessionId,
+  refreshMessages,
+  notify,
+}: ChatSlashActionContext): Promise<void> {
+  return executeSessionHistoryAction({
+    action: "undo",
+    post: () =>
+      client.sessions[":id"].undo.$post({ param: { id: sessionId } }),
+    refreshMessages,
+    notify,
+  });
+}
+
+async function runRedoAction({
+  sessionId,
+  refreshMessages,
+  notify,
+}: ChatSlashActionContext): Promise<void> {
+  return executeSessionHistoryAction({
+    action: "redo",
+    post: () =>
+      client.sessions[":id"].redo.$post({ param: { id: sessionId } }),
+    refreshMessages,
+    notify,
+  });
 }
 
 async function runExportAction({
@@ -223,11 +364,21 @@ async function runCopyAction({
 
 /** /skills — list the skills the coding agent can load in this workspace. */
 async function runSkillsAction({
+  sessionId,
   notify,
 }: ChatSlashActionContext): Promise<void> {
   try {
-    const { listSkills } = await import("@lightcode/ai/runtime");
-    const skills = listSkills({ cwd: process.cwd() });
+    const response = await client.extensions.skills.$get({
+      query: { sessionId },
+    });
+    if (!response.ok) {
+      throw new Error(`Server returned HTTP ${response.status}`);
+    }
+    const parsed = skillListOutputSchema.safeParse(await response.json());
+    if (!parsed.success) {
+      throw new Error("Server returned an invalid skills response.");
+    }
+    const skills = parsed.data.skills;
 
     if (skills.length === 0) {
       notify(
@@ -278,11 +429,35 @@ export const chatSlashActions: ChatSlashActionDefinition[] = [
   },
   {
     kind: "chat-action",
+    id: "context",
+    label: "Inspect context",
+    description: "Show the exact provider request budget and compaction savings",
+    shortcut: "/context",
+    run: runContextAction,
+  },
+  {
+    kind: "chat-action",
+    id: "abort",
+    label: "Abort active run",
+    description: "Stop the current model response and any active tool work",
+    shortcut: "/abort",
+    run: runAbortAction,
+  },
+  {
+    kind: "chat-action",
     id: "undo",
     label: "Undo last turn",
-    description: "Revert file edits made by the most recent agent turn",
+    description: "Rewind the latest conversation turn and its file edits",
     shortcut: "/undo",
     run: runUndoAction,
+  },
+  {
+    kind: "chat-action",
+    id: "redo",
+    label: "Redo last turn",
+    description: "Replay the most recently undone conversation turn and file edits",
+    shortcut: "/redo",
+    run: runRedoAction,
   },
   {
     kind: "chat-action",

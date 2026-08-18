@@ -138,6 +138,92 @@ export function initializeLocalDatabase(databaseUrl: string) {
       CREATE INDEX IF NOT EXISTS "messages_session_id_role_idx"
         ON "messages"("session_id", "role");
 
+      CREATE TABLE IF NOT EXISTS "message_parts" (
+        "id" TEXT NOT NULL PRIMARY KEY,
+        "message_id" TEXT NOT NULL,
+        "part_index" INTEGER NOT NULL,
+        "payload" JSONB NOT NULL,
+        "created_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "message_parts_message_id_fkey"
+          FOREIGN KEY ("message_id") REFERENCES "messages"("id")
+          ON DELETE CASCADE ON UPDATE CASCADE
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS "message_parts_message_id_part_index_key"
+        ON "message_parts"("message_id", "part_index");
+      CREATE INDEX IF NOT EXISTS "message_parts_message_id_part_index_idx"
+        ON "message_parts"("message_id", "part_index");
+
+      -- One-release compatibility backfill: legacy rows keep their JSON
+      -- payload, while normalized part records become authoritative for new
+      -- run/event workflows. INSERT OR IGNORE makes startup idempotent.
+      INSERT OR IGNORE INTO "message_parts"
+        ("id", "message_id", "part_index", "payload", "created_at")
+      SELECT
+        lower(hex(randomblob(16))),
+        message."id",
+        CAST(part."key" AS INTEGER),
+        json(part."value"),
+        message."created_at"
+      FROM "messages" AS message, json_each(message."payload", '$.parts') AS part
+      WHERE json_valid(message."payload")
+        AND json_type(message."payload", '$.parts') = 'array';
+
+      CREATE TABLE IF NOT EXISTS "chat_runs" (
+        "id" TEXT NOT NULL PRIMARY KEY,
+        "session_id" TEXT NOT NULL,
+        "client_turn_id" TEXT NOT NULL,
+        "status" TEXT NOT NULL DEFAULT 'pending',
+        "base_revision" INTEGER NOT NULL,
+        "final_revision" INTEGER,
+        "error" TEXT,
+        "started_at" DATETIME,
+        "finished_at" DATETIME,
+        "created_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updated_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "chat_runs_session_id_fkey"
+          FOREIGN KEY ("session_id") REFERENCES "sessions"("id")
+          ON DELETE CASCADE ON UPDATE CASCADE
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS "chat_runs_session_id_client_turn_id_key"
+        ON "chat_runs"("session_id", "client_turn_id");
+      CREATE INDEX IF NOT EXISTS "chat_runs_session_id_status_idx"
+        ON "chat_runs"("session_id", "status");
+
+      CREATE TABLE IF NOT EXISTS "chat_run_events" (
+        "id" TEXT NOT NULL PRIMARY KEY,
+        "run_id" TEXT NOT NULL,
+        "cursor" INTEGER NOT NULL,
+        "kind" TEXT NOT NULL,
+        "payload" JSONB NOT NULL,
+        "created_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "chat_run_events_run_id_fkey"
+          FOREIGN KEY ("run_id") REFERENCES "chat_runs"("id")
+          ON DELETE CASCADE ON UPDATE CASCADE
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS "chat_run_events_run_id_cursor_key"
+        ON "chat_run_events"("run_id", "cursor");
+      CREATE INDEX IF NOT EXISTS "chat_run_events_run_id_cursor_idx"
+        ON "chat_run_events"("run_id", "cursor");
+
+      CREATE TABLE IF NOT EXISTS "chat_turn_reverts" (
+        "id" TEXT NOT NULL PRIMARY KEY,
+        "session_id" TEXT NOT NULL,
+        "turn_key" TEXT NOT NULL,
+        "messages" JSONB NOT NULL,
+        "state" TEXT NOT NULL DEFAULT 'undone',
+        "created_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "reapplied_at" DATETIME,
+        CONSTRAINT "chat_turn_reverts_session_id_fkey"
+          FOREIGN KEY ("session_id") REFERENCES "sessions"("id")
+          ON DELETE CASCADE ON UPDATE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS "chat_turn_reverts_session_state_created_at_idx"
+        ON "chat_turn_reverts"("session_id", "state", "created_at");
+
       CREATE TABLE IF NOT EXISTS "chat_interactions" (
         "id" TEXT NOT NULL PRIMARY KEY,
         "session_id" TEXT NOT NULL,

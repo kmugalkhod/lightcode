@@ -7,6 +7,7 @@ export interface RouteDefinition {
     | "sessions"
     | "tools"
     | "config"
+    | "connect"
     | "model"
     | "model-select"
     | "latest-session";
@@ -70,9 +71,16 @@ export const routeRegistry: AnyRouteDefinition[] = [
     shortcut: "/config",
   },
   {
+    id: "connect",
+    label: "Connect provider",
+    description: "Configure a provider, credential, and default model",
+    path: "/connect",
+    shortcut: "/connect",
+  },
+  {
     id: "model-select",
     label: "Switch Model",
-    description: "Pick any OpenRouter model; applies immediately and persists to settings.json",
+    description: "Switch the active provider's model; OpenRouter includes a searchable catalog",
     path: "/model",
     shortcut: "/model",
   },

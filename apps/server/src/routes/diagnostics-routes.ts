@@ -3,9 +3,9 @@ import path from "node:path";
 import { Hono } from "hono";
 import {
   ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET,
-  codingAgentModes,
   codingToolDescriptions,
   codingToolPermissionRequirements,
+  codingToolRegistry,
   collectToolSchemaPreflight,
   defaultPermissionModeForCodingMode,
   diagnosticsDoctorResponseSchema,
@@ -13,12 +13,12 @@ import {
   diagnosticsStatusResponseSchema,
   diagnosticsToolsResponseSchema,
   getSandboxRuntimeStatus,
-  type CodingAgentMode,
   type DiagnosticCheck,
   type DiagnosticStatus,
   type DiagnosticsDatabase,
   type DiagnosticsTool,
   type DiagnosticsToolSummary,
+  type ResolvedWebSearchCapability,
 } from "@lightcode/ai";
 import {
   getErrorMessage,
@@ -106,12 +106,12 @@ function getToolDiagnostics(): {
       name: toolName,
       description: codingToolDescriptions[toolName],
       permissionMode: codingToolPermissionRequirements[toolName],
-      activeInModes: Object.entries(codingAgentModes).flatMap(
-        ([mode, definition]) =>
-          definition.activeTools.includes(toolName)
-            ? [mode as CodingAgentMode]
-            : [],
-      ),
+      permissionSubject: codingToolRegistry[toolName].permissionSubject,
+      activeInModes: [...codingToolRegistry[toolName].modes],
+      availability: codingToolRegistry[toolName].availability,
+      execution: codingToolRegistry[toolName].execution,
+      activation: codingToolRegistry[toolName].activation,
+      outputPolicy: codingToolRegistry[toolName].outputPolicy,
       providerOptionalPropertyCount,
       providerSchemaStatus,
     } satisfies DiagnosticsTool;
@@ -184,13 +184,14 @@ async function buildStatusPayload() {
       latest: await getLatestSessionSummary(),
     },
     tools: toolDiagnostics.summary,
+    webSearch: resolvedProviderModel.webSearchCapability,
     extensions: extensionDiagnostics,
     features: {
       sessions: true,
       slashCommands: true,
       permissions: true,
       sandbox: sandbox.enabled,
-      webTools: true,
+      webTools: resolvedProviderModel.webSearchCapability.available,
       skills: true,
       mcp: extensionDiagnostics.mcp.configuredServers > 0,
       plugins: extensionDiagnostics.plugins.count > 0,
@@ -209,6 +210,26 @@ function checkWorkspace(): DiagnosticCheck {
       ? `Workspace is accessible: ${cwd}`
       : `Workspace is missing: ${cwd}`,
     details: [],
+  };
+}
+
+export function createWebSearchDiagnosticCheck(
+  webSearch: ResolvedWebSearchCapability,
+): DiagnosticCheck {
+  return {
+    id: "web-search",
+    label: "Web Search",
+    status:
+      webSearch.available || webSearch.backend === "disabled" ? "ok" : "warn",
+    summary: webSearch.available
+      ? `Web search is ready through ${webSearch.backend} (${webSearch.execution}).`
+      : webSearch.backend === "disabled"
+        ? "Web search is intentionally disabled."
+        : "Web search is unavailable.",
+    details: [
+      ...(webSearch.reason ? [webSearch.reason] : []),
+      `Limits: ${webSearch.limits.maxUsesPerTurn} uses, ${webSearch.limits.maxResults} results/search, ${webSearch.limits.maxTotalResults} results total, ${webSearch.limits.maxCharactersPerResult} chars/result.`,
+    ],
   };
 }
 
@@ -266,6 +287,7 @@ async function buildDoctorPayload() {
       summary: `${tools.summary.total} tools are registered; optional schema budget is ${tools.summary.optionalParameterBudget}.`,
       details: [],
     },
+    createWebSearchDiagnosticCheck(resolvedProviderModel.webSearchCapability),
     checkWorkspace(),
     {
       id: "sandbox",
@@ -273,7 +295,7 @@ async function buildDoctorPayload() {
       status: sandbox.enabled && !sandbox.supported ? "warn" : "ok",
       summary: sandbox.enabled
         ? sandbox.supported
-          ? "Sandbox is enabled and supported."
+          ? "Process-level sandbox guards are enabled."
           : "Sandbox is enabled but not supported on this platform."
         : "Sandbox is disabled.",
       details: sandbox.unsupportedReason ? [sandbox.unsupportedReason] : [],

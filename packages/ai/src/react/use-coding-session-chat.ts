@@ -1,4 +1,5 @@
 import { useChat } from "@ai-sdk/react";
+import type { FileReferenceUIPart } from "../attachments/schema";
 import {
   DefaultChatTransport,
   type FileUIPart,
@@ -70,6 +71,63 @@ const buildModeAutoPromptResponse =
   "Proceed with implementation in Build mode. Continue without additional plan questions.";
 const chatMessageUpdateThrottleMs = 50;
 const retryCommandPattern = /^\/?(retry|regenerate)$/i;
+const providerWebSearchApprovalCode =
+  "provider_web_search_approval_required";
+const providerWebSearchApprovalId = "lightcode-provider-web-search-approval";
+const runCursorCommentPattern = /^: lightcode-cursor=(\d+)\r?$/;
+
+export interface RunCursorScannerState {
+  carry: string;
+  cursor: number;
+}
+
+/** Incrementally scans SSE comment lines without modifying stream bytes. */
+export function scanRunCursorText(
+  state: RunCursorScannerState,
+  text: string,
+): RunCursorScannerState {
+  const lines = `${state.carry}${text}`.split("\n");
+  const carry = lines.pop() ?? "";
+  let cursor = state.cursor;
+  for (const line of lines) {
+    const match = runCursorCommentPattern.exec(line);
+    if (!match) {
+      continue;
+    }
+    const candidate = Number(match[1]);
+    if (Number.isSafeInteger(candidate) && candidate > cursor) {
+      cursor = candidate;
+    }
+  }
+  return {
+    // A cursor comment is tiny. Bound malformed unterminated input so the
+    // transport scanner cannot retain an unbounded server line.
+    carry: carry.slice(-128),
+    cursor,
+  };
+}
+
+export function buildSessionRunResumeUrl({
+  chatApi,
+  runId,
+  after,
+}: {
+  chatApi: string;
+  runId?: string | null;
+  after: number;
+}): string {
+  const absolute = /^[a-z][a-z\d+.-]*:\/\//i.test(chatApi);
+  const url = new URL(chatApi, "http://lightcode.local");
+  url.pathname = url.pathname.replace(
+    /\/turns\/?$/,
+    runId
+      ? `/runs/${encodeURIComponent(runId)}/stream`
+      : "/runs/stream",
+  );
+  url.search = "";
+  url.searchParams.set("after", String(Math.max(-1, Math.floor(after))));
+  return absolute ? url.toString() : `${url.pathname}${url.search}`;
+}
 
 const codingToolNameSet = new Set<string>(Object.keys(codingToolInputSchemas));
 type CodingToolInput = CodingToolInputByName[CodingToolName];
@@ -316,6 +374,16 @@ export function isRecoverableChatErrorMessage(message: string) {
 
 function isRetryCommand(input: string) {
   return retryCommandPattern.test(input.trim());
+}
+
+function hashTurnPayload(value: unknown): string {
+  const text = JSON.stringify(value);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 
@@ -594,11 +662,25 @@ export function useCodingSessionChat({
   const allowedToolsRef = useRef(allowedTools);
   const permissionRulesRef = useRef(permissionRules);
   const sandboxRef = useRef(sandbox);
+  const sessionRevisionRef = useRef(0);
+  const activeRunIdRef = useRef<string | null>(null);
+  const runCursorRef = useRef(-1);
+  const resumedSessionRef = useRef<string | null>(null);
+  const canonicalSyncPromiseRef = useRef<Promise<void> | null>(null);
+  const refreshPersistedMessagesRef = useRef<() => Promise<void>>(
+    async () => undefined,
+  );
+  const providerWebSearchDecisionRef = useRef<
+    "approved" | "denied" | undefined
+  >(undefined);
+  const providerWebSearchApprovalRef = useRef<PendingToolApproval | null>(null);
   const loadPersistedMessagesRef = useRef(loadPersistedMessages);
   const loadPersistedInteractionsRef = useRef(loadPersistedInteractions);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [toolExecutionError, setToolExecutionError] = useState<string | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(true);
+  const [isHistoryResumePending, setIsHistoryResumePending] = useState(true);
+  const [isCanonicalSyncing, setIsCanonicalSyncing] = useState(false);
   const [pendingApprovals, setPendingApprovals] = useState<PendingToolApproval[]>([]);
   const [pendingUserPrompts, setPendingUserPrompts] = useState<PendingUserPrompt[]>([]);
   const [todos, setTodos] = useState<TodoItem[]>([]);
@@ -662,6 +744,13 @@ export function useCodingSessionChat({
     noProgressRetriesRef.current = 0;
     taskStuckRef.current = false;
     lastDecidedAssistantIdRef.current = null;
+    providerWebSearchDecisionRef.current = undefined;
+    providerWebSearchApprovalRef.current = null;
+    setPendingApprovals((current) =>
+      current.filter(
+        (approval) => approval.approvalId !== providerWebSearchApprovalId,
+      ),
+    );
     if (errorRetryTimerRef.current) {
       clearTimeout(errorRetryTimerRef.current);
       errorRetryTimerRef.current = null;
@@ -696,6 +785,23 @@ export function useCodingSessionChat({
   loadPersistedMessagesRef.current = loadPersistedMessages;
   loadPersistedInteractionsRef.current = loadPersistedInteractions;
 
+  const syncCanonicalHistory = useCallback((): Promise<void> => {
+    const current = canonicalSyncPromiseRef.current;
+    if (current) {
+      return current;
+    }
+
+    setIsCanonicalSyncing(true);
+    const synchronization = refreshPersistedMessagesRef.current().finally(() => {
+      if (canonicalSyncPromiseRef.current === synchronization) {
+        canonicalSyncPromiseRef.current = null;
+      }
+      setIsCanonicalSyncing(false);
+    });
+    canonicalSyncPromiseRef.current = synchronization;
+    return synchronization;
+  }, []);
+
   const transport = useMemo(() => {
     // Stall detection must observe transport bytes, not React state updates:
     // server heartbeats and reasoning deltas prove the connection is alive
@@ -704,18 +810,106 @@ export function useCodingSessionChat({
       input: Parameters<typeof globalThis.fetch>[0],
       init?: Parameters<typeof globalThis.fetch>[1],
     ) => {
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "POST") {
+        // A newly admitted turn owns a fresh cursor sequence. A 428 preflight
+        // has no run and leaves both refs empty until its approved resend.
+        activeRunIdRef.current = null;
+        runCursorRef.current = -1;
+      }
       const response = await globalThis.fetch(input, init);
+      const revisionHeader = response.headers.get("x-lightcode-revision");
+      if (revisionHeader) {
+        const revision = Number(revisionHeader);
+        if (Number.isInteger(revision) && revision >= 0) {
+          sessionRevisionRef.current = revision;
+        }
+      }
+      const responseRunId = response.headers.get("x-lightcode-run-id");
+      if (responseRunId) {
+        if (responseRunId !== activeRunIdRef.current) {
+          runCursorRef.current = -1;
+        }
+        activeRunIdRef.current = responseRunId;
+      } else if (method === "GET" && response.status === 204) {
+        activeRunIdRef.current = null;
+        runCursorRef.current = -1;
+      }
+
+      // Provider-native search executes inside the provider request, before a
+      // normal tool-call approval can be returned. The server therefore stops
+      // the admission preflight with 428 and no side effects. Surface that as
+      // the same approval card used by ordinary tools; approve/deny resends the
+      // unchanged turn with an explicit pre-turn decision.
+      if (response.status === 428) {
+        try {
+          const payload = (await response.clone().json()) as unknown;
+          if (
+            typeof payload === "object" &&
+            payload !== null &&
+            Reflect.get(payload, "code") === providerWebSearchApprovalCode
+          ) {
+            const input = {
+              query: "Allow provider-native web search for this turn",
+              provider: "auto" as const,
+              maxResults: 3,
+            };
+            const approval: PendingToolApproval = {
+              toolCallId: providerWebSearchApprovalId,
+              approvalId: providerWebSearchApprovalId,
+              toolName: "web_search",
+              input,
+              summary: "Use provider-native web search during this turn.",
+              permissionDecision: evaluateCodingToolPermission({
+                toolName: "web_search",
+                input,
+                mode: modeRef.current ?? defaultCodingAgentMode,
+                permissionMode: permissionModeRef.current,
+                allowedTools: allowedToolsRef.current,
+                permissionRules: permissionRulesRef.current,
+              }),
+              cwd: cwdRef.current,
+            };
+            providerWebSearchApprovalRef.current = approval;
+            setPendingApprovals((current) => [
+              approval,
+              ...current.filter(
+                (item) => item.approvalId !== providerWebSearchApprovalId,
+              ),
+            ]);
+          }
+        } catch {
+          // Leave malformed 428 responses to the normal transport error path.
+        }
+      }
       lastStreamActivityRef.current = Date.now();
 
       if (!response.body) {
         return response;
       }
 
+      const cursorDecoder = new TextDecoder();
+      let cursorState: RunCursorScannerState = {
+        carry: "",
+        cursor: runCursorRef.current,
+      };
       const monitoredBody = response.body.pipeThrough(
         new TransformStream<Uint8Array, Uint8Array>({
           transform(chunk, controller) {
             lastStreamActivityRef.current = Date.now();
+            cursorState = scanRunCursorText(
+              cursorState,
+              cursorDecoder.decode(chunk, { stream: true }),
+            );
+            runCursorRef.current = cursorState.cursor;
             controller.enqueue(chunk);
+          },
+          flush() {
+            cursorState = scanRunCursorText(
+              cursorState,
+              cursorDecoder.decode(),
+            );
+            runCursorRef.current = cursorState.cursor;
           },
         }),
       );
@@ -731,12 +925,47 @@ export function useCodingSessionChat({
       api: chatApi,
       fetch: monitoredFetch,
       body: () => ({
-        cwd: cwdRef.current,
         mode: modeRef.current,
         permissionMode: permissionModeRef.current,
         allowedTools: allowedToolsRef.current,
         permissionRules: permissionRulesRef.current,
         sandbox: sandboxRef.current,
+      }),
+      prepareSendMessagesRequest: async ({ messages, body, trigger }) => {
+        // SDK-internal auto-sends run immediately after onFinish. Wait for the
+        // canonical revision/message replacement started there before forming
+        // a new idempotency key or expectedRevision.
+        await canonicalSyncPromiseRef.current;
+        const message = messages.at(-1);
+        if (!message || (message.role !== "user" && message.role !== "assistant")) {
+          throw new Error("No admissible turn message is available to send.");
+        }
+        const expectedRevision = sessionRevisionRef.current;
+        return {
+          body: {
+            ...body,
+            clientTurnId: `${message.id}:${expectedRevision}:${hashTurnPayload({
+              parts: message.parts,
+              metadata: message.metadata,
+              trigger,
+            })}`,
+            expectedRevision,
+            messageId: message.id,
+            role: message.role,
+            parts: message.parts,
+            metadata: message.metadata,
+            trigger,
+            providerWebSearchDecision:
+              providerWebSearchDecisionRef.current,
+          },
+        };
+      },
+      prepareReconnectToStreamRequest: () => ({
+        api: buildSessionRunResumeUrl({
+          chatApi,
+          runId: activeRunIdRef.current,
+          after: runCursorRef.current,
+        }),
       }),
     });
   }, [chatApi]);
@@ -800,6 +1029,7 @@ export function useCodingSessionChat({
     addToolApprovalResponse,
     clearError,
     error,
+    resumeStream,
     status,
     stop,
   } =
@@ -813,6 +1043,14 @@ export function useCodingSessionChat({
       sendAutomaticallyWhen: (options) =>
         lastAssistantMessageIsCompleteWithToolCalls(options) ||
         lastAssistantMessageIsCompleteWithApprovalResponses(options),
+      onFinish: ({ isAbort, isDisconnect }) => {
+        if (isAbort || isDisconnect) {
+          return;
+        }
+        // The resumable SSE closes only after run_finished is durable and the
+        // run row is terminal, so this loads the authoritative final revision.
+        void syncCanonicalHistory();
+      },
       onToolCall: async ({ toolCall }) => {
         if (toolCall.dynamic || !isCodingToolName(toolCall.toolName)) {
           return;
@@ -892,6 +1130,20 @@ export function useCodingSessionChat({
   const setMessagesRef = useRef(setMessages);
   setMessagesRef.current = setMessages;
 
+  const resumeAuthoritativeRun = useCallback(async () => {
+    clearError();
+    setToolExecutionError(null);
+    await resumeStream();
+
+    // A 204 discovery response means no run remains to follow and does not
+    // invoke the SDK onFinish callback. Re-sync explicitly in that case.
+    if (!activeRunIdRef.current) {
+      await syncCanonicalHistory();
+    } else if (canonicalSyncPromiseRef.current) {
+      await canonicalSyncPromiseRef.current;
+    }
+  }, [clearError, resumeStream, syncCanonicalHistory]);
+
   // Approvals are derived from the stream: server-executed tools pause with an
   // `approval-requested` part and resume when the client posts the response.
   // Deriving from message parts (instead of accumulating in onToolCall) makes
@@ -944,16 +1196,21 @@ export function useCodingSessionChat({
       }
     }
 
+    const providerApproval = providerWebSearchApprovalRef.current;
+    const nextApprovals = providerApproval
+      ? [providerApproval, ...derived]
+      : derived;
     setPendingApprovals((current) => {
       if (
-        current.length === derived.length &&
+        current.length === nextApprovals.length &&
         current.every(
-          (item, index) => item.toolCallId === derived[index].toolCallId,
+          (item, index) =>
+            item.toolCallId === nextApprovals[index].toolCallId,
         )
       ) {
         return current;
       }
-      return derived;
+      return nextApprovals;
     });
 
     // Checkpoint each approval once: pending interactions block compaction
@@ -1039,6 +1296,18 @@ export function useCodingSessionChat({
       );
       setToolExecutionError(null);
 
+      if (selectedApproval.approvalId === providerWebSearchApprovalId) {
+        providerWebSearchApprovalRef.current = null;
+        providerWebSearchDecisionRef.current =
+          action === "approve" ? "approved" : "denied";
+        clearError();
+        // The 428 preflight persisted neither a run nor a message. Resending
+        // the same local turn is therefore idempotent and now carries the
+        // explicit decision the server requires.
+        void sendMessage();
+        return;
+      }
+
       // The tool executes server-side: post the approval response and let the
       // auto-resend continue the loop. Denials stream back as output-denied.
       void addToolApprovalResponse({
@@ -1056,7 +1325,13 @@ export function useCodingSessionChat({
             : undefined,
       });
     },
-    [addToolApprovalResponse, markInteractionResolved, pendingApprovals],
+    [
+      addToolApprovalResponse,
+      clearError,
+      markInteractionResolved,
+      pendingApprovals,
+      sendMessage,
+    ],
   );
 
   const resolveAllToolApprovals = useCallback(
@@ -1070,10 +1345,22 @@ export function useCodingSessionChat({
       setPendingApprovals([]);
       setToolExecutionError(null);
 
+      const providerApproval = selectedApprovals.find(
+        (approval) => approval.approvalId === providerWebSearchApprovalId,
+      );
+      if (providerApproval) {
+        providerWebSearchApprovalRef.current = null;
+        providerWebSearchDecisionRef.current =
+          action === "approve" ? "approved" : "denied";
+      }
+
       // Responses are instant (no local execution): post them all, then the
       // auto-resend fires once every request has an answer and the server
       // executes the approved tools inside one continued loop.
       for (const approval of selectedApprovals) {
+        if (approval.approvalId === providerWebSearchApprovalId) {
+          continue;
+        }
         void addToolApprovalResponse({
           id: approval.approvalId,
           approved: action === "approve",
@@ -1087,10 +1374,21 @@ export function useCodingSessionChat({
             action === "deny"
               ? { errorText: "Tool execution denied by user." }
               : undefined,
-        });
+          });
+      }
+
+      if (providerApproval) {
+        clearError();
+        void sendMessage();
       }
     },
-    [addToolApprovalResponse, markInteractionResolved, pendingApprovals],
+    [
+      addToolApprovalResponse,
+      clearError,
+      markInteractionResolved,
+      pendingApprovals,
+      sendMessage,
+    ],
   );
 
   const respondToUserPrompt = useCallback(
@@ -1148,19 +1446,12 @@ export function useCodingSessionChat({
       return;
     }
 
-    const retryMessages = sanitizeMessagesForRetry(messages);
-    setMessages(retryMessages);
-    clearError();
-    setToolExecutionError(null);
-    await sendMessage();
+    await resumeAuthoritativeRun();
   }, [
-    clearError,
     error?.message,
-    messages,
     pendingApprovals.length,
     pendingUserPrompts.length,
-    sendMessage,
-    setMessages,
+    resumeAuthoritativeRun,
   ]);
 
   // The error episode is over only when a response actually completes.
@@ -1236,13 +1527,7 @@ export function useCodingSessionChat({
       void (async () => {
         try {
           await stop();
-          // Sanitize, don't just trim: an aborted stream can leave a complete
-          // tool call without a result, and resending that history makes the
-          // provider reject every retry with HTTP 400.
-          setMessages((current) => sanitizeMessagesForRetry(current));
-          clearError();
-          setToolExecutionError(null);
-          await sendMessage();
+          await resumeAuthoritativeRun();
         } finally {
           stallRecoveryInFlightRef.current = false;
         }
@@ -1250,7 +1535,7 @@ export function useCodingSessionChat({
     }, 15_000);
 
     return () => clearInterval(intervalId);
-  }, [clearError, registerRetryProgress, sendMessage, setMessages, status, stop]);
+  }, [registerRetryProgress, resumeAuthoritativeRun, status, stop]);
 
   // Fully automatic continuation: when a response ends but the task is not
   // done (output truncated, unparsed tool intent, unfinished todos, or text
@@ -1263,6 +1548,9 @@ export function useCodingSessionChat({
     if (
       taskStuckRef.current ||
       isHistoryLoading ||
+      isHistoryResumePending ||
+      isCanonicalSyncing ||
+      canonicalSyncPromiseRef.current !== null ||
       pendingApprovals.length > 0 ||
       pendingUserPrompts.length > 0 ||
       hasUnresolvedToolParts(messages)
@@ -1312,7 +1600,9 @@ export function useCodingSessionChat({
     });
   }, [
     error,
+    isCanonicalSyncing,
     isHistoryLoading,
+    isHistoryResumePending,
     messages,
     pendingApprovals.length,
     pendingUserPrompts.length,
@@ -1338,7 +1628,6 @@ export function useCodingSessionChat({
       return;
     }
 
-    const retryMessages = sanitizeMessagesForRetry(messages);
     // The server already classified the failure; surface its real cause instead
     // of always saying "Connection dropped". Plain transport errors with no
     // structured envelope fall back to "network".
@@ -1386,10 +1675,7 @@ export function useCodingSessionChat({
       }
       errorRetriesRef.current = attempt;
       setAutoContinueState({ attempt, kind: "retry-error", retryReason });
-      setMessages(retryMessages);
-      clearError();
-      setToolExecutionError(null);
-      void sendMessage();
+      void resumeAuthoritativeRun();
     }, delay);
 
     return () => {
@@ -1399,18 +1685,19 @@ export function useCodingSessionChat({
       }
     };
   }, [
-    clearError,
     error?.message,
-    messages,
     pendingApprovals.length,
     pendingUserPrompts.length,
     registerRetryProgress,
-    sendMessage,
-    setMessages,
+    resumeAuthoritativeRun,
   ]);
 
   const submitInput = useCallback(
-    (text: string, files?: FileUIPart[]) => {
+    (
+      text: string,
+      files?: FileUIPart[],
+      referenceParts: FileReferenceUIPart[] = [],
+    ) => {
       if (canRetryRecoverableResponse && isRetryCommand(text)) {
         void retryRecoverableResponse();
         return;
@@ -1442,7 +1729,17 @@ export function useCodingSessionChat({
 
       setToolExecutionError(null);
       advanceTurnKey();
-      void sendMessage({ text, files });
+      if (referenceParts.length > 0) {
+        void sendMessage({
+          parts: [
+            ...(files ?? []),
+            ...referenceParts,
+            { type: "text", text },
+          ],
+        });
+      } else {
+        void sendMessage({ text, files });
+      }
     },
     [
       advanceTurnKey,
@@ -1470,14 +1767,41 @@ export function useCodingSessionChat({
     [advanceTurnKey, sendMessage],
   );
 
+  /** Reload canonical server history after an out-of-band session action. */
+  const refreshPersistedMessages = useCallback(async () => {
+    const messagePayload = await loadPersistedMessagesRef.current();
+    sessionRevisionRef.current = messagePayload.session?.revision ?? 0;
+    const validatedMessages = await validatePersistedMessages(
+      messagePayload.messages,
+    );
+
+    setMessagesRef.current(
+      pruneIncompleteTrailingAssistantParts(validatedMessages),
+    );
+    setPendingApprovals([]);
+    setPendingUserPrompts([]);
+    setHistoryError(null);
+    setToolExecutionError(null);
+    activeRunIdRef.current = null;
+    runCursorRef.current = -1;
+  }, []);
+  refreshPersistedMessagesRef.current = refreshPersistedMessages;
+
   useEffect(() => {
     let cancelled = false;
+    sessionRevisionRef.current = 0;
+    activeRunIdRef.current = null;
+    runCursorRef.current = -1;
+    resumedSessionRef.current = null;
+    providerWebSearchDecisionRef.current = undefined;
+    providerWebSearchApprovalRef.current = null;
     submittedInitialPromptRef.current = null;
     setHistoryError(null);
     setToolExecutionError(null);
     setPendingApprovals([]);
     setPendingUserPrompts([]);
     setIsHistoryLoading(true);
+    setIsHistoryResumePending(true);
 
     async function loadMessages() {
       if (!isSessionIdValid) {
@@ -1500,6 +1824,7 @@ export function useCodingSessionChat({
             ? loadPersistedInteractionsRef.current()
             : Promise.resolve({ interactions: [] }),
         ]);
+        sessionRevisionRef.current = messagePayload.session?.revision ?? 0;
         const validatedMessages = await validatePersistedMessages(
           messagePayload.messages,
         );
@@ -1553,6 +1878,33 @@ export function useCodingSessionChat({
     sessionId,
     skipHistoryLoad,
   ]);
+
+  // Discover and attach to a server-owned run only after canonical history is
+  // installed. This GET cannot repeat tool/provider side effects.
+  useEffect(() => {
+    if (isHistoryLoading) {
+      return;
+    }
+    if (!isSessionIdValid || historyError) {
+      setIsHistoryResumePending(false);
+      return;
+    }
+    if (resumedSessionRef.current === sessionId) {
+      return;
+    }
+
+    resumedSessionRef.current = sessionId;
+    let cancelled = false;
+    setIsHistoryResumePending(true);
+    void resumeStream().finally(() => {
+      if (!cancelled) {
+        setIsHistoryResumePending(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [historyError, isHistoryLoading, isSessionIdValid, resumeStream, sessionId]);
 
   useEffect(() => {
     if (mode === "plan" || pendingUserPrompts.length === 0) {
@@ -1622,7 +1974,7 @@ export function useCodingSessionChat({
       return;
     }
 
-    if (isHistoryLoading) {
+    if (isHistoryLoading || isHistoryResumePending || isCanonicalSyncing) {
       return;
     }
 
@@ -1639,7 +1991,15 @@ export function useCodingSessionChat({
 
     submittedInitialPromptRef.current = initialPrompt.trim();
     void sendMessage({ text: initialPrompt.trim() });
-  }, [initialPrompt, isHistoryLoading, isSessionIdValid, messages.length, sendMessage]);
+  }, [
+    initialPrompt,
+    isCanonicalSyncing,
+    isHistoryLoading,
+    isHistoryResumePending,
+    isSessionIdValid,
+    messages.length,
+    sendMessage,
+  ]);
 
   const hasActiveToolWork = hasActiveClientToolWork({
     messages,
@@ -1648,7 +2008,11 @@ export function useCodingSessionChat({
   });
   const isStreaming =
     status === "submitted" || status === "streaming" || hasActiveToolWork;
-  const isLoading = isHistoryLoading || isStreaming;
+  const isLoading =
+    isHistoryLoading ||
+    isHistoryResumePending ||
+    isCanonicalSyncing ||
+    isStreaming;
   // Recoverable errors stay invisible while automatic retries remain; the
   // status line is the only signal. Hard failures (or exhausted retries)
   // surface normally.
@@ -1657,14 +2021,52 @@ export function useCodingSessionChat({
       isRecoverableChatErrorMessage(error.message) &&
       errorRetriesRef.current < maxErrorRetriesRef.current,
   );
+  const providerWebSearchApprovalPending = pendingApprovals.some(
+    (approval) => approval.approvalId === providerWebSearchApprovalId,
+  );
   const errorMessage =
     historyError ??
     toolExecutionError ??
-    (error?.message && !recoverableRetryPending
+    (error?.message &&
+    !recoverableRetryPending &&
+    !providerWebSearchApprovalPending
       ? normalizeChatErrorMessage(error.message)
       : null);
 
+  const abortActiveRun = useCallback(async () => {
+    if (errorRetryTimerRef.current) {
+      clearTimeout(errorRetryTimerRef.current);
+      errorRetryTimerRef.current = null;
+    }
+    const runId = activeRunIdRef.current;
+    if (runId) {
+      const abortUrl = chatApi.replace(
+        /\/turns(?:\?.*)?$/,
+        `/runs/${encodeURIComponent(runId)}/abort`,
+      );
+      try {
+        await globalThis.fetch(abortUrl, { method: "POST" });
+      } catch {
+        // Detach locally below; the error remains visible because only the
+        // companion server can authoritatively stop its provider/tool work.
+      }
+    }
+    await stop();
+    try {
+      if (runId) {
+        // Follow the aborted run until its run_finished event is drained. This
+        // is a GET replay and cannot restart provider or tool side effects.
+        await resumeStream();
+      }
+      await syncCanonicalHistory();
+    } catch {
+      // Stopping the local stream remains useful when the companion server is
+      // unavailable; the normal history error path will surface on reconnect.
+    }
+  }, [chatApi, resumeStream, stop, syncCanonicalHistory]);
+
   return {
+    abortActiveRun,
     autoContinueState,
     errorMessage,
     isHistoryLoading,
@@ -1674,6 +2076,7 @@ export function useCodingSessionChat({
     pendingApprovals,
     pendingUserPrompts,
     canRetryRecoverableResponse,
+    refreshPersistedMessages,
     todos,
     retryRecoverableResponse,
     resolveAllToolApprovals,

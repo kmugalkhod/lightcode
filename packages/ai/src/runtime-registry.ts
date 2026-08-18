@@ -58,6 +58,8 @@ export interface CodingToolExecutionOptions {
   turnKey?: string;
   workspaceContext?: WorkspaceContext;
   sandbox?: SandboxConfig;
+  /** Cancels in-flight subprocess and network tool work with the parent run. */
+  abortSignal?: AbortSignal;
 }
 
 interface CodingToolRuntimeContext {
@@ -162,10 +164,19 @@ const codingToolRuntimes: {
     }),
   bash: (input, { workspaceContext, options }) => {
     assertSandboxSupport(options);
-    return executeBash(input, workspaceContext);
+    return executeBash(input, workspaceContext, options?.abortSignal);
   },
-  web_fetch: (input) => executeWebFetch(input),
-  web_search: (input) => executeWebSearch(input),
+  web_fetch: (input, { options }) =>
+    executeWebFetch(input, { signal: options?.abortSignal }),
+  web_search: (input, { options }) =>
+    executeWebSearch(input, {
+      signal: options?.abortSignal,
+      cwd: options?.cwd,
+      turnKey:
+        options?.sessionId && options.turnKey
+          ? `${options.sessionId}:${options.turnKey}`
+          : options?.turnKey,
+    }),
 };
 
 export function parseCodingToolInput<K extends CodingToolName>(
@@ -198,6 +209,7 @@ export async function executeCodingTool<K extends CodingToolName>(
   input: CodingToolInputByName[K],
   options?: CodingToolExecutionOptions,
 ): Promise<CodingToolOutputByName[K]> {
+  options?.abortSignal?.throwIfAborted();
   const workspaceContext = getWorkspaceContext(options);
   const validatedInput = parseCodingToolInput(toolName, input);
   assertToolPermission(toolName, validatedInput, options);

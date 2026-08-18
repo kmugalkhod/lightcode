@@ -44,6 +44,16 @@ enum ChatInteractionStatus {
   @@map("chat_interaction_status")
 }
 
+enum ChatRunStatus {
+  pending
+  running
+  completed
+  failed
+  cancelled
+
+  @@map("chat_run_status")
+}
+
 model ChatSession {
   id               String               @id
   title            String?
@@ -60,6 +70,8 @@ model ChatSession {
   interactions     ChatInteraction[]
   subagentTasks    SubagentTask[]
   contextState     SessionContextState?
+  runs             ChatRun[]
+  turnReverts      ChatTurnRevert[]
 
   @@index([updatedAt], map: "sessions_updated_at_idx")
   @@map("sessions")
@@ -94,12 +106,78 @@ model ChatMessage {
   updatedAt DateTime    @updatedAt @map("updated_at")
 
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  parts   ChatMessagePart[]
 
   @@unique([sessionId, messageId], map: "messages_session_id_message_id_key")
   @@unique([sessionId, sequence], map: "messages_session_id_sequence_key")
   @@index([sessionId, sequence], map: "messages_session_id_sequence_idx")
   @@index([sessionId, role], map: "messages_session_id_role_idx")
   @@map("messages")
+}
+
+model ChatMessagePart {
+  id        String   @id @default(cuid())
+  messageId String   @map("message_id")
+  partIndex Int      @map("part_index")
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, partIndex], map: "message_parts_message_id_part_index_key")
+  @@index([messageId, partIndex], map: "message_parts_message_id_part_index_idx")
+  @@map("message_parts")
+}
+
+model ChatRun {
+  id             String        @id
+  sessionId      String        @map("session_id")
+  clientTurnId   String        @map("client_turn_id")
+  status         ChatRunStatus @default(pending)
+  baseRevision   Int           @map("base_revision")
+  finalRevision  Int?          @map("final_revision")
+  error          String?
+  startedAt      DateTime?     @map("started_at")
+  finishedAt     DateTime?     @map("finished_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  session ChatSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  events  ChatRunEvent[]
+
+  @@unique([sessionId, clientTurnId], map: "chat_runs_session_id_client_turn_id_key")
+  @@index([sessionId, status], map: "chat_runs_session_id_status_idx")
+  @@map("chat_runs")
+}
+
+model ChatRunEvent {
+  id        String   @id @default(cuid())
+  runId     String   @map("run_id")
+  cursor    Int
+  kind      String
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  run ChatRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, cursor], map: "chat_run_events_run_id_cursor_key")
+  @@index([runId, cursor], map: "chat_run_events_run_id_cursor_idx")
+  @@map("chat_run_events")
+}
+
+model ChatTurnRevert {
+  id         String    @id @default(cuid())
+  sessionId  String    @map("session_id")
+  turnKey    String    @map("turn_key")
+  messages   Json
+  state      String    @default("undone")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  reappliedAt DateTime? @map("reapplied_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, state, createdAt], map: "chat_turn_reverts_session_state_created_at_idx")
+  @@map("chat_turn_reverts")
 }
 
 model ChatInteraction {

@@ -2,18 +2,24 @@ import type { UIMessage } from "ai";
 import {
   resolveContextWindowTokens,
   resolveInputBudgetTokens,
+  resolvePreserveRecentTokens,
   type ResolvedContextOptimizerConfig,
 } from "./config";
 import type { ContextStateView } from "./context-state";
 import {
   ESTIMATED_CHARS_PER_TOKEN,
-  estimateContextTokens,
+  estimateMessageTokens,
+  estimateProviderMessageTokens,
   type ContextTokenEstimate,
 } from "./estimate";
 import { estimateStructuralTokens } from "./fit-to-budget";
 import { createSummaryMessage } from "./heuristic-summary";
 import { hasUnresolvedToolWork } from "./message-parts";
 import { pruneToolOutputs, type Tier1PruneResult } from "./tier1-prune";
+import {
+  collectConversationTurnRanges,
+  computeRecentTurnStartIndex,
+} from "./turns";
 
 export type CompactionBlockedReason =
   | "not_enough_messages"
@@ -51,6 +57,8 @@ export interface BuildProviderViewOptions {
    * prefix to protect. Defaults to true, preserving the conservative behavior.
    */
   cacheActive?: boolean;
+  /** System prompt plus the active tool grammar for the final request. */
+  fixedInputTokens?: number;
 }
 
 export interface ProviderViewResult {
@@ -64,6 +72,12 @@ export interface ProviderViewResult {
    * deterministic fit-to-budget clamp must satisfy.
    */
   inputBudgetTokens: number;
+  /** Portion of the input budget available to messages after fixed overhead. */
+  messageBudgetTokens: number;
+  /** Stable system-prompt and active-tool overhead included in `estimate`. */
+  fixedInputTokens: number;
+  /** Effective token-bounded recent tail for this model request. */
+  preserveRecentTokens: number;
   /** True when a (new) Tier-2 compaction should run before streaming. */
   needsCompaction: boolean;
   /**
@@ -110,6 +124,24 @@ export function computeCompactionCutoffIndex(
 }
 
 /**
+ * Token-bounded replacement for message-count retention. The cutoff always
+ * starts on a user boundary, so a tool call/result sequence is never split
+ * across the stored summary and the verbatim recent tail.
+ */
+export function computeTokenBoundedCompactionCutoffIndex(
+  messages: readonly UIMessage[],
+  preserveRecentTokens: number,
+  afterAnchorIndex: number,
+): number {
+  return computeRecentTurnStartIndex(
+    messages,
+    preserveRecentTokens,
+    estimateMessageTokens,
+    afterAnchorIndex,
+  );
+}
+
+/**
  * Caps a covered slice to the leading run of (whole) messages whose combined
  * structural token estimate stays within `maxTokens`. Always keeps at least one
  * message so a single oversized turn still gets compacted (the summarizer
@@ -124,18 +156,25 @@ export function capCoverageToTokenBudget(
     return [...coveredMessages];
   }
 
-  let total = 0;
-  const capped: UIMessage[] = [];
-  for (const message of coveredMessages) {
-    const messageTokens = estimateStructuralTokens([message]);
-    if (capped.length > 0 && total + messageTokens > maxTokens) {
-      break;
-    }
-    capped.push(message);
-    total += messageTokens;
+  const turns = collectConversationTurnRanges(
+    coveredMessages,
+    estimateMessageTokens,
+  );
+  if (turns.length === 0) {
+    return [...coveredMessages];
   }
 
-  return capped;
+  let total = 0;
+  let endIndex = 0;
+  for (const turn of turns) {
+    if (endIndex > 0 && total + turn.estimatedTokens > maxTokens) {
+      break;
+    }
+    endIndex = turn.endIndex;
+    total += turn.estimatedTokens;
+  }
+
+  return coveredMessages.slice(0, endIndex);
 }
 
 export function buildProviderView(
@@ -150,6 +189,15 @@ export function buildProviderView(
   const inputBudgetTokens = resolveInputBudgetTokens({
     contextWindow,
     reservedOutputTokens: options.reservedOutputTokens,
+  });
+  const fixedInputTokens = Math.max(
+    0,
+    Math.floor(options.fixedInputTokens ?? 0),
+  );
+  const messageBudgetTokens = Math.max(0, inputBudgetTokens - fixedInputTokens);
+  const preserveRecentTokens = resolvePreserveRecentTokens({
+    config,
+    inputBudgetTokens: messageBudgetTokens,
   });
 
   let anchorResolved = false;
@@ -174,7 +222,13 @@ export function buildProviderView(
     providerMessages = [...messages];
   }
 
-  let estimate = estimateContextTokens(providerMessages);
+  const messageEstimate = estimateProviderMessageTokens(providerMessages, {
+    fallbackFixedInputTokens: fixedInputTokens,
+  });
+  let estimate: ContextTokenEstimate = {
+    tokens: messageEstimate.tokens + fixedInputTokens,
+    basis: messageEstimate.basis,
+  };
   let tier1: Tier1PruneResult | null = null;
 
   // With no prompt cache to protect, prune sooner and harder: the cache-warming
@@ -194,7 +248,7 @@ export function buildProviderView(
   const triggerTokens = (currentEstimateTokens: number) =>
     Math.max(
       currentEstimateTokens,
-      estimateStructuralTokens(providerMessages),
+      estimateStructuralTokens(providerMessages) + fixedInputTokens,
       typeof options.measuredInputTokens === "number"
         ? options.measuredInputTokens
         : 0,
@@ -207,14 +261,23 @@ export function buildProviderView(
     triggerTokens(estimate.tokens) > pruneFraction * inputBudgetTokens;
 
   if (shouldPrune) {
+    const recentStart = computeRecentTurnStartIndex(
+      providerMessages,
+      preserveRecentTokens,
+      estimateMessageTokens,
+    );
     tier1 = pruneToolOutputs(providerMessages, {
-      preserveRecentMessages: config.preserveRecentMessages,
+      // Tier-1 still accepts a count internally, but derive that count from the
+      // token-bounded complete-turn suffix. No request path retains history by
+      // an arbitrary number of messages anymore.
+      preserveRecentMessages: providerMessages.length - recentStart,
       minOutputChars: uncachedActive
         ? config.uncachedPruneMinOutputChars
         : undefined,
-      quantizeUserTurns: uncachedActive
-        ? config.uncachedQuantizeUserTurns
-        : undefined,
+      // The cutoff is already snapped to a complete user turn. A second
+      // quantization pass can move it backwards past an oversized tool result
+      // and defeat the token ceiling entirely.
+      quantizeUserTurns: 1,
       dedupeAcrossFullHistory: uncachedActive,
       elideReasoningParts: uncachedActive,
     });
@@ -234,19 +297,28 @@ export function buildProviderView(
     }
   }
 
-  const compactionCutoffIndex = computeCompactionCutoffIndex(
+  const tokenBoundedCutoffIndex = computeTokenBoundedCompactionCutoffIndex(
     messages,
-    config.preserveRecentMessages,
+    preserveRecentTokens,
     afterAnchorIndex,
   );
+  const userIndicesAfterAnchor = messages
+    .map((message, index) => ({ message, index }))
+    .filter(
+      ({ message, index }) =>
+        index >= afterAnchorIndex && message.role === "user",
+    )
+    .map(({ index }) => index);
+  const rollingTurnCutoffIndex =
+    userIndicesAfterAnchor.length > config.uncachedRollingCompactionUserTurns
+      ? (userIndicesAfterAnchor[
+          userIndicesAfterAnchor.length -
+            config.uncachedRollingCompactionUserTurns
+        ] ?? afterAnchorIndex)
+      : afterAnchorIndex;
   // Cap each round to a token budget so the summarizer's own input stays bounded
   // on huge sessions. The uncovered remainder stays in the provider view and is
   // folded in on the next iterative round (see chat-stream's compaction loop).
-  const coveredMessages = capCoverageToTokenBudget(
-    messages.slice(afterAnchorIndex, compactionCutoffIndex),
-    config.maxCoverageTokensPerCompaction,
-  );
-
   const overCompactThreshold =
     triggerTokens(estimate.tokens) >
     config.compactAtFraction * inputBudgetTokens;
@@ -260,6 +332,13 @@ export function buildProviderView(
   const rollingThresholdReached =
     uncachedActive &&
     userTurnsAfterAnchor > config.uncachedRollingCompactionUserTurns;
+  const compactionCutoffIndex = rollingThresholdReached
+    ? Math.max(tokenBoundedCutoffIndex, rollingTurnCutoffIndex)
+    : tokenBoundedCutoffIndex;
+  const coveredMessages = capCoverageToTokenBudget(
+    messages.slice(afterAnchorIndex, compactionCutoffIndex),
+    config.maxCoverageTokensPerCompaction,
+  );
 
   let compactionBlockedReason: CompactionBlockedReason | null = null;
   if (overCompactThreshold || rollingThresholdReached) {
@@ -282,6 +361,9 @@ export function buildProviderView(
     estimate,
     contextWindow,
     inputBudgetTokens,
+    messageBudgetTokens,
+    fixedInputTokens,
+    preserveRecentTokens,
     needsCompaction: overCompactThreshold && compactionBlockedReason === null,
     needsRollingCompaction:
       rollingThresholdReached && compactionBlockedReason === null,

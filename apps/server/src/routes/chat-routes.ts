@@ -1,18 +1,37 @@
 import { zValidator } from "@hono/zod-validator";
 import {
+  artifactizeLargeToolOutputs,
   buildProviderView,
+  createCodingAgentTools,
   codingChatRequestSchema,
   chatInteractionListQuerySchema,
   chatInteractionResolveRequestSchema,
   chatInteractionUpsertRequestSchema,
   concreteSessionInteractionPathParamsSchema,
   concreteSessionPathParamsSchema,
+  estimateStructuralTokens,
+  lightcodeConfigDefaults,
+  normalizeProviderMessages,
+  ProviderTurnAssembler,
+  resolveCodingAgentCallSettings,
+  resolveContextWindowTokens,
+  resolveMaxOutputTokens,
+  selectCodingAgentIntentTools,
+  sessionAbortRunResponseSchema,
+  sessionTurnHistoryActionResponseSchema,
   sessionInteractionPathParamsSchema,
   sessionCreateRequestSchema,
   sessionPathParamsSchema,
+  sessionRunEventsQuerySchema,
+  sessionRunPathParamsSchema,
+  sessionTurnRequestSchema,
   sessionUpdateRequestSchema,
+  type SessionContextState,
+  type SessionMetadata,
 } from "@lightcode/ai";
+import { getErrorMessage } from "@lightcode/shared";
 import { Hono } from "hono";
+import { convertToModelMessages, type UIMessage } from "ai";
 import {
   ChatInteractionNotFoundError,
   listChatInteractions,
@@ -20,29 +39,196 @@ import {
   upsertChatInteraction,
 } from "../lib/chat-interaction-store";
 import {
+  CheckpointConflictError,
+  clearSessionRedoBranch,
+  redoSessionTurn,
+  SessionHistoryConflictError,
+  undoSessionTurn,
+} from "../lib/chat-history-store";
+import {
   createChatSession,
   deleteChatSession,
   exportChatSessionJson,
   forkChatSession,
   listChatSessions,
   loadChatSessionWithMessages,
+  mergeSessionTurnDelta,
   renameChatSession,
   resolveChatSessionIdentifier,
   updateSessionMetadata,
   SessionNotFoundError,
 } from "../lib/chat-store";
 import {
+  abortActiveRun,
+  createChatRun,
+  getActiveRunId,
+  getChatRun,
+  getChatRunByClientTurnId,
+  listChatRunEvents,
+  registerActiveRun,
+  releaseActiveRun,
+  SessionRevisionConflictError,
+  SessionRunConflictError,
+  updateChatRun,
+} from "../lib/chat-run-store";
+import {
+  createOrderedRunEventRecorder,
+  releaseOrderedRunEventRecorder,
+  type OrderedRunEventRecorder,
+} from "../lib/chat-run-event-recorder";
+import {
+  captureChatRunResponse,
+  finalizeChatRun,
+  replayChatRunResponse,
+  resumeChatRunResponse,
+} from "../lib/chat-run-stream";
+import {
+  providerWebSearchApprovalRequiredBody,
+  resolveProviderWebSearchGate,
+} from "../lib/provider-web-search-gate";
+import {
   loadSessionContextStateSafe,
   streamSessionChat,
 } from "../lib/chat-stream";
+import { materializeProviderAttachments } from "../lib/attachment-store";
 import { compactSessionContext } from "../lib/context-compaction";
 import { getSessionContextState } from "../lib/context-state-store";
+import { getLearnedContextLimit } from "../lib/learned-context-limit";
 import {
   chatModelId,
   lightcodeConfigResult,
   resolvedProviderModel,
 } from "../lib/runtime-config";
+import {
+  buildWorkspaceContext,
+  buildWorkspaceContextDelta,
+  collectRelatedWorkspacePaths,
+} from "../lib/workspace-context";
 import { internalErrorResponse } from "./route-helpers";
+
+async function assembleStoredSessionProviderTurn({
+  session,
+  messages,
+  contextState,
+  abortSignal,
+}: {
+  session: SessionMetadata;
+  messages: UIMessage[];
+  contextState: SessionContextState | null;
+  abortSignal?: AbortSignal;
+}) {
+  if (!session.cwd) {
+    throw new Error("Session has no canonical workspace directory.");
+  }
+
+  const providerMessages = await materializeProviderAttachments({
+    messages,
+    cwd: session.cwd,
+  });
+
+  const environmentContext = messages.some(
+    (message) => message.role === "assistant",
+  )
+    ? await buildWorkspaceContextDelta({
+        cwd: session.cwd,
+        sessionId: session.id,
+        relatedPaths: collectRelatedWorkspacePaths(messages),
+      })
+    : await buildWorkspaceContext({
+        cwd: session.cwd,
+        sessionId: session.id,
+        relatedPaths: collectRelatedWorkspacePaths(messages),
+      });
+  const callSettings = resolveCodingAgentCallSettings({
+    options: {
+      cwd: session.cwd,
+      sessionId: session.id,
+      mode: session.mode,
+      permissionMode:
+        session.permissionMode ??
+        lightcodeConfigResult.config.permissionMode ??
+        undefined,
+      allowedTools: lightcodeConfigResult.config.allowedTools,
+      permissionRules: lightcodeConfigResult.config.permissions,
+      sandbox: lightcodeConfigResult.config.sandbox,
+      environmentContext,
+    },
+    prompt: undefined,
+    messages: providerMessages,
+    promptOverride: Bun.env.LIGHTCODE_CODING_AGENT_SYSTEM_PROMPT,
+    includeToolDiscipline:
+      resolvedProviderModel.needsToolCallDiscipline ?? false,
+    providerWebSearchTool: Boolean(
+      resolvedProviderModel.providerTools?.web_search,
+    ),
+  });
+  const tools = createCodingAgentTools();
+  if (!resolvedProviderModel.webSearchCapability.available) {
+    delete tools.web_search;
+  } else if (
+    resolvedProviderModel.providerTools?.web_search &&
+    callSettings.providerWebSearchAccess?.action === "expose"
+  ) {
+    tools.web_search = resolvedProviderModel.providerTools.web_search;
+  } else if (resolvedProviderModel.providerTools?.web_search) {
+    delete tools.web_search;
+  }
+  const activeTools = callSettings.activeTools.filter(
+    (toolName) => tools[toolName] !== undefined,
+  );
+  const endpointLimitTokens = getLearnedContextLimit(chatModelId);
+  const contextWindow = resolveContextWindowTokens({
+    config: lightcodeConfigResult.config.context,
+    modelContextWindow: resolvedProviderModel.contextWindow,
+    endpointLimitTokens,
+  });
+  const reservedOutputTokens = Math.min(
+    resolveMaxOutputTokens(
+      lightcodeConfigResult.config.maxOutputTokens,
+      lightcodeConfigDefaults.maxOutputTokens,
+      resolvedProviderModel.maxCompletionTokens,
+    ),
+    Math.max(1_024, Math.floor(contextWindow / 2)),
+  );
+  const baseAssembler = new ProviderTurnAssembler({
+    system: callSettings.instructions,
+    tools,
+    activeTools,
+    contextWindow,
+    reservedOutputTokens,
+  });
+  const view = buildProviderView({
+    messages: providerMessages,
+    contextState,
+    config: lightcodeConfigResult.config.context,
+    modelContextWindow: resolvedProviderModel.contextWindow,
+    endpointLimitTokens,
+    reservedOutputTokens,
+    cacheActive: resolvedProviderModel.supportsPromptCaching,
+    fixedInputTokens: baseAssembler.fixedInputTokens,
+  });
+  const assembler = new ProviderTurnAssembler({
+    system: callSettings.instructions,
+    tools,
+    activeTools,
+    contextWindow: view.contextWindow,
+    reservedOutputTokens,
+    originalInputTokens:
+      estimateStructuralTokens(providerMessages) + baseAssembler.fixedInputTokens,
+  });
+  const modelMessages = await convertToModelMessages(
+    normalizeProviderMessages(view.providerMessages),
+    { tools },
+  );
+  const artifactized = await artifactizeLargeToolOutputs(modelMessages, {
+    signal: abortSignal,
+  });
+  const assembled = assembler.assembleModelMessages(
+    artifactized.messages,
+    { preserveRecentTokens: view.preserveRecentTokens },
+  );
+  return { view, assembled };
+}
 
 export const sessionRoutes = new Hono()
   .get("/", async (c) => {
@@ -125,19 +311,24 @@ export const sessionRoutes = new Hono()
 
     try {
       const sessionId = await resolveChatSessionIdentifier(id);
-      const { messages } = await loadChatSessionWithMessages(sessionId);
+      const { session, messages } = await loadChatSessionWithMessages(sessionId);
       const contextState = await getSessionContextState(sessionId);
-      const view = buildProviderView({
+      const { assembled } = await assembleStoredSessionProviderTurn({
+        session,
         messages,
         contextState,
-        config: lightcodeConfigResult.config.context,
-        modelContextWindow: resolvedProviderModel.contextWindow,
+        abortSignal: c.req.raw.signal,
       });
 
       return c.json({
         contextState,
-        estimate: view.estimate,
-        contextWindow: view.contextWindow,
+        estimate: {
+          tokens: assembled.breakdown.inputTokens,
+          basis: "heuristic" as const,
+        },
+        contextWindow: assembled.breakdown.contextWindow,
+        breakdown: assembled.breakdown,
+        withinBudget: assembled.withinBudget,
       });
     } catch (error) {
       if (error instanceof SessionNotFoundError) {
@@ -156,14 +347,25 @@ export const sessionRoutes = new Hono()
 
     try {
       const sessionId = await resolveChatSessionIdentifier(id);
+      const activeRunId = getActiveRunId(sessionId);
+      if (activeRunId) {
+        return c.json(
+          {
+            error: "Abort the active run before compacting this session.",
+            code: "run_conflict",
+            activeRunId,
+          },
+          409,
+        );
+      }
       const { session, messages } = await loadChatSessionWithMessages(sessionId);
       const contextState = await getSessionContextState(sessionId);
       const contextConfig = lightcodeConfigResult.config.context;
-      const view = buildProviderView({
+      const { view, assembled } = await assembleStoredSessionProviderTurn({
+        session,
         messages,
         contextState,
-        config: contextConfig,
-        modelContextWindow: resolvedProviderModel.contextWindow,
+        abortSignal: c.req.raw.signal,
       });
 
       if (view.coveredMessages.length === 0) {
@@ -181,7 +383,9 @@ export const sessionRoutes = new Hono()
         modelId: chatModelId,
         cwd: session.cwd ?? undefined,
         config: contextConfig,
-        estimatedTokens: view.estimate.tokens,
+        estimatedTokens: assembled.breakdown.inputTokens,
+        contextWindow: assembled.breakdown.contextWindow,
+        abortSignal: c.req.raw.signal,
       });
 
       return c.json(
@@ -391,22 +595,529 @@ export const sessionRoutes = new Hono()
     }
   })
   .post(
+    "/:id/turns",
+    zValidator("param", sessionPathParamsSchema),
+    zValidator("json", sessionTurnRequestSchema),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const body = c.req.valid("json");
+
+      let sessionId: string;
+      try {
+        sessionId = await resolveChatSessionIdentifier(id);
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        throw error;
+      }
+
+      const activeRunId = getActiveRunId(sessionId);
+      if (activeRunId) {
+        return c.json(
+          {
+            error: "This session already has an active run.",
+            code: "run_conflict",
+            activeRunId,
+          },
+          409,
+        );
+      }
+
+      // A retry of an already-admitted turn is a read-only replay, not a new
+      // provider request. Resolve it before revision/approval preflight so the
+      // original base revision and one-turn decision need not be resubmitted.
+      const existingRun = await getChatRunByClientTurnId({
+        sessionId,
+        clientTurnId: body.clientTurnId,
+      });
+      if (existingRun) {
+        if (
+          existingRun.status === "running" ||
+          existingRun.status === "pending"
+        ) {
+          return c.json(
+            {
+              error: "The same turn is already running.",
+              code: "run_conflict",
+              activeRunId: existingRun.id,
+            },
+            409,
+          );
+        }
+        return replayChatRunResponse({ sessionId, runId: existingRun.id });
+      }
+
+      // Provider-executed tools can perform the search (and incur billing)
+      // inside the generation request. Resolve their permission before a run,
+      // event, message, or redo-branch mutation is persisted.
+      let preflightSession: Awaited<
+        ReturnType<typeof loadChatSessionWithMessages>
+      >;
+      try {
+        preflightSession = await loadChatSessionWithMessages(sessionId);
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        throw error;
+      }
+      if (preflightSession.session.revision !== body.expectedRevision) {
+        return c.json(
+          {
+            error: `Session revision conflict: expected ${body.expectedRevision}, current revision is ${preflightSession.session.revision}.`,
+            code: "revision_conflict",
+            expectedRevision: body.expectedRevision,
+            actualRevision: preflightSession.session.revision,
+          },
+          409,
+        );
+      }
+      const providerWebSearchGate = resolveProviderWebSearchGate({
+        capability: resolvedProviderModel.webSearchCapability,
+        providerToolAvailable: Boolean(
+          resolvedProviderModel.providerTools?.web_search,
+        ),
+        requested: selectCodingAgentIntentTools({
+          mode: body.mode ?? preflightSession.session.mode,
+          prompt: undefined,
+          messages: [
+            ...preflightSession.messages,
+            {
+              id: body.messageId,
+              role: body.role,
+              parts: body.parts,
+              ...(body.metadata === undefined
+                ? {}
+                : { metadata: body.metadata }),
+            },
+          ],
+        }).includes("web_search"),
+        mode: body.mode ?? preflightSession.session.mode,
+        permissionMode:
+          body.permissionMode ??
+          preflightSession.session.permissionMode ??
+          undefined,
+        allowedTools:
+          body.allowedTools ?? lightcodeConfigResult.config.allowedTools,
+        permissionRules:
+          body.permissionRules ?? lightcodeConfigResult.config.permissions,
+        decision: body.providerWebSearchDecision,
+      });
+      if (providerWebSearchGate.action === "approval-required") {
+        return c.json(providerWebSearchApprovalRequiredBody(), 428);
+      }
+
+      let runId: string | null = null;
+      let runSignal: AbortSignal | null = null;
+      let runRecorder: OrderedRunEventRecorder | null = null;
+      try {
+        const created = await createChatRun({
+          sessionId,
+          clientTurnId: body.clientTurnId,
+          expectedRevision: body.expectedRevision,
+        });
+        runId = created.run.id;
+
+        if (created.idempotent) {
+          if (created.run.status === "running" || created.run.status === "pending") {
+            return c.json(
+              {
+                error: "The same turn is already running.",
+                code: "run_conflict",
+                activeRunId: created.run.id,
+              },
+              409,
+            );
+          }
+          return replayChatRunResponse({ sessionId, runId: created.run.id });
+        }
+
+        runSignal = registerActiveRun(sessionId, runId);
+        runRecorder = createOrderedRunEventRecorder({ sessionId, runId });
+        await runRecorder.record("run_started", {
+          clientTurnId: body.clientTurnId,
+          baseRevision: body.expectedRevision,
+        });
+        await updateChatRun({ runId, status: "running" });
+
+        const canonical = await mergeSessionTurnDelta(sessionId, body);
+        if (!canonical.session.cwd) {
+          throw new Error("Session has no canonical workspace directory.");
+        }
+        if (canonical.appended) {
+          await clearSessionRedoBranch(sessionId);
+        }
+
+        const response = await streamSessionChat(
+          c,
+          sessionId,
+          canonical.messages,
+          canonical.session.cwd,
+          body.mode ?? canonical.session.mode,
+          body.permissionMode ?? canonical.session.permissionMode ?? undefined,
+          body.allowedTools ?? lightcodeConfigResult.config.allowedTools,
+          body.permissionRules ?? lightcodeConfigResult.config.permissions,
+          body.sandbox ?? lightcodeConfigResult.config.sandbox,
+          {
+            abortSignal: runSignal,
+            expectedRevision: body.expectedRevision,
+            providerWebSearchDecision: body.providerWebSearchDecision,
+          },
+        );
+
+        const contentType = response.headers.get("content-type") ?? "";
+        if (!response.ok || !contentType.includes("text/event-stream")) {
+          await finalizeChatRun({
+            recorder: runRecorder,
+            runSignal,
+            error: new Error(`Chat request failed with HTTP ${response.status}.`),
+          });
+          const failedSession = await loadChatSessionWithMessages(sessionId);
+          const finalRevision = failedSession.session.revision;
+          const headers = new Headers(response.headers);
+          headers.set("x-lightcode-run-id", runId);
+          headers.set("x-lightcode-revision", String(finalRevision));
+          return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          });
+        }
+
+        return captureChatRunResponse({
+          response,
+          recorder: runRecorder,
+          runSignal,
+        });
+      } catch (error) {
+        if (runId) {
+          try {
+            if (runRecorder && runSignal) {
+              await finalizeChatRun({
+                recorder: runRecorder,
+                runSignal,
+                error,
+              });
+            } else {
+              releaseActiveRun(sessionId, runId);
+              if (runRecorder) {
+                releaseOrderedRunEventRecorder(runRecorder);
+              }
+              await updateChatRun({
+                runId,
+                status: "failed",
+                error: getErrorMessage(error),
+              });
+            }
+          } catch {
+            // Preserve the original error response.
+          }
+        }
+
+        if (error instanceof SessionRevisionConflictError) {
+          return c.json(
+            {
+              error: error.message,
+              code: "revision_conflict",
+              expectedRevision: error.expectedRevision,
+              actualRevision: error.actualRevision,
+            },
+            409,
+          );
+        }
+        if (error instanceof SessionRunConflictError) {
+          return c.json(
+            {
+              error: error.message,
+              code: "run_conflict",
+              activeRunId: error.activeRunId,
+            },
+            409,
+          );
+        }
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        return internalErrorResponse(c, {
+          event: "session_turn_failed",
+          message: "Unable to start the session turn.",
+          error,
+        });
+      }
+    },
+  )
+  .post(
+    "/:id/undo",
+    zValidator("param", sessionPathParamsSchema),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      try {
+        const sessionId = await resolveChatSessionIdentifier(id);
+        const activeRunId = getActiveRunId(sessionId);
+        if (activeRunId) {
+          return c.json(
+            {
+              error: "Abort the active run before undoing this session.",
+              code: "run_conflict",
+              activeRunId,
+            },
+            409,
+          );
+        }
+        const result = await undoSessionTurn(sessionId);
+        if (!result) {
+          return c.json({ error: "There is no conversation turn to undo." }, 409);
+        }
+        return c.json(sessionTurnHistoryActionResponseSchema.parse(result));
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        if (
+          error instanceof SessionHistoryConflictError ||
+          error instanceof CheckpointConflictError
+        ) {
+          return c.json({ error: error.message, code: "history_conflict" }, 409);
+        }
+        return internalErrorResponse(c, {
+          event: "session_undo_failed",
+          message: "Unable to undo the latest session turn.",
+          error,
+        });
+      }
+    },
+  )
+  .post(
+    "/:id/redo",
+    zValidator("param", sessionPathParamsSchema),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      try {
+        const sessionId = await resolveChatSessionIdentifier(id);
+        const activeRunId = getActiveRunId(sessionId);
+        if (activeRunId) {
+          return c.json(
+            {
+              error: "Abort the active run before redoing this session.",
+              code: "run_conflict",
+              activeRunId,
+            },
+            409,
+          );
+        }
+        const result = await redoSessionTurn(sessionId);
+        if (!result) {
+          return c.json({ error: "There is no conversation turn to redo." }, 409);
+        }
+        return c.json(sessionTurnHistoryActionResponseSchema.parse(result));
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        if (
+          error instanceof SessionHistoryConflictError ||
+          error instanceof CheckpointConflictError
+        ) {
+          return c.json({ error: error.message, code: "history_conflict" }, 409);
+        }
+        return internalErrorResponse(c, {
+          event: "session_redo_failed",
+          message: "Unable to redo the latest session turn.",
+          error,
+        });
+      }
+    },
+  )
+  .get(
+    "/:id/runs/stream",
+    zValidator("param", sessionPathParamsSchema),
+    zValidator("query", sessionRunEventsQuerySchema),
+    async (c) => {
+      const { id } = c.req.valid("param");
+      const { after } = c.req.valid("query");
+      try {
+        const sessionId = await resolveChatSessionIdentifier(id);
+        const runId = getActiveRunId(sessionId);
+        if (!runId) {
+          return new Response(null, { status: 204 });
+        }
+        return resumeChatRunResponse({
+          sessionId,
+          runId,
+          after,
+          requestSignal: c.req.raw.signal,
+        });
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        return internalErrorResponse(c, {
+          event: "session_run_resume_failed",
+          message: "Unable to resume the active session run.",
+          error,
+        });
+      }
+    },
+  )
+  .get(
+    "/:id/runs/:runId/stream",
+    zValidator("param", sessionRunPathParamsSchema),
+    zValidator("query", sessionRunEventsQuerySchema),
+    async (c) => {
+      const { id, runId } = c.req.valid("param");
+      const { after } = c.req.valid("query");
+      try {
+        const sessionId = await resolveChatSessionIdentifier(id);
+        return resumeChatRunResponse({
+          sessionId,
+          runId,
+          after,
+          requestSignal: c.req.raw.signal,
+        });
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        return internalErrorResponse(c, {
+          event: "session_run_resume_failed",
+          message: "Unable to resume the session run.",
+          error,
+        });
+      }
+    },
+  )
+  .get(
+    "/:id/runs/:runId/events",
+    zValidator("param", sessionRunPathParamsSchema),
+    zValidator("query", sessionRunEventsQuerySchema),
+    async (c) => {
+      const { id, runId } = c.req.valid("param");
+      const { after } = c.req.valid("query");
+      try {
+        const sessionId = await resolveChatSessionIdentifier(id);
+        const result = await listChatRunEvents({ sessionId, runId, after });
+        return c.json({
+          runId,
+          status: result.run.status,
+          events: result.events,
+          nextCursor: result.nextCursor,
+        });
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        return internalErrorResponse(c, {
+          event: "session_run_events_failed",
+          message: "Unable to load run events.",
+          error,
+        });
+      }
+    },
+  )
+  .post(
+    "/:id/runs/:runId/abort",
+    zValidator("param", sessionRunPathParamsSchema),
+    async (c) => {
+      const { id, runId } = c.req.valid("param");
+      try {
+        const sessionId = await resolveChatSessionIdentifier(id);
+        const run = await getChatRun({ sessionId, runId });
+        if (!run) {
+          return c.json({ error: `Run not found: ${runId}` }, 404);
+        }
+
+        const aborted = abortActiveRun(sessionId, runId);
+        const status = aborted ? "cancelled" : run.status;
+        // The background stream pump owns the terminal transition. Marking
+        // the row terminal here would make reconnect followers close before
+        // the final frames and run_finished event are durably drained.
+        return c.json(
+          sessionAbortRunResponseSchema.parse({ runId, status, aborted }),
+        );
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        return internalErrorResponse(c, {
+          event: "session_run_abort_failed",
+          message: "Unable to abort the run.",
+          error,
+        });
+      }
+    },
+  )
+  .post(
     "/:id/chat",
     zValidator("param", sessionPathParamsSchema),
     zValidator("json", codingChatRequestSchema),
     async (c) => {
       const { id } = c.req.valid("param");
       const body = c.req.valid("json");
-      return streamSessionChat(
-        c,
-        id,
-        body.messages,
-        body.cwd,
-        body.mode ?? lightcodeConfigResult.config.defaultMode,
-        body.permissionMode ?? lightcodeConfigResult.config.permissionMode,
-        body.allowedTools ?? lightcodeConfigResult.config.allowedTools,
-        body.permissionRules ?? lightcodeConfigResult.config.permissions,
-        body.sandbox ?? lightcodeConfigResult.config.sandbox,
-      );
+      try {
+        const canonical = await loadChatSessionWithMessages(id);
+        if (!canonical.session.cwd) {
+          return c.json(
+            {
+              error: "Session has no canonical workspace directory.",
+              code: "workspace_unavailable",
+            },
+            409,
+          );
+        }
+
+        // Compatibility callers still send `cwd`, but the saved workspace is
+        // authoritative. A request must never reopen a session in another tree.
+        const mode = body.mode ?? canonical.session.mode;
+        const permissionMode =
+          body.permissionMode ??
+          canonical.session.permissionMode ??
+          lightcodeConfigResult.config.permissionMode;
+        const allowedTools =
+          body.allowedTools ?? lightcodeConfigResult.config.allowedTools;
+        const permissionRules =
+          body.permissionRules ?? lightcodeConfigResult.config.permissions;
+        const gate = resolveProviderWebSearchGate({
+          capability: resolvedProviderModel.webSearchCapability,
+          providerToolAvailable: Boolean(
+            resolvedProviderModel.providerTools?.web_search,
+          ),
+          requested: selectCodingAgentIntentTools({
+            mode,
+            prompt: undefined,
+            messages: body.messages,
+          }).includes("web_search"),
+          mode,
+          permissionMode,
+          allowedTools,
+          permissionRules,
+          decision: body.providerWebSearchDecision,
+        });
+        if (gate.action === "approval-required") {
+          return c.json(providerWebSearchApprovalRequiredBody(), 428);
+        }
+
+        return streamSessionChat(
+          c,
+          canonical.session.id,
+          body.messages,
+          canonical.session.cwd,
+          mode,
+          permissionMode,
+          allowedTools,
+          permissionRules,
+          body.sandbox ?? lightcodeConfigResult.config.sandbox,
+          { providerWebSearchDecision: body.providerWebSearchDecision },
+        );
+      } catch (error) {
+        if (error instanceof SessionNotFoundError) {
+          return c.json({ error: error.message }, 404);
+        }
+        return internalErrorResponse(c, {
+          event: "deprecated_session_chat_failed",
+          message: "Unable to start the session chat.",
+          error,
+        });
+      }
     }
   );

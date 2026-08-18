@@ -14,6 +14,8 @@ const maxRecentUserRequests = 3;
 const maxPendingWorkItems = 3;
 const maxKeyFiles = 8;
 const maxToolNames = 12;
+const maxDecisionItems = 4;
+const maxToolEvidenceItems = 6;
 
 interface MessageCounts {
   user: number;
@@ -108,6 +110,73 @@ function collectPendingWork(messages: readonly UIMessage[]) {
     })
     .slice(-maxPendingWorkItems)
     .map((text) => truncateInline(text, 160));
+}
+
+function collectDecisionsAndConstraints(messages: readonly UIMessage[]) {
+  const decisionTokens = [
+    "approve",
+    "decision",
+    "must",
+    "require",
+    "constraint",
+    "do not",
+    "don't",
+    "never",
+    "permission",
+  ];
+
+  return messages
+    .map(collectMessageText)
+    .filter((text) => {
+      const normalized = text.toLowerCase();
+      return decisionTokens.some((token) => normalized.includes(token));
+    })
+    .slice(-maxDecisionItems)
+    .map((text) => truncateInline(text, 220));
+}
+
+function collectToolEvidence(messages: readonly UIMessage[]) {
+  const evidence: string[] = [];
+  const outcomeTokens = [
+    "pass",
+    "fail",
+    "error",
+    "test",
+    "blocked",
+    "denied",
+    "cancel",
+  ];
+
+  for (const message of messages) {
+    for (const part of message.parts) {
+      const toolName = getToolNameFromPart(part);
+      if (!toolName || !isRecord(part)) {
+        continue;
+      }
+      const state = Reflect.get(part, "state");
+      const error = Reflect.get(part, "errorText") ?? Reflect.get(part, "error");
+      const output = Reflect.get(part, "output");
+      const approval = Reflect.get(part, "approval");
+      const detail = error ?? approval ?? output;
+      const serialized = detail === undefined ? "" : safeStringify(detail);
+      const normalized = `${String(state ?? "")} ${serialized}`.toLowerCase();
+      const material =
+        toolName === "bash" ||
+        normalized.includes("approval") ||
+        outcomeTokens.some((token) => normalized.includes(token));
+      if (!material) {
+        continue;
+      }
+
+      evidence.push(
+        `${toolName}${typeof state === "string" ? ` [${state}]` : ""}${
+          serialized ? `: ${truncateInline(serialized, 260)}` : ""
+        }`,
+      );
+    }
+  }
+
+  return evidence.slice(-maxToolEvidenceItems);
 }
 
 function collectCurrentWork(messages: readonly UIMessage[]) {
@@ -261,6 +330,11 @@ export function buildContextSummary({
   }
 
   addSection(lines, "Recent user requests", collectRecentUserRequests(removedMessages));
+  addSection(
+    lines,
+    "Decisions, constraints, and approvals",
+    collectDecisionsAndConstraints(removedMessages),
+  );
   addSection(lines, "Pending work", collectPendingWork(removedMessages));
 
   const keyFiles = collectKeyFiles(removedMessages);
@@ -272,6 +346,12 @@ export function buildContextSummary({
   if (toolNames.length > 0) {
     lines.push(`- Tools used: ${toolNames.join(", ")}.`);
   }
+
+  addSection(
+    lines,
+    "Tests, tool errors, and approval outcomes",
+    collectToolEvidence(removedMessages),
+  );
 
   const currentWork = collectCurrentWork(removedMessages);
   if (currentWork) {

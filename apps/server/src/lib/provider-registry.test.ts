@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import type {
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
+} from "@ai-sdk/provider";
 import {
   defaultAutoContinueConfig,
   defaultContextOptimizerConfig,
+  defaultWebSearchConfig,
 } from "@lightcode/ai";
 import {
   createConfigStatus,
@@ -13,6 +18,7 @@ const baseConfig = {
   provider: "anthropic",
   defaultMode: "build",
   context: defaultContextOptimizerConfig,
+  webSearch: defaultWebSearchConfig,
   maxOutputTokens: 10000,
   maxSteps: 5,
   maxRetries: 5,
@@ -231,6 +237,122 @@ describe("provider registry", () => {
     expect(resolved.resolvedModelId).toBe("minimax/minimax-m2.7");
     expect(resolved.baseUrl).toBe("https://openrouter.ai/api/v1");
     expect(resolved.missingCredentialHints).toEqual([]);
+    expect(resolved.webSearchCapability).toMatchObject({
+      available: true,
+      backend: "openrouter",
+      execution: "provider",
+    });
+    expect(resolved.providerTools?.web_search).toMatchObject({
+      type: "provider",
+      id: "openrouter.web_search",
+      args: {
+        parameters: {
+          engine: "auto",
+          max_results: 3,
+          max_total_results: 6,
+          max_uses: 3,
+          max_characters: 1200,
+        },
+      },
+    });
+  });
+
+  test("emits the bounded OpenRouter server-search wire contract", async () => {
+    let requestBody: Record<string, unknown> | null = null;
+    const resolved = resolveConfiguredProviderModel({
+      config: {
+        ...baseConfig,
+        provider: "openrouter",
+        model: "deepseek/deepseek-chat",
+      },
+      env: {
+        OPENROUTER_API_KEY: "test-openrouter-key",
+        LIGHTCODE_CREDENTIALS: "/definitely/not/a/credential/file",
+      },
+      fetch: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({
+            id: "generation-1",
+            model: "deepseek/deepseek-chat",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content: "done" },
+                finish_reason: "stop",
+              },
+            ],
+            usage: {
+              prompt_tokens: 1,
+              completion_tokens: 1,
+              total_tokens: 2,
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+    const tool = resolved.providerTools?.web_search as {
+      id: `${string}.${string}`;
+      args: Record<string, unknown>;
+    };
+
+    await (resolved.model as LanguageModelV3).doGenerate({
+      prompt: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "Search current DeepSeek news" }],
+        },
+      ],
+      tools: [
+        {
+          type: "provider",
+          id: tool.id,
+          name: "web_search",
+          args: tool.args,
+        },
+      ],
+    } as LanguageModelV3CallOptions);
+
+    expect(requestBody).not.toBeNull();
+    expect((requestBody as unknown as Record<string, unknown>).tools).toEqual([
+      {
+        type: "openrouter:web_search",
+        parameters: {
+          engine: "auto",
+          max_results: 3,
+          max_total_results: 6,
+          max_uses: 3,
+          max_characters: 1200,
+        },
+      },
+    ]);
+  });
+
+  test("selects the capability-gated Anthropic web-search version", () => {
+    const legacy = resolveConfiguredProviderModel({
+      config: { ...baseConfig, model: "haiku" },
+      env: {
+        ANTHROPIC_API_KEY: "test-key",
+        LIGHTCODE_CREDENTIALS: "/definitely/not/a/credential/file",
+      },
+    });
+    const dynamic = resolveConfiguredProviderModel({
+      config: { ...baseConfig, model: "sonnet" },
+      env: {
+        ANTHROPIC_API_KEY: "test-key",
+        LIGHTCODE_CREDENTIALS: "/definitely/not/a/credential/file",
+      },
+    });
+
+    expect(legacy.providerTools?.web_search).toMatchObject({
+      id: "anthropic.web_search_20250305",
+      args: { maxUses: 3 },
+    });
+    expect(dynamic.providerTools?.web_search).toMatchObject({
+      id: "anthropic.web_search_20260209",
+      args: { maxUses: 3 },
+    });
   });
 
   test("allows OpenRouter base URL override", () => {

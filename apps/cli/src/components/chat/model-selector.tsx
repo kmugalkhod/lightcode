@@ -2,6 +2,10 @@ import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  lightcodeConfigStatusSchema,
+  type LightcodeProvider,
+} from "@lightcode/ai";
+import {
   isBackspaceKey,
   isDownKey,
   isEnterKey,
@@ -9,6 +13,7 @@ import {
   isUpKey,
 } from "../../utils/key-utils";
 import { client } from "../../lib/client";
+import { useAppState } from "../../state/app-state";
 import { borderStyleFor, cliTheme, getOverlayRowColors } from "../../ui/cli-theme";
 import { activeGlyphs } from "../../ui/cli-theme-capabilities";
 
@@ -27,6 +32,17 @@ interface ModelEntry {
 
 const maxVisibleRows = 8;
 
+const providerLabels: Record<LightcodeProvider, string> = {
+  anthropic: "Anthropic",
+  "openai-compatible": "OpenAI-compatible",
+  "opencode-zen": "OpenCode Zen",
+  openrouter: "OpenRouter",
+};
+
+function providerLabel(provider: LightcodeProvider): string {
+  return providerLabels[provider];
+}
+
 function formatContextLength(contextLength: number | null) {
   if (!contextLength) {
     return "ctx ?";
@@ -36,8 +52,11 @@ function formatContextLength(contextLength: number | null) {
 }
 
 export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
+  const { bumpConfigRefresh } = useAppState();
   const [models, setModels] = useState<ModelEntry[]>([]);
+  const [provider, setProvider] = useState<LightcodeProvider | null>(null);
   const [currentModel, setCurrentModel] = useState<string | null>(null);
+  const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isApplying, setIsApplying] = useState(false);
@@ -49,10 +68,51 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
 
     async function loadModels() {
       try {
-        const [modelsResponse, statusResponse] = await Promise.all([
-          client.config.models.$get({ query: { provider: "openrouter" } }),
-          client.config.status.$get(),
-        ]);
+        const statusResponse = await client.config.status.$get();
+
+        if (!statusResponse.ok) {
+          throw new Error(`Server returned HTTP ${statusResponse.status}`);
+        }
+
+        const parsedStatus = lightcodeConfigStatusSchema.safeParse(
+          await statusResponse.json(),
+        );
+        if (!parsedStatus.success) {
+          throw new Error("Server returned an invalid configuration status.");
+        }
+
+        const status = parsedStatus.data;
+        const activeProvider = status.selectedProvider;
+        const activeModel = status.selectedModel;
+
+        if (cancelled) {
+          return;
+        }
+
+        setProvider(activeProvider);
+        setCurrentModel(activeModel);
+
+        if (activeProvider !== "openrouter") {
+          setModels([
+            {
+              id: activeModel,
+              name: activeModel,
+              contextLength: status.contextWindow,
+              supportsTools: false,
+              supportsReasoning: false,
+            },
+          ]);
+          setCatalogNotice(
+            `${providerLabel(activeProvider)} does not expose a model catalog yet. ` +
+              "Change its model in settings.json, then restart Lightcode.",
+          );
+          setIsLoading(false);
+          return;
+        }
+
+        const modelsResponse = await client.config.models.$get({
+          query: { provider: activeProvider },
+        });
 
         if (!modelsResponse.ok) {
           throw new Error(`Server returned HTTP ${modelsResponse.status}`);
@@ -61,15 +121,9 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
         const payload = await modelsResponse.json();
         const loadedModels = ("models" in payload ? payload.models : []) as ModelEntry[];
 
-        let activeModel: string | null = null;
-        if (statusResponse.ok) {
-          const status = await statusResponse.json();
-          activeModel = status.selectedModel ?? null;
-        }
-
         if (!cancelled) {
           setModels(loadedModels);
-          setCurrentModel(activeModel);
+          setCatalogNotice(null);
           setIsLoading(false);
         }
       } catch (error) {
@@ -109,10 +163,21 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
   }, [filteredModels.length]);
 
   const applyModel = async (model: ModelEntry) => {
+    if (!provider) {
+      notify("Model switch failed: active provider is unavailable.", "error");
+      return;
+    }
+
+    if (model.id === currentModel) {
+      notify(`${model.id} is already active for ${providerLabel(provider)}.`);
+      onClose();
+      return;
+    }
+
     setIsApplying(true);
     try {
       const response = await client.config.model.$put({
-        json: { provider: "openrouter", model: model.id },
+        json: { provider, model: model.id },
       });
 
       if (!response.ok) {
@@ -122,7 +187,10 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
         throw new Error(body?.error ?? `Server returned HTTP ${response.status}`);
       }
 
-      notify(`Model switched to ${model.id} (saved to settings.json).`);
+      notify(
+        `Model switched to ${model.id} for ${providerLabel(provider)} (saved to settings.json).`,
+      );
+      bumpConfigRefresh();
       onClose();
     } catch (error) {
       notify(
@@ -177,6 +245,7 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
       setFilter((current) => current.slice(0, -1));
+      setSelectedIndex(0);
       return;
     }
 
@@ -192,6 +261,7 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
       keyEvent.preventDefault();
       keyEvent.stopPropagation();
       setFilter((current) => current + sequence);
+      setSelectedIndex(0);
     }
   });
 
@@ -226,7 +296,7 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
         borderColor={cliTheme.overlay.border}
       >
         <text fg={cliTheme.accent.primary} attributes={TextAttributes.BOLD}>
-          Switch Model (OpenRouter)
+          {`Switch Model${provider ? ` (${providerLabel(provider)})` : ""}`}
         </text>
         <text fg={cliTheme.overlay.footerText}>
           type to filter · ↑/↓ select · Enter confirm · Esc cancel
@@ -236,6 +306,12 @@ export function ModelSelector({ onClose, notify }: ModelSelectorProps) {
       <box width="100%" paddingX={2} paddingY={1}>
         <text fg={cliTheme.text.primary}>{`Filter: ${filter}█`}</text>
       </box>
+
+      {catalogNotice ? (
+        <box paddingX={2} paddingBottom={1}>
+          <text fg={cliTheme.semantic.warning}>{catalogNotice}</text>
+        </box>
+      ) : null}
 
       {isLoading ? (
         <box paddingX={2} paddingY={1}>

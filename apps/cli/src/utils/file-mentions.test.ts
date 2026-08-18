@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { appendMentionAttachments, extractFileMentions } from "./file-mentions";
+import { extractFileMentions, resolveMentionAttachments } from "./file-mentions";
 import { fuzzyFilter, fuzzyScore } from "./fuzzy-match";
 
 describe("extractFileMentions", () => {
@@ -22,29 +22,34 @@ describe("extractFileMentions", () => {
   });
 });
 
-describe("appendMentionAttachments", () => {
-  test("appends fenced content for existing files and skips unknown paths", async () => {
+describe("resolveMentionAttachments", () => {
+  test("creates hashed references without copying file content", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "lightcode-mentions-"));
     try {
       await writeFile(path.join(dir, "hello.ts"), "export const x = 1;\n", "utf8");
 
-      const result = await appendMentionAttachments(
+      const result = await resolveMentionAttachments(
         "Explain @hello.ts and @missing.ts",
         dir,
       );
 
-      expect(result).toContain("Attached file: hello.ts");
-      expect(result).toContain("export const x = 1;");
-      expect(result).not.toContain("Attached file: missing.ts");
+      expect(result.text).toBe("Explain @hello.ts and @missing.ts");
+      expect(result.parts).toHaveLength(1);
+      expect(result.parts[0]).toMatchObject({
+        type: "data-file-ref",
+        data: { path: "hello.ts" },
+      });
+      expect(result.parts[0]?.data.contentHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(JSON.stringify(result)).not.toContain("export const x = 1;");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
   test("returns the text unchanged without mentions", async () => {
-    expect(await appendMentionAttachments("no mentions here", process.cwd())).toBe(
-      "no mentions here",
-    );
+    expect(
+      await resolveMentionAttachments("no mentions here", process.cwd()),
+    ).toEqual({ text: "no mentions here", parts: [] });
   });
 });
 

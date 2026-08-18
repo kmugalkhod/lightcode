@@ -33,6 +33,7 @@ function getNumericExitCode(record: Record<string, unknown>): number {
 export async function executeBash(
   input: BashInput,
   workspaceContext: WorkspaceContext = getDefaultWorkspaceContext(),
+  abortSignal?: AbortSignal,
 ): Promise<BashOutput> {
   const parsedInput = bashInputSchema.parse(input);
 
@@ -42,6 +43,7 @@ export async function executeBash(
       timeout: parsedInput.timeoutMs,
       maxBuffer: 10 * 1024 * 1024,
       windowsHide: true,
+      signal: abortSignal,
     });
 
     const stdoutTruncated = truncateText(result.stdout, parsedInput.maxOutputChars);

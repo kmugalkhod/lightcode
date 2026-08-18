@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { isToolUIPart, type UIMessage } from "ai";
 import { formatChatStreamError, parseChatStreamError } from "../chat-error";
 import {
+  buildSessionRunResumeUrl,
   countCompletedWork,
   isRecoverableChatErrorMessage,
   normalizeChatErrorMessage,
+  scanRunCursorText,
   sanitizeMessagesForRetry,
 } from "./use-coding-session-chat";
 
@@ -201,6 +203,37 @@ describe("sanitizeMessagesForRetry", () => {
         ]).toContain(String(Reflect.get(part, "state")));
       }
     }
+  });
+});
+
+describe("run stream resumption helpers", () => {
+  test("builds discovery and run-specific resume URLs without stale query data", () => {
+    expect(
+      buildSessionRunResumeUrl({
+        chatApi: "http://127.0.0.1:3000/sessions/session-1/turns?old=true",
+        after: 12,
+      }),
+    ).toBe("http://127.0.0.1:3000/sessions/session-1/runs/stream?after=12");
+    expect(
+      buildSessionRunResumeUrl({
+        chatApi: "/sessions/session-1/turns",
+        runId: "run/id",
+        after: -1,
+      }),
+    ).toBe("/sessions/session-1/runs/run%2Fid/stream?after=-1");
+  });
+
+  test("scans split cursor comments monotonically", () => {
+    let state = { carry: "", cursor: -1 };
+    state = scanRunCursorText(state, "data: {\"type\":\"text-start\"}\n\n: lightcode-cur");
+    expect(state.cursor).toBe(-1);
+    state = scanRunCursorText(
+      state,
+      "sor=7\r\n\r\n: lightcode-cursor=4\n\n: lightcode-cursor=nope\n\n",
+    );
+    expect(state.cursor).toBe(7);
+    state = scanRunCursorText(state, ": lightcode-cursor=11\n\n");
+    expect(state.cursor).toBe(11);
   });
 });
 

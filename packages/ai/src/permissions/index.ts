@@ -337,6 +337,24 @@ export class PermissionPolicy {
       };
     }
 
+    // Live search is read-only with respect to the workspace but crosses the
+    // network boundary. Plan mode may offer it, while still requiring an
+    // explicit approval before the query/provider tool is exposed.
+    if (
+      normalizedToolName === "web_search" &&
+      this.activeMode === "read-only" &&
+      requiredMode === "danger-full-access"
+    ) {
+      if (this.approved) {
+        return { ...baseDecision, outcome: "allow" };
+      }
+      return {
+        ...baseDecision,
+        outcome: "ask",
+        reason: 'Tool "web_search" requires approval for network access.',
+      };
+    }
+
     return {
       ...baseDecision,
       outcome: "deny",

@@ -1,19 +1,26 @@
 import {
+  artifactizeLargeToolOutputs,
   buildProviderView,
   collectMessageText,
+  createCodingAgentTools,
+  computeRecentTurnStartIndex,
+  estimateModelMessageTokens,
   estimateStructuralTokens,
-  fitMessagesToBudget,
   formatChatStreamError,
   lightcodeConfigDefaults,
   listSkills,
   normalizeProviderMessages,
+  ProviderTurnAssembler,
+  resolveCodingAgentCallSettings,
   resolveContextWindowTokens,
   resolveMaxOutputTokens,
   selectCodingAgentIntentTools,
   type CodingAgentMode,
   type CodingAgentToolName,
+  type CodingAgentCallOptions,
   type PermissionMode,
   type PermissionRules,
+  type ProviderWebSearchDecision,
   type SandboxConfig,
   type SessionContextState,
   type SessionMessagesResponse,
@@ -28,9 +35,14 @@ import {
   streamText,
   type TextStreamPart,
   type ToolSet,
+  type ModelMessage,
   type UIMessage,
 } from "ai";
 import type { Context } from "hono";
+import {
+  materializeProviderAttachments,
+  storeInlineMessageBlobs,
+} from "./attachment-store";
 import {
   chatFailureClassForErrorKind,
   classifyChatError,
@@ -63,6 +75,7 @@ import { maybeScheduleSessionAutoTitle } from "./session-auto-title";
 import {
   buildWorkspaceContext,
   buildWorkspaceContextDelta,
+  collectRelatedWorkspacePaths,
 } from "./workspace-context";
 import {
   chatModelId,
@@ -70,6 +83,10 @@ import {
   lightcodeConfigResult,
   resolvedProviderModel,
 } from "./runtime-config";
+import {
+  providerWebSearchApprovalRequiredBody,
+  resolveProviderWebSearchGate,
+} from "./provider-web-search-gate";
 
 const logger = createLogger("chat-stream");
 
@@ -84,7 +101,6 @@ const fastChatSystemPrompt =
   "For casual conversation, reply briefly and naturally. " +
   "If the user asks about or wants work on their code, do not ask them to paste it — you can read the project files directly; offer to look and proceed.";
 const fastChatMaxOutputTokens = 512;
-const fastChatRecentMessageCount = 6;
 // Upper bound on iterative Tier-2 compaction rounds per turn. The anchor
 // advances each round so compaction terminates on its own; this only caps
 // worst-case latency from repeated summarizer calls. One round: each
@@ -112,15 +128,23 @@ function removeTrailingEmptyAssistantMessages(messages: UIMessage[]) {
   return endIndex === messages.length ? messages : messages.slice(0, endIndex);
 }
 
-function buildFastChatModelMessages(messages: UIMessage[]) {
-  return messages
+export function buildFastChatModelMessages(
+  messages: UIMessage[],
+  preserveRecentTokens: number,
+): ModelMessage[] {
+  const modelMessages = messages
     .filter((message) => message.role === "user" || message.role === "assistant")
     .map((message) => ({
       role: message.role,
       content: collectMessageText(message),
     }))
-    .filter((message) => message.content.length > 0)
-    .slice(-fastChatRecentMessageCount);
+    .filter((message) => message.content.length > 0) as ModelMessage[];
+  const preserveFrom = computeRecentTurnStartIndex(
+    modelMessages,
+    preserveRecentTokens,
+    estimateModelMessageTokens,
+  );
+  return modelMessages.slice(preserveFrom);
 }
 
 /** True once the agent has produced any tool call/result in this session. */
@@ -195,17 +219,31 @@ export async function loadSessionContextStateSafe(
   }
 }
 
+export interface StreamSessionChatOptions {
+  /**
+   * Server-authoritative run cancellation. When supplied, an HTTP client
+   * disconnect only detaches that subscriber; this signal is the sole stop.
+   */
+  abortSignal?: AbortSignal;
+  /** Optimistic revision checked before any provider/tool side effect starts. */
+  expectedRevision?: number;
+  /** One-turn decision collected before exposing provider-executed search. */
+  providerWebSearchDecision?: ProviderWebSearchDecision;
+}
+
 export async function streamSessionChat(
   c: Context,
   sessionIdentifier: string,
-  messagesPayload: SessionMessagesResponse["messages"],
+  messagesPayload: SessionMessagesResponse["messages"] | UIMessage[],
   cwd: string,
   mode: CodingAgentMode,
   permissionMode: PermissionMode | undefined,
   allowedTools: CodingAgentToolName[] | undefined,
   permissionRules: PermissionRules | undefined,
   sandbox: SandboxConfig | undefined,
+  options: StreamSessionChatOptions = {},
 ) {
+  const requestAbortSignal = options.abortSignal ?? c.req.raw.signal;
   // A request that dies before streaming any part leaves an empty assistant
   // message in the client's history; the SDK schema rejects zero-part
   // messages, which would wedge the session on every subsequent send. Drop
@@ -235,6 +273,29 @@ export async function streamSessionChat(
     return c.json({ error: "Invalid chat messages payload." }, 400);
   }
 
+  // Keep this defensive gate in the execution boundary as well as the routes:
+  // provider-native search can execute and bill inside the generation request,
+  // so an AI SDK post-tool-call approval is necessarily too late.
+  const providerWebSearchGate = resolveProviderWebSearchGate({
+    capability: resolvedProviderModel.webSearchCapability,
+    providerToolAvailable: Boolean(
+      resolvedProviderModel.providerTools?.web_search,
+    ),
+    requested: selectCodingAgentIntentTools({
+      mode,
+      prompt: undefined,
+      messages: validatedMessagesResult.data,
+    }).includes("web_search"),
+    mode,
+    permissionMode,
+    allowedTools,
+    permissionRules,
+    decision: options.providerWebSearchDecision,
+  });
+  if (providerWebSearchGate.action === "approval-required") {
+    return c.json(providerWebSearchApprovalRequiredBody(), 428);
+  }
+
   // Keep the server usable for onboarding when no credentials exist yet, but
   // reject chat attempts with a recognizable error code.
   if (resolvedProviderModel.missingCredentialHints.length > 0) {
@@ -259,7 +320,9 @@ export async function streamSessionChat(
     throw error;
   }
 
-  const validatedMessages = validatedMessagesResult.data;
+  const validatedMessages = await storeInlineMessageBlobs(
+    validatedMessagesResult.data,
+  );
 
   // The full history is persisted before any optimization so compaction can
   // never destroy session history; only the provider view is reduced.
@@ -273,8 +336,20 @@ export async function streamSessionChat(
       cwd,
       mode,
       permissionMode: permissionMode ?? null,
+      expectedRevision: options.expectedRevision,
     });
     baseRevision = persistResult.revision;
+    if (persistResult.staleSkip) {
+      return c.json(
+        {
+          error: "The session changed before this turn could start.",
+          code: "revision_conflict",
+          expectedRevision: options.expectedRevision,
+          actualRevision: persistResult.revision,
+        },
+        409,
+      );
+    }
     logChatWriteEvent({
       sessionId,
       revision: persistResult.revision,
@@ -294,6 +369,11 @@ export async function streamSessionChat(
       500
     );
   }
+
+  const providerInputMessages = await materializeProviderAttachments({
+    messages: validatedMessages,
+    cwd,
+  });
 
   const contextConfig = lightcodeConfigResult.config.context;
   // Prompt caching (direct Anthropic, or OpenRouter Anthropic-family with
@@ -322,17 +402,106 @@ export async function streamSessionChat(
     ),
     Math.max(1024, Math.floor(effectiveContextWindow / 2)),
   );
+
+  // Repository instructions are provider-call state, not chat history. Replay
+  // the source-hashed baseline on every turn; follow-ups only omit the bulky
+  // top-level directory listing. Keeping the baseline first preserves a stable
+  // prompt-cache prefix while the git/date delta is allowed to change.
+  const isFirstAssistantTurn = !validatedMessages.some(
+    (message) => message.role === "assistant",
+  );
+  const relatedPaths = collectRelatedWorkspacePaths(validatedMessages);
+  const environmentContext = isFirstAssistantTurn
+    ? await buildWorkspaceContext({ cwd, sessionId, relatedPaths })
+    : await buildWorkspaceContextDelta({ cwd, sessionId, relatedPaths });
+  const availableSkillNames = listSkills({ cwd }).map((skill) => skill.name);
+  const useFastChatPath = shouldUseFastChatPath({
+    messages: providerInputMessages,
+    mode,
+    allowedTools,
+    availableSkillNames,
+  });
+  const agentCallOptions: CodingAgentCallOptions = {
+    cwd,
+    sessionId,
+    mode,
+    permissionMode,
+    providerWebSearchDecision: options.providerWebSearchDecision,
+    allowedTools,
+    permissionRules,
+    sandbox,
+    environmentContext,
+    assemblyAbortSignal: requestAbortSignal,
+  };
+  const agentCallSettings = resolveCodingAgentCallSettings({
+    options: agentCallOptions,
+    prompt: undefined,
+    messages: providerInputMessages,
+    promptOverride: Bun.env.LIGHTCODE_CODING_AGENT_SYSTEM_PROMPT,
+    includeToolDiscipline:
+      resolvedProviderModel.needsToolCallDiscipline ?? false,
+    providerWebSearchTool: Boolean(
+      resolvedProviderModel.providerTools?.web_search,
+    ),
+  });
+  const fastOutputTokens = Math.min(
+    lightcodeConfigResult.config.maxOutputTokens,
+    fastChatMaxOutputTokens,
+  );
+  const requestSystem = useFastChatPath
+    ? `${fastChatSystemPrompt}\n\n${environmentContext}`
+    : agentCallSettings.instructions;
+  const requestTools = useFastChatPath ? undefined : createCodingAgentTools();
+  if (requestTools) {
+    if (!resolvedProviderModel.webSearchCapability.available) {
+      delete requestTools.web_search;
+    } else if (
+      resolvedProviderModel.providerTools?.web_search &&
+      agentCallSettings.providerWebSearchAccess?.action === "expose"
+    ) {
+      requestTools.web_search = resolvedProviderModel.providerTools.web_search;
+    } else if (resolvedProviderModel.providerTools?.web_search) {
+      delete requestTools.web_search;
+    }
+  }
+  const requestActiveTools = useFastChatPath
+    ? []
+    : agentCallSettings.activeTools.filter(
+        (toolName) => requestTools?.[toolName] !== undefined,
+      );
+  const budgetReservedOutputTokens = useFastChatPath
+    ? fastOutputTokens
+    : reservedOutputTokens;
+  const baseTurnAssembler = new ProviderTurnAssembler({
+    system: requestSystem,
+    tools: requestTools,
+    activeTools: requestActiveTools,
+    contextWindow: effectiveContextWindow,
+    reservedOutputTokens: budgetReservedOutputTokens,
+  });
+  const turnAssembler = new ProviderTurnAssembler({
+    system: requestSystem,
+    tools: requestTools,
+    activeTools: requestActiveTools,
+    contextWindow: effectiveContextWindow,
+    reservedOutputTokens: budgetReservedOutputTokens,
+    originalInputTokens:
+      estimateStructuralTokens(providerInputMessages) +
+      baseTurnAssembler.fixedInputTokens,
+  });
+
   const pendingInteractionCount = await countPendingChatInteractions(sessionId);
   let contextState = await loadSessionContextStateSafe(sessionId);
   let view = buildProviderView({
-    messages: validatedMessages,
+    messages: providerInputMessages,
     contextState,
     config: contextConfig,
     modelContextWindow: resolvedProviderModel.contextWindow,
-    reservedOutputTokens,
+    reservedOutputTokens: budgetReservedOutputTokens,
     endpointLimitTokens,
     pendingInteractionCount,
     cacheActive,
+    fixedInputTokens: turnAssembler.fixedInputTokens,
   });
 
   // Iterative compaction: each round folds a bounded chunk (capped by
@@ -356,17 +525,20 @@ export async function streamSessionChat(
           cwd,
           config: contextConfig,
           estimatedTokens: estimatedTokensBefore,
+          abortSignal: requestAbortSignal,
+          contextWindow: view.contextWindow,
         });
         contextState = compaction.state;
         view = buildProviderView({
-          messages: validatedMessages,
+          messages: providerInputMessages,
           contextState,
           config: contextConfig,
           modelContextWindow: resolvedProviderModel.contextWindow,
-          reservedOutputTokens,
+          reservedOutputTokens: budgetReservedOutputTokens,
           endpointLimitTokens,
           pendingInteractionCount,
           cacheActive,
+          fixedInputTokens: turnAssembler.fixedInputTokens,
         });
         logger.info("context_auto_compacted", {
           sessionId,
@@ -379,6 +551,9 @@ export async function streamSessionChat(
           stillNeedsCompaction: view.needsCompaction,
         });
       } catch (error) {
+        if (requestAbortSignal.aborted) {
+          return c.json({ error: recoverableDisconnectMessage }, 503);
+        }
         // Compaction failures must never block the chat; stream uncompacted and
         // let the fit-to-budget clamp guarantee the request still fits.
         logger.error("context_compaction_failed", {
@@ -398,6 +573,10 @@ export async function streamSessionChat(
   if (overflowPreserve !== null) {
     const overflowConfig = {
       ...contextConfig,
+      preserveRecentTokens: Math.min(
+        contextConfig.preserveRecentTokens,
+        overflowPreserve * 2_000,
+      ),
       preserveRecentMessages: Math.min(
         overflowPreserve,
         contextConfig.preserveRecentMessages,
@@ -406,14 +585,15 @@ export async function streamSessionChat(
 
     try {
       const overflowView = buildProviderView({
-        messages: validatedMessages,
+        messages: providerInputMessages,
         contextState,
         config: overflowConfig,
         modelContextWindow: resolvedProviderModel.contextWindow,
-        reservedOutputTokens,
+        reservedOutputTokens: budgetReservedOutputTokens,
         endpointLimitTokens,
         pendingInteractionCount: 0,
         cacheActive,
+        fixedInputTokens: turnAssembler.fixedInputTokens,
       });
 
       if (overflowView.coveredMessages.length > 0) {
@@ -426,19 +606,22 @@ export async function streamSessionChat(
           cwd,
           config: overflowConfig,
           estimatedTokens: overflowView.estimate.tokens,
+          abortSignal: requestAbortSignal,
+          contextWindow: overflowView.contextWindow,
         });
         contextState = compaction.state;
       }
 
       view = buildProviderView({
-        messages: validatedMessages,
+        messages: providerInputMessages,
         contextState,
         config: overflowConfig,
         modelContextWindow: resolvedProviderModel.contextWindow,
-        reservedOutputTokens,
+        reservedOutputTokens: budgetReservedOutputTokens,
         endpointLimitTokens,
         pendingInteractionCount: 0,
         cacheActive,
+        fixedInputTokens: turnAssembler.fixedInputTokens,
       });
 
       // Health probe: a recovery round that did not actually shrink the view
@@ -453,6 +636,9 @@ export async function streamSessionChat(
         compactedMessages: view.coveredMessages.length,
       });
     } catch (error) {
+      if (requestAbortSignal.aborted) {
+        return c.json({ error: recoverableDisconnectMessage }, 503);
+      }
       logger.error("context_overflow_recovery_failed", {
         sessionId,
         error: getErrorMessage(error),
@@ -466,42 +652,62 @@ export async function streamSessionChat(
   // backstop that makes "request exceeds the context window" structurally
   // impossible, even when every soft tier was bypassed. Only the provider view
   // shrinks; the full history on disk is untouched.
-  const fitted = fitMessagesToBudget(view.providerMessages, {
-    inputBudgetTokens: view.inputBudgetTokens,
-    preserveRecentMessages: contextConfig.preserveRecentMessages,
-  });
-  if (fitted.fitted) {
+  // Normalize first because synthesizing a terminal result for an interrupted
+  // tool call changes the serialized request. The assembler must account for
+  // that exact final shape rather than fitting a smaller pre-normalized view.
+  const normalizedProviderView = normalizeProviderMessages(
+    view.providerMessages,
+  );
+  const assembledTurn = turnAssembler.assembleUIMessages(
+    normalizedProviderView,
+    { preserveRecentTokens: view.preserveRecentTokens },
+  );
+  if (assembledTurn.fit.fitted) {
     logger.warn("context_fit_to_budget", {
       sessionId,
-      inputBudgetTokens: view.inputBudgetTokens,
+      inputBudgetTokens: assembledTurn.breakdown.inputBudgetTokens,
       contextWindow: view.contextWindow,
-      estimatedTokensBefore: estimateStructuralTokens(view.providerMessages),
-      estimatedTokensAfter: fitted.estimatedTokens,
-      elidedToolOutputs: fitted.elidedToolOutputs,
-      droppedMessages: fitted.droppedMessages,
-      truncatedTextParts: fitted.truncatedTextParts,
-      withinBudget: fitted.withinBudget,
+      estimatedTokensBefore:
+        estimateStructuralTokens(view.providerMessages) +
+        turnAssembler.fixedInputTokens,
+      estimatedTokensAfter: assembledTurn.breakdown.inputTokens,
+      elidedToolOutputs: assembledTurn.fit.elidedToolOutputs,
+      droppedMessages: assembledTurn.fit.droppedMessages,
+      truncatedTextParts: assembledTurn.fit.truncatedTextParts,
+      withinBudget: assembledTurn.withinBudget,
     });
   }
 
-  // Final payload guard: whatever path built the view (compaction, tier1
-  // prune, overflow recovery, the fit clamp above, or raw history), never hand
-  // the provider a dangling tool call. Count-preserving, so
-  // providerMessages.length stays valid for the finished-message merge below.
-  const providerMessages = normalizeProviderMessages(fitted.messages);
+  if (!assembledTurn.withinBudget) {
+    return c.json(
+      {
+        error:
+          "The latest user input cannot fit this model's context window without truncation.",
+        code: "context_input_too_large",
+        context: assembledTurn.breakdown,
+      },
+      413,
+    );
+  }
+
+  // This is the exact provider view; its actual length is passed to the
+  // finished-message merge so dropped/compacted history remains local-only.
+  const providerMessages = assembledTurn.messages;
 
   // Per-request output ceiling: input + max_tokens share one window, so ask
   // only for what is actually left after the input (with a margin for
   // estimation error). Without this, a large advertised output cap overflows
   // the endpoint's real window as soon as the history grows (HTTP 400
   // "maximum context length is N tokens").
-  const requestMaxOutputTokens = Math.max(
-    1024,
-    Math.min(
-      reservedOutputTokens,
-      view.contextWindow - view.estimate.tokens - 4096,
-    ),
-  );
+  const requestMaxOutputTokens = useFastChatPath
+    ? fastOutputTokens
+    : Math.max(
+        1024,
+        Math.min(
+          reservedOutputTokens,
+          view.contextWindow - assembledTurn.breakdown.inputTokens - 4096,
+        ),
+      );
 
   // onFinish fires even when the stream ends with an error part, so track
   // overflow within this request — otherwise the finish handler would clear
@@ -537,10 +743,11 @@ export async function streamSessionChat(
         contextState: latestState,
         config: contextConfig,
         modelContextWindow: resolvedProviderModel.contextWindow,
-        reservedOutputTokens,
+        reservedOutputTokens: budgetReservedOutputTokens,
         endpointLimitTokens,
         pendingInteractionCount: await countPendingChatInteractions(sessionId),
         cacheActive,
+        fixedInputTokens: turnAssembler.fixedInputTokens,
       });
       if (!rollingView.needsRollingCompaction) {
         return;
@@ -555,6 +762,7 @@ export async function streamSessionChat(
         cwd,
         config: contextConfig,
         estimatedTokens: rollingView.estimate.tokens,
+        contextWindow: rollingView.contextWindow,
       });
       logger.info("context_rolling_compaction", {
         sessionId,
@@ -661,6 +869,11 @@ export async function streamSessionChat(
     }
   };
 
+  // `finish.totalUsage` is cumulative billing usage across the tool loop;
+  // `finish-step.usage` is the actual final provider context. Keep both rather
+  // than driving the context meter from a cumulative number.
+  let finalStepInputTokens: number | undefined;
+
   const buildUsageMessageMetadata = ({
     part,
   }: {
@@ -669,6 +882,7 @@ export async function streamSessionChat(
     // The XML tool-call middleware flags tool intent it detected but could
     // not parse; forward it so the client can auto-nudge instead of idling.
     if (part.type === "finish-step") {
+      finalStepInputTokens = part.usage.inputTokens;
       const toolIntent = (
         part.providerMetadata?.lightcode as { toolIntent?: string } | undefined
       )?.toolIntent;
@@ -678,6 +892,16 @@ export async function streamSessionChat(
     if (part.type !== "finish") {
       return undefined;
     }
+
+    const finalContextInputTokens =
+      finalStepInputTokens ?? assembledTurn.breakdown.inputTokens;
+    const finalMessageTokens = Math.max(
+      0,
+      finalContextInputTokens -
+        assembledTurn.breakdown.systemTokens -
+        assembledTurn.breakdown.toolTokens -
+        assembledTurn.breakdown.mediaTokens,
+    );
 
     return {
       usage: {
@@ -691,52 +915,66 @@ export async function streamSessionChat(
       // Server-measured context state so the client meter is authoritative
       // instead of re-deriving from its own (calibration-blind) heuristic.
       context: {
-        inputTokens: view.estimate.tokens,
+        inputTokens: finalContextInputTokens,
         contextWindow: view.contextWindow,
         compactedMessages: contextState?.coveredMessageCount ?? 0,
+        systemTokens: assembledTurn.breakdown.systemTokens,
+        toolTokens: assembledTurn.breakdown.toolTokens,
+        messageTokens: finalMessageTokens,
+        mediaTokens: assembledTurn.breakdown.mediaTokens,
+        remainingTokens: Math.max(
+          0,
+          view.contextWindow -
+            requestMaxOutputTokens -
+            finalContextInputTokens,
+        ),
+        compactedTokens: assembledTurn.breakdown.compactedTokens,
       },
     };
   };
 
-  // Snapshot the workspace once per turn so both paths can make the agent
-  // aware of the repo it is running in (reads the cwd instead of asking the
-  // user to paste code). Best-effort; never throws. Only the session's first
-  // turn pays for the full snapshot (listing, project docs, skills);
-  // follow-up turns send a compact delta of the parts that drift (git, date).
-  const isFirstAssistantTurn = !validatedMessages.some(
-    (message) => message.role === "assistant",
-  );
-  const environmentContext = isFirstAssistantTurn
-    ? await buildWorkspaceContext({ cwd })
-    : await buildWorkspaceContextDelta({ cwd });
-  const availableSkillNames = listSkills({ cwd }).map((skill) => skill.name);
-
   try {
-    if (
-      shouldUseFastChatPath({
-        messages: providerMessages,
-        mode,
-        allowedTools,
-        availableSkillNames,
-      })
-    ) {
+    if (useFastChatPath) {
       logger.info("chat_fast_path", {
         sessionId,
         model: chatModelId,
       });
 
+      const fastProviderView = await artifactizeLargeToolOutputs(
+        buildFastChatModelMessages(
+          providerMessages,
+          view.preserveRecentTokens,
+        ),
+        { signal: requestAbortSignal },
+      );
+      const fastTurn = turnAssembler.assembleModelMessages(
+        fastProviderView.messages,
+        { preserveRecentTokens: view.preserveRecentTokens },
+      );
+      if (!fastTurn.withinBudget) {
+        return c.json(
+          {
+            error:
+              "The latest user input cannot fit this model's context window without truncation.",
+            code: "context_input_too_large",
+            context: fastTurn.breakdown,
+          },
+          413,
+        );
+      }
+
       const result = streamText({
         model: resolvedProviderModel.model,
-        system: `${fastChatSystemPrompt}\n\n${environmentContext}`,
-        messages: buildFastChatModelMessages(providerMessages),
-        maxOutputTokens: Math.min(
-          lightcodeConfigResult.config.maxOutputTokens,
-          fastChatMaxOutputTokens,
-        ),
+        system: requestSystem,
+        messages: fastTurn.messages,
+        maxOutputTokens: fastOutputTokens,
         maxRetries: lightcodeConfigResult.config.maxRetries,
         providerOptions: resolvedProviderModel.providerOptions,
+        onStepFinish: ({ usage }) => {
+          finalStepInputTokens = usage.inputTokens;
+        },
         // Stop generating when the client disconnects.
-        abortSignal: c.req.raw.signal,
+        abortSignal: requestAbortSignal,
       });
 
       result.consumeStream({
@@ -817,20 +1055,31 @@ export async function streamSessionChat(
         sessionId,
         mode,
         permissionMode,
+        providerWebSearchDecision: options.providerWebSearchDecision,
         allowedTools,
         permissionRules,
         sandbox,
         environmentContext,
         maxOutputTokens: requestMaxOutputTokens,
+        contextWindow: view.contextWindow,
+        preserveRecentTokens: view.preserveRecentTokens,
+        originalInputTokens:
+          estimateStructuralTokens(providerInputMessages) +
+          turnAssembler.fixedInputTokens,
+        assemblyAbortSignal: requestAbortSignal,
         // Scope checkpoints and the repeat-call guard to the user turn, so an
         // approval continuation keeps grouping with the turn it belongs to.
         turnKey: [...validatedMessages]
           .reverse()
           .find((message) => message.role === "user")?.id,
       },
-      // Stop the agent loop (including pending tool turns) on disconnect.
-      abortSignal: c.req.raw.signal,
+      // Only an explicit run abort stops a server-authoritative turn. Legacy
+      // /chat calls still use the HTTP request signal above.
+      abortSignal: requestAbortSignal,
       generateMessageId: generateId,
+      onStepFinish: ({ usage }) => {
+        finalStepInputTokens = usage.inputTokens;
+      },
       sendReasoning: true,
       messageMetadata: buildUsageMessageMetadata,
       consumeSseStream: async ({ stream }) => {

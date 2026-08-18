@@ -21,6 +21,10 @@ import {
   runSubagentToolTask,
   type SubagentRunnerDeps,
 } from "./subagent-runner";
+import {
+  getActiveRunEventRecorder,
+  recordActiveRunToolEvent,
+} from "./chat-run-event-recorder";
 
 const logger = createLogger("runtime-config");
 
@@ -50,6 +54,8 @@ function resolveSubagentDeps(
           modelId: resolved.resolvedModelId,
           providerOptions: resolved.providerOptions,
           maxRetries: config.maxRetries,
+          contextWindow: resolved.contextWindow,
+          preserveRecentTokens: config.context.preserveRecentTokens,
         };
       }
     } catch (error) {
@@ -65,6 +71,8 @@ function resolveSubagentDeps(
     modelId: parent.resolvedModelId,
     providerOptions: parent.providerOptions,
     maxRetries: config.maxRetries,
+    contextWindow: parent.contextWindow,
+    preserveRecentTokens: config.context.preserveRecentTokens,
   };
 }
 
@@ -84,6 +92,14 @@ function buildCodingAgent(
         context,
         resolveSubagentDeps(config, model, input.model),
       ),
+    recordToolEvent: async ({ sessionId, ...event }) => {
+      // Legacy /chat calls do not own durable run records. The session turn
+      // path registers exactly one recorder before the provider can execute.
+      if (!getActiveRunEventRecorder(sessionId)) {
+        return;
+      }
+      await recordActiveRunToolEvent(sessionId, event);
+    },
     // Per-model output budget: when left at the default, use the model's full
     // advertised max_completion_tokens (e.g. 512K for minimax-m3) so the model
     // finishes in one turn instead of truncating at a small fixed cap and
@@ -95,6 +111,10 @@ function buildCodingAgent(
       model.maxCompletionTokens,
     ),
     includeToolDiscipline: model.needsToolCallDiscipline ?? false,
+    webSearch: {
+      available: model.webSearchCapability.available,
+      providerTool: model.providerTools?.web_search,
+    },
   });
 }
 

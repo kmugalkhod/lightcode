@@ -1,5 +1,17 @@
 import { z } from "zod";
 import {
+  loadLightcodeConfig,
+  type LightcodeResolvedConfig,
+} from "../config/lightcode-config";
+import {
+  readStoredCredentials,
+  type StoredCredentials,
+} from "../config/credentials";
+import {
+  resolveWebSearchApiKeys,
+  type ResolvedWebSearchConfig,
+} from "./config";
+import {
   webSearchInputSchema,
   webSearchOutputSchema,
   type webSearchProviderSchema,
@@ -9,6 +21,56 @@ type WebSearchInput = z.input<typeof webSearchInputSchema>;
 type WebSearchOutput = z.infer<typeof webSearchOutputSchema>;
 type WebSearchProvider = z.infer<typeof webSearchProviderSchema>;
 type WebSearchResult = WebSearchOutput["results"][number];
+
+export type WebSearchFetch = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
+export interface ExecuteWebSearchOptions {
+  config?: ResolvedWebSearchConfig;
+  credentials?: StoredCredentials;
+  env?: Record<string, string | undefined>;
+  fetch?: WebSearchFetch;
+  signal?: AbortSignal;
+  cwd?: string;
+  /** Stable user-turn key used to enforce maxUsesPerTurn locally. */
+  turnKey?: string;
+}
+
+interface LocalSearchRuntime {
+  apiKey: string;
+  fetch: WebSearchFetch;
+  signal: AbortSignal;
+  maxCharactersPerResult: number;
+}
+
+const localUsesByTurn = new Map<string, number>();
+
+export function clearWebSearchTurnUses(): void {
+  localUsesByTurn.clear();
+}
+
+function consumeLocalSearchUse(
+  turnKey: string | undefined,
+  maxUsesPerTurn: number,
+): boolean {
+  if (!turnKey) {
+    return true;
+  }
+  const used = localUsesByTurn.get(turnKey) ?? 0;
+  if (used >= maxUsesPerTurn) {
+    return false;
+  }
+  if (localUsesByTurn.size >= 1_000 && !localUsesByTurn.has(turnKey)) {
+    const oldest = localUsesByTurn.keys().next().value;
+    if (typeof oldest === "string") {
+      localUsesByTurn.delete(oldest);
+    }
+  }
+  localUsesByTurn.set(turnKey, used + 1);
+  return true;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -27,21 +89,54 @@ function getArrayProperty(record: Record<string, unknown>, key: string) {
   return Array.isArray(value) ? value : [];
 }
 
-function configuredProvider(requestedProvider: WebSearchProvider) {
+function truncate(value: string, maxCharacters: number): string {
+  return value.length <= maxCharacters
+    ? value
+    : `${value.slice(0, Math.max(0, maxCharacters - 1))}…`;
+}
+
+function resolveRuntimeConfig(
+  options: ExecuteWebSearchOptions,
+): LightcodeResolvedConfig["webSearch"] {
+  if (options.config) {
+    return options.config;
+  }
+
+  return loadLightcodeConfig({
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env ?? process.env,
+  }).config.webSearch;
+}
+
+function resolveLocalBackend({
+  requestedProvider,
+  config,
+  braveKey,
+  tavilyKey,
+}: {
+  requestedProvider: WebSearchProvider;
+  config: ResolvedWebSearchConfig;
+  braveKey: string | undefined;
+  tavilyKey: string | undefined;
+}): WebSearchProvider | "disabled" | "provider" {
   if (requestedProvider !== "auto") {
     return requestedProvider;
   }
 
-  const envProvider = process.env.LIGHTCODE_WEB_SEARCH_PROVIDER?.trim();
-  if (envProvider === "brave" || envProvider === "tavily") {
-    return envProvider;
+  if (
+    config.backend === "brave" ||
+    config.backend === "tavily" ||
+    config.backend === "disabled" ||
+    config.backend === "provider"
+  ) {
+    return config.backend;
   }
 
-  if (process.env.BRAVE_SEARCH_API_KEY) {
+  if (braveKey) {
     return "brave";
   }
 
-  if (process.env.TAVILY_API_KEY) {
+  if (tavilyKey) {
     return "tavily";
   }
 
@@ -72,7 +167,11 @@ function errorOutput({
   });
 }
 
-function parseBraveResults(payload: unknown, maxResults: number): WebSearchResult[] {
+function parseBraveResults(
+  payload: unknown,
+  maxResults: number,
+  maxCharacters: number,
+): WebSearchResult[] {
   if (!isRecord(payload) || !isRecord(payload.web)) {
     return [];
   }
@@ -83,13 +182,17 @@ function parseBraveResults(payload: unknown, maxResults: number): WebSearchResul
     .map((entry) => ({
       title: getStringProperty(entry, "title"),
       url: getStringProperty(entry, "url"),
-      snippet: getStringProperty(entry, "description"),
+      snippet: truncate(getStringProperty(entry, "description"), maxCharacters),
       source: getStringProperty(entry, "profile") || null,
     }))
     .filter((entry) => entry.title && entry.url);
 }
 
-function parseTavilyResults(payload: unknown, maxResults: number): WebSearchResult[] {
+function parseTavilyResults(
+  payload: unknown,
+  maxResults: number,
+  maxCharacters: number,
+): WebSearchResult[] {
   if (!isRecord(payload)) {
     return [];
   }
@@ -100,7 +203,7 @@ function parseTavilyResults(payload: unknown, maxResults: number): WebSearchResu
     .map((entry) => ({
       title: getStringProperty(entry, "title"),
       url: getStringProperty(entry, "url"),
-      snippet: getStringProperty(entry, "content"),
+      snippet: truncate(getStringProperty(entry, "content"), maxCharacters),
       source: "tavily",
     }))
     .filter((entry) => entry.title && entry.url);
@@ -108,26 +211,18 @@ function parseTavilyResults(payload: unknown, maxResults: number): WebSearchResu
 
 async function searchBrave(
   parsedInput: z.infer<typeof webSearchInputSchema>,
+  runtime: LocalSearchRuntime,
 ): Promise<WebSearchOutput> {
-  const apiKey = process.env.BRAVE_SEARCH_API_KEY?.trim();
-  if (!apiKey) {
-    return errorOutput({
-      parsedInput,
-      provider: "brave",
-      code: "not_configured",
-      message: "Set BRAVE_SEARCH_API_KEY to use web_search with the Brave provider.",
-    });
-  }
-
   const url = new URL("https://api.search.brave.com/res/v1/web/search");
   url.searchParams.set("q", parsedInput.query);
   url.searchParams.set("count", String(Math.min(parsedInput.maxResults, 20)));
 
-  const response = await fetch(url, {
+  const response = await runtime.fetch(url, {
     headers: {
       accept: "application/json",
-      "x-subscription-token": apiKey,
+      "x-subscription-token": runtime.apiKey,
     },
+    signal: runtime.signal,
   });
 
   if (!response.ok) {
@@ -139,7 +234,11 @@ async function searchBrave(
     });
   }
 
-  const results = parseBraveResults(await response.json(), parsedInput.maxResults);
+  const results = parseBraveResults(
+    await response.json(),
+    parsedInput.maxResults,
+    runtime.maxCharactersPerResult,
+  );
 
   return webSearchOutputSchema.parse({
     ok: true,
@@ -153,28 +252,21 @@ async function searchBrave(
 
 async function searchTavily(
   parsedInput: z.infer<typeof webSearchInputSchema>,
+  runtime: LocalSearchRuntime,
 ): Promise<WebSearchOutput> {
-  const apiKey = process.env.TAVILY_API_KEY?.trim();
-  if (!apiKey) {
-    return errorOutput({
-      parsedInput,
-      provider: "tavily",
-      code: "not_configured",
-      message: "Set TAVILY_API_KEY to use web_search with the Tavily provider.",
-    });
-  }
-
-  const response = await fetch("https://api.tavily.com/search", {
+  const response = await runtime.fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      api_key: apiKey,
+      api_key: runtime.apiKey,
       query: parsedInput.query,
       max_results: parsedInput.maxResults,
       search_depth: "basic",
+      include_raw_content: false,
     }),
+    signal: runtime.signal,
   });
 
   if (!response.ok) {
@@ -186,7 +278,11 @@ async function searchTavily(
     });
   }
 
-  const results = parseTavilyResults(await response.json(), parsedInput.maxResults);
+  const results = parseTavilyResults(
+    await response.json(),
+    parsedInput.maxResults,
+    runtime.maxCharactersPerResult,
+  );
 
   return webSearchOutputSchema.parse({
     ok: true,
@@ -198,32 +294,115 @@ async function searchTavily(
   });
 }
 
-export async function executeWebSearch(input: WebSearchInput): Promise<WebSearchOutput> {
-  const parsedInput = webSearchInputSchema.parse(input);
-  const provider = configuredProvider(parsedInput.provider);
+/**
+ * Executes only local Brave/Tavily search. Provider-native tools are attached
+ * to the model before generation and therefore never pass through this path.
+ */
+export async function executeWebSearch(
+  input: WebSearchInput,
+  options: ExecuteWebSearchOptions = {},
+): Promise<WebSearchOutput> {
+  const env = options.env ?? process.env;
+  const config = resolveRuntimeConfig(options);
+  const credentials = options.credentials ?? readStoredCredentials(env);
+  const keys = resolveWebSearchApiKeys({ env, storedCredentials: credentials });
+  const parsedInput = webSearchInputSchema.parse({
+    ...input,
+    maxResults:
+      isRecord(input) && input.maxResults !== undefined
+        ? input.maxResults
+        : config.maxResults,
+  });
+  const provider = resolveLocalBackend({
+    requestedProvider: parsedInput.provider,
+    config,
+    braveKey: keys.brave,
+    tavilyKey: keys.tavily,
+  });
+  const timeoutSignal = AbortSignal.timeout(config.timeoutMs);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeoutSignal])
+    : timeoutSignal;
 
   try {
-    if (provider === "brave") {
-      return await searchBrave(parsedInput);
+    if (provider === "brave" && keys.brave) {
+      if (!consumeLocalSearchUse(options.turnKey, config.maxUsesPerTurn)) {
+        return errorOutput({
+          parsedInput,
+          provider,
+          code: "max_uses_exceeded",
+          message: `Web search is limited to ${config.maxUsesPerTurn} uses per turn.`,
+        });
+      }
+      return await searchBrave(parsedInput, {
+        apiKey: keys.brave,
+        fetch: options.fetch ?? globalThis.fetch,
+        signal,
+        maxCharactersPerResult: config.maxCharactersPerResult,
+      });
     }
 
-    if (provider === "tavily") {
-      return await searchTavily(parsedInput);
+    if (provider === "tavily" && keys.tavily) {
+      if (!consumeLocalSearchUse(options.turnKey, config.maxUsesPerTurn)) {
+        return errorOutput({
+          parsedInput,
+          provider,
+          code: "max_uses_exceeded",
+          message: `Web search is limited to ${config.maxUsesPerTurn} uses per turn.`,
+        });
+      }
+      return await searchTavily(parsedInput, {
+        apiKey: keys.tavily,
+        fetch: options.fetch ?? globalThis.fetch,
+        signal,
+        maxCharactersPerResult: config.maxCharactersPerResult,
+      });
     }
 
-    return errorOutput({
-      parsedInput,
-      provider: "auto",
-      code: "not_configured",
-      message:
-        "Configure LIGHTCODE_WEB_SEARCH_PROVIDER plus BRAVE_SEARCH_API_KEY or TAVILY_API_KEY to use web_search.",
-    });
-  } catch (error) {
+    if (provider === "provider") {
+      return errorOutput({
+        parsedInput,
+        provider,
+        code: "provider_managed",
+        message:
+          "Provider-native web search must be attached before the model request; the local runtime cannot execute it.",
+      });
+    }
+
+    if (provider === "disabled") {
+      return errorOutput({
+        parsedInput,
+        provider,
+        code: "disabled",
+        message: "Web search is disabled in Lightcode settings.",
+      });
+    }
+
+    const credentialName =
+      provider === "brave" ? "BRAVE_SEARCH_API_KEY" : "TAVILY_API_KEY";
     return errorOutput({
       parsedInput,
       provider,
-      code: "search_failed",
-      message: error instanceof Error ? error.message : "Web search failed.",
+      code: "not_configured",
+      message:
+        provider === "brave" || provider === "tavily"
+          ? `Set ${credentialName} or save the corresponding search credential.`
+          : "Configure BRAVE_SEARCH_API_KEY or TAVILY_API_KEY to use local web_search.",
+    });
+  } catch (error) {
+    const externallyAborted = options.signal?.aborted ?? false;
+    const timedOut = timeoutSignal.aborted && !externallyAborted;
+    return errorOutput({
+      parsedInput,
+      provider,
+      code: timedOut ? "timeout" : externallyAborted ? "aborted" : "search_failed",
+      message: timedOut
+        ? `Web search timed out after ${config.timeoutMs}ms.`
+        : externallyAborted
+          ? "Web search was aborted."
+          : error instanceof Error
+            ? error.message
+            : "Web search failed.",
     });
   }
 }

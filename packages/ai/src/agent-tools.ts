@@ -26,121 +26,28 @@ import {
 } from "./sandbox/config";
 import { classifyBashCommand } from "./bash/command-classification";
 import {
-  agentDescription,
-  agentInputSchema,
-  agentOutputSchema,
-  agentProviderInputSchema,
-} from "./agent/schema";
+  codingToolDescriptions,
+  codingToolInputSchemas,
+  codingToolOutputSchemas,
+  codingToolPermissionRequirements,
+  codingToolProviderInputSchemas,
+  codingToolRegistry,
+  type CodingToolName,
+} from "./tool-registry";
 import {
-  bashDescription,
-  bashInputSchema,
-  bashOutputSchema,
-  bashProviderInputSchema,
-} from "./bash/schema";
-import {
-  editFileDescription,
-  editFileInputSchema,
-  editFileOutputSchema,
-  editFileProviderInputSchema,
-} from "./edit-file/schema";
-import {
-  grepDescription,
-  grepInputSchema,
-  grepOutputSchema,
-  grepProviderInputSchema,
-} from "./grep/schema";
-import {
-  globSearchDescription,
-  globSearchInputSchema,
-  globSearchOutputSchema,
-  globSearchProviderInputSchema,
-} from "./glob-search/schema";
-import {
-  gitDiffDescription,
-  gitDiffInputSchema,
-  gitDiffOutputSchema,
-  gitDiffProviderInputSchema,
-  gitLogDescription,
-  gitLogInputSchema,
-  gitLogOutputSchema,
-  gitLogProviderInputSchema,
-  gitShowDescription,
-  gitShowInputSchema,
-  gitShowOutputSchema,
-  gitShowProviderInputSchema,
-  gitStatusDescription,
-  gitStatusInputSchema,
-  gitStatusOutputSchema,
-  gitStatusProviderInputSchema,
-} from "./git/schema";
-import {
-  listFilesDescription,
-  listFilesInputSchema,
-  listFilesOutputSchema,
-  listFilesProviderInputSchema,
-} from "./list-files/schema";
-import {
-  readFileDescription,
-  readFileInputSchema,
-  readFileOutputSchema,
-  readFileProviderInputSchema,
-} from "./read-file/schema";
-import {
-  writeFileDescription,
-  writeFileInputSchema,
-  writeFileOutputSchema,
-  writeFileProviderInputSchema,
-} from "./write-file/schema";
-import {
-  requestUserInputDescription,
-  requestUserInputToolInputSchema,
-  requestUserInputToolOutputSchema,
-  requestUserInputToolProviderInputSchema,
-} from "./request-user-input/schema";
-import {
-  todoWriteDescription,
-  todoWriteInputSchema,
-  todoWriteOutputSchema,
-  todoWriteProviderInputSchema,
-} from "./todo-write/schema";
-import {
-  toolSearchDescription,
-  toolSearchInputSchema,
-  toolSearchOutputSchema,
-  toolSearchProviderInputSchema,
-} from "./tool-search/schema";
-import {
-  skillDescription,
-  skillInputSchema,
-  skillOutputSchema,
-  skillProviderInputSchema,
-} from "./skills/schema";
-import {
-  callMcpToolDescription,
-  callMcpToolInputSchema,
-  callMcpToolOutputSchema,
-  callMcpToolProviderInputSchema,
-  listMcpResourcesDescription,
-  listMcpResourcesInputSchema,
-  listMcpResourcesOutputSchema,
-  listMcpResourcesProviderInputSchema,
-  readMcpResourceDescription,
-  readMcpResourceInputSchema,
-  readMcpResourceOutputSchema,
-  readMcpResourceProviderInputSchema,
-} from "./mcp/schema";
-import {
-  webFetchDescription,
-  webFetchInputSchema,
-  webFetchOutputSchema,
-  webFetchProviderInputSchema,
-} from "./web-fetch/schema";
-import {
-  webSearchDescription,
-  webSearchInputSchema,
-  webSearchOutputSchema,
-  webSearchProviderInputSchema,
-} from "./web-search/schema";
+  providerWebSearchDecisionSchema,
+  type ProviderWebSearchDecision,
+} from "./web-search/config";
+
+export {
+  codingToolDescriptions,
+  codingToolInputSchemas,
+  codingToolOutputSchemas,
+  codingToolPermissionRequirements,
+  codingToolProviderInputSchemas,
+  codingToolRegistry,
+};
+export type { CodingToolName };
 
 export {
   ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET,
@@ -154,108 +61,11 @@ export const codingChatRequestSchema = z.object({
   cwd: z.string().min(1).max(4096),
   mode: codingAgentModeSchema.optional(),
   permissionMode: permissionModeSchema.optional(),
+  providerWebSearchDecision: providerWebSearchDecisionSchema.optional(),
   allowedTools: z.array(codingAgentToolNameSchema).optional(),
   permissionRules: permissionRulesSchema.optional(),
   sandbox: sandboxConfigSchema.optional(),
 });
-
-export const codingToolDescriptions = {
-  agent: agentDescription,
-  list_files: listFilesDescription,
-  glob_search: globSearchDescription,
-  read_file: readFileDescription,
-  grep: grepDescription,
-  git_status: gitStatusDescription,
-  git_diff: gitDiffDescription,
-  git_log: gitLogDescription,
-  git_show: gitShowDescription,
-  tool_search: toolSearchDescription,
-  skill: skillDescription,
-  list_mcp_resources: listMcpResourcesDescription,
-  read_mcp_resource: readMcpResourceDescription,
-  call_mcp_tool: callMcpToolDescription,
-  request_user_input: requestUserInputDescription,
-  todo_write: todoWriteDescription,
-  write_file: writeFileDescription,
-  edit_file: editFileDescription,
-  bash: bashDescription,
-  web_fetch: webFetchDescription,
-  web_search: webSearchDescription,
-} as const;
-
-export const codingToolInputSchemas = {
-  agent: agentInputSchema,
-  list_files: listFilesInputSchema,
-  glob_search: globSearchInputSchema,
-  read_file: readFileInputSchema,
-  grep: grepInputSchema,
-  git_status: gitStatusInputSchema,
-  git_diff: gitDiffInputSchema,
-  git_log: gitLogInputSchema,
-  git_show: gitShowInputSchema,
-  tool_search: toolSearchInputSchema,
-  skill: skillInputSchema,
-  list_mcp_resources: listMcpResourcesInputSchema,
-  read_mcp_resource: readMcpResourceInputSchema,
-  call_mcp_tool: callMcpToolInputSchema,
-  request_user_input: requestUserInputToolInputSchema,
-  todo_write: todoWriteInputSchema,
-  write_file: writeFileInputSchema,
-  edit_file: editFileInputSchema,
-  bash: bashInputSchema,
-  web_fetch: webFetchInputSchema,
-  web_search: webSearchInputSchema,
-} as const;
-
-export const codingToolProviderInputSchemas = {
-  agent: agentProviderInputSchema,
-  list_files: listFilesProviderInputSchema,
-  glob_search: globSearchProviderInputSchema,
-  read_file: readFileProviderInputSchema,
-  grep: grepProviderInputSchema,
-  git_status: gitStatusProviderInputSchema,
-  git_diff: gitDiffProviderInputSchema,
-  git_log: gitLogProviderInputSchema,
-  git_show: gitShowProviderInputSchema,
-  tool_search: toolSearchProviderInputSchema,
-  skill: skillProviderInputSchema,
-  list_mcp_resources: listMcpResourcesProviderInputSchema,
-  read_mcp_resource: readMcpResourceProviderInputSchema,
-  call_mcp_tool: callMcpToolProviderInputSchema,
-  request_user_input: requestUserInputToolProviderInputSchema,
-  todo_write: todoWriteProviderInputSchema,
-  write_file: writeFileProviderInputSchema,
-  edit_file: editFileProviderInputSchema,
-  bash: bashProviderInputSchema,
-  web_fetch: webFetchProviderInputSchema,
-  web_search: webSearchProviderInputSchema,
-} as const;
-
-export const codingToolOutputSchemas = {
-  agent: agentOutputSchema,
-  list_files: listFilesOutputSchema,
-  glob_search: globSearchOutputSchema,
-  read_file: readFileOutputSchema,
-  grep: grepOutputSchema,
-  git_status: gitStatusOutputSchema,
-  git_diff: gitDiffOutputSchema,
-  git_log: gitLogOutputSchema,
-  git_show: gitShowOutputSchema,
-  tool_search: toolSearchOutputSchema,
-  skill: skillOutputSchema,
-  list_mcp_resources: listMcpResourcesOutputSchema,
-  read_mcp_resource: readMcpResourceOutputSchema,
-  call_mcp_tool: callMcpToolOutputSchema,
-  request_user_input: requestUserInputToolOutputSchema,
-  todo_write: todoWriteOutputSchema,
-  write_file: writeFileOutputSchema,
-  edit_file: editFileOutputSchema,
-  bash: bashOutputSchema,
-  web_fetch: webFetchOutputSchema,
-  web_search: webSearchOutputSchema,
-} as const;
-
-export type CodingToolName = keyof typeof codingToolInputSchemas;
 
 /**
  * Tools executed inside the server's agent loop (via a tool `execute`
@@ -264,8 +74,8 @@ export type CodingToolName = keyof typeof codingToolInputSchemas;
  * in-stream from the server.
  */
 const serverExecutedCodingToolNames: ReadonlySet<CodingToolName> = new Set(
-  (Object.keys(codingToolDescriptions) as CodingToolName[]).filter(
-    (toolName) => toolName !== "request_user_input",
+  (Object.keys(codingToolRegistry) as CodingToolName[]).filter(
+    (toolName) => codingToolRegistry[toolName].execution !== "client",
   ),
 );
 
@@ -281,37 +91,14 @@ export type CodingToolOutputByName = {
   [K in CodingToolName]: z.infer<(typeof codingToolOutputSchemas)[K]>;
 };
 
-export const codingToolPermissionRequirements = {
-  // Subagents only get read-only tool profiles, so spawning one is read-safe.
-  agent: "read-only",
-  list_files: "read-only",
-  glob_search: "read-only",
-  read_file: "read-only",
-  grep: "read-only",
-  git_status: "read-only",
-  git_diff: "read-only",
-  git_log: "read-only",
-  git_show: "read-only",
-  tool_search: "read-only",
-  skill: "read-only",
-  list_mcp_resources: "read-only",
-  read_mcp_resource: "read-only",
-  call_mcp_tool: "danger-full-access",
-  request_user_input: "read-only",
-  todo_write: "workspace-write",
-  write_file: "workspace-write",
-  edit_file: "workspace-write",
-  bash: "danger-full-access",
-  web_fetch: "danger-full-access",
-  web_search: "danger-full-access",
-} satisfies Record<CodingToolName, PermissionMode>;
-
 export const codingAgentCallOptionsSchema = z.object({
   cwd: z.string().min(1).max(4096),
   /** Parent chat session id, used to attribute spawned subagent tasks. */
   sessionId: z.string().min(1).max(200).optional(),
   mode: codingAgentModeSchema.optional(),
   permissionMode: permissionModeSchema.optional(),
+  /** One-turn pre-approval/denial for provider-executed web search. */
+  providerWebSearchDecision: providerWebSearchDecisionSchema.optional(),
   allowedTools: z.array(codingAgentToolNameSchema).optional(),
   permissionRules: permissionRulesSchema.optional(),
   sandbox: sandboxConfigSchema.optional(),
@@ -324,6 +111,17 @@ export const codingAgentCallOptionsSchema = z.object({
    * per request against the learned window or the provider hard-rejects (400).
    */
   maxOutputTokens: z.number().int().min(1).optional(),
+  /** Effective provider context window after learned endpoint clamping. */
+  contextWindow: z.number().int().positive().optional(),
+  /** Token-bounded complete-turn tail used by per-step request fitting. */
+  preserveRecentTokens: z.number().int().nonnegative().optional(),
+  /** Pre-optimization input estimate used for compaction-savings telemetry. */
+  originalInputTokens: z.number().int().nonnegative().optional(),
+  /**
+   * Server-internal cancellation used while materializing the provider-only
+   * request view between agent steps. It is never serialized by a client.
+   */
+  assemblyAbortSignal: z.custom<AbortSignal>().optional(),
   /**
    * Identifies the user turn (derived from the last user message id) so
    * server-executed file edits group into one checkpoint/undo unit and the
@@ -450,6 +248,52 @@ export function evaluateCodingToolPermission({
   }
 
   return decision;
+}
+
+export type ProviderWebSearchAccessAction =
+  | "expose"
+  | "omit"
+  | "approval-required";
+
+/**
+ * Resolves provider-native search before the model request starts. Unlike a
+ * local search function, a provider tool may already have searched (and billed)
+ * by the time a tool-call part is returned, so `needsApproval` is too late.
+ */
+export function resolveProviderWebSearchAccess({
+  mode,
+  permissionMode,
+  allowedTools,
+  permissionRules,
+  decision,
+}: {
+  mode: CodingAgentMode;
+  permissionMode?: PermissionMode;
+  allowedTools?: readonly CodingToolName[];
+  permissionRules?: PermissionRules;
+  decision?: ProviderWebSearchDecision;
+}): {
+  action: ProviderWebSearchAccessAction;
+  permissionDecision: PermissionDecision;
+} {
+  const permissionDecision = evaluateCodingToolPermission({
+    toolName: "web_search",
+    input: {},
+    mode,
+    permissionMode,
+    allowedTools,
+    permissionRules,
+  });
+
+  if (permissionDecision.outcome === "deny" || decision === "denied") {
+    return { action: "omit", permissionDecision };
+  }
+
+  if (permissionDecision.outcome === "ask" && decision !== "approved") {
+    return { action: "approval-required", permissionDecision };
+  }
+
+  return { action: "expose", permissionDecision };
 }
 
 export function normalizeSandboxConfig(

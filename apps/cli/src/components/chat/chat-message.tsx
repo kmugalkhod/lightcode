@@ -1,4 +1,8 @@
 import { isToolUIPart, type UIMessage } from "ai";
+import {
+  blobReferenceUIPartSchema,
+  fileReferenceUIPartSchema,
+} from "@lightcode/ai";
 import { TextAttributes, typeRole } from "../../ui/cli-theme";
 import { ChatMessageErrorPart } from "./chat-message-error-part";
 import { ChatMessageReasoningPart } from "./chat-message-reasoning-part";
@@ -50,6 +54,48 @@ export function ChatMessage({ message, pendingApprovalIds }: ChatMessageProps) {
 
       if (part.type === "step-start") {
         return null;
+      }
+
+      if (part.type === "source-url") {
+        return (
+          <text key={key} fg={roleStyle.labelColor}>
+            {`↗ ${part.title ?? part.url} — ${part.url}`}
+          </text>
+        );
+      }
+
+      if (part.type === "source-document") {
+        return (
+          <text key={key} fg={roleStyle.labelColor}>
+            {`↗ ${part.title}${part.filename ? ` (${part.filename})` : ""}`}
+          </text>
+        );
+      }
+
+      if (part.type === "file") {
+        return (
+          <text key={key} fg={roleStyle.labelColor}>
+            {`Attached ${part.filename ?? part.mediaType}`}
+          </text>
+        );
+      }
+
+      const fileReference = fileReferenceUIPartSchema.safeParse(part);
+      if (fileReference.success) {
+        return (
+          <text key={key} fg={roleStyle.labelColor}>
+            {`Attached @${fileReference.data.data.path}`}
+          </text>
+        );
+      }
+
+      const blobReference = blobReferenceUIPartSchema.safeParse(part);
+      if (blobReference.success) {
+        return (
+          <text key={key} fg={roleStyle.labelColor}>
+            {`Attached ${blobReference.data.data.filename ?? blobReference.data.data.mediaType}`}
+          </text>
+        );
       }
 
       return (

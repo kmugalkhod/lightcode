@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
-import { estimateContextTokens, getMessageUsageMetadata } from "./estimate";
+import {
+  estimateContextTokens,
+  estimateProviderMessageTokens,
+  getMessageUsageMetadata,
+} from "./estimate";
 
 function textMessage(
   role: UIMessage["role"],
@@ -64,6 +68,36 @@ describe("estimateContextTokens", () => {
 
     expect(estimate.basis).toBe("usage_calibrated");
     expect(estimate.tokens).toBe(5_000);
+  });
+
+  test("prefers final-step context over cumulative billing usage", () => {
+    const messages = [
+      textMessage("assistant", "a1", "done", {
+        usage: { inputTokens: 30_000, outputTokens: 2_000, totalTokens: 32_000 },
+        context: { inputTokens: 7_500, contextWindow: 128_000 },
+      }),
+    ];
+
+    expect(estimateContextTokens(messages).tokens).toBe(7_500);
+  });
+
+  test("can isolate message/media usage from fixed system and tool overhead", () => {
+    const messages = [
+      textMessage("assistant", "a1", "done", {
+        usage: { totalTokens: 32_000 },
+        context: {
+          inputTokens: 7_500,
+          contextWindow: 128_000,
+          systemTokens: 1_000,
+          toolTokens: 1_500,
+          messageTokens: 4_800,
+          mediaTokens: 200,
+        },
+      }),
+    ];
+
+    expect(estimateContextTokens(messages).tokens).toBe(7_500);
+    expect(estimateProviderMessageTokens(messages).tokens).toBe(5_000);
   });
 
   test("adds a heuristic tail for messages after the usage anchor", () => {

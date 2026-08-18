@@ -13,6 +13,8 @@ export const storedCredentialsSchema = z
     openaiCompatibleApiKey: z.string().min(1).optional(),
     opencodeApiKey: z.string().min(1).optional(),
     openrouterApiKey: z.string().min(1).optional(),
+    braveSearchApiKey: z.string().min(1).optional(),
+    tavilyApiKey: z.string().min(1).optional(),
   })
   .strict();
 export type StoredCredentials = z.infer<typeof storedCredentialsSchema>;

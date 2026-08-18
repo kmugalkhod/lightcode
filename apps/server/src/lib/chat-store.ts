@@ -1,4 +1,6 @@
 import type { MessageRole, Prisma } from "@lightcode/db/types";
+import { realpath } from "node:fs/promises";
+import path from "node:path";
 import {
   codingAgentModeSchema,
   defaultCodingAgentMode,
@@ -8,9 +10,11 @@ import {
   type SessionExportJson,
   type SessionMetadata,
   type SessionSummary,
+  type SessionTurnRequest,
 } from "@lightcode/ai";
 import { safeValidateUIMessages, type UIMessage } from "ai";
 import { incrementChatFailureCounter } from "./chat-observability";
+import { storeInlineMessageBlobs } from "./attachment-store";
 import { prisma } from "./prisma-client";
 
 const roleByUiMessageRole = {
@@ -223,6 +227,7 @@ function toStoredMessage(
   const persistedMessageId = `${sequence}:${normalizedMessage.id}`;
 
   return {
+    id: crypto.randomUUID(),
     sessionId,
     messageId: persistedMessageId,
     role: roleByUiMessageRole[normalizedMessage.role],
@@ -230,6 +235,26 @@ function toStoredMessage(
     model: normalizedMessage.role === "assistant" ? assistantModel : null,
     payload: toPrismaJsonValue(normalizedMessage),
   } satisfies Prisma.ChatMessageUncheckedCreateInput;
+}
+
+function toStoredMessageParts(
+  storedMessages: readonly Prisma.ChatMessageUncheckedCreateInput[],
+  messages: readonly UIMessage[],
+  startIndex = 0,
+): Prisma.ChatMessagePartUncheckedCreateInput[] {
+  return storedMessages.slice(startIndex).flatMap((storedMessage, offset) => {
+    const message = messages[startIndex + offset];
+    if (!message || typeof storedMessage.id !== "string") {
+      return [];
+    }
+
+    return message.parts.map((part, partIndex) => ({
+      id: crypto.randomUUID(),
+      messageId: storedMessage.id as string,
+      partIndex,
+      payload: toPrismaJsonValue(part),
+    }));
+  });
 }
 
 async function normalizeAndValidateMessages(messages: UIMessage[]): Promise<UIMessage[]> {
@@ -268,10 +293,11 @@ export async function createChatSession({
   model?: string | null;
   title?: string;
 } = {}): Promise<{ id: string }> {
+  const canonicalCwd = await realpath(path.resolve(cwd));
   const createdSession = await prisma.chatSession.create({
     data: {
       id: crypto.randomUUID(),
-      cwd,
+      cwd: canonicalCwd,
       mode,
       permissionMode,
       model,
@@ -400,6 +426,14 @@ export async function persistChatMessages({
               await tx.chatMessage.createMany({
                 data: tail,
               });
+              const tailParts = toStoredMessageParts(
+                storedMessages,
+                normalizedMessages,
+                firstDivergent,
+              );
+              if (tailParts.length > 0) {
+                await tx.chatMessagePart.createMany({ data: tailParts });
+              }
             }
           } else {
             await tx.chatMessage.deleteMany({
@@ -410,6 +444,13 @@ export async function persistChatMessages({
               await tx.chatMessage.createMany({
                 data: storedMessages,
               });
+              const parts = toStoredMessageParts(
+                storedMessages,
+                normalizedMessages,
+              );
+              if (parts.length > 0) {
+                await tx.chatMessagePart.createMany({ data: parts });
+              }
             }
           }
 
@@ -604,6 +645,66 @@ export async function loadChatMessages(sessionIdentifier: string): Promise<UIMes
   return (await loadChatSessionWithMessages(sessionIdentifier)).messages;
 }
 
+/**
+ * Merges a single client delta onto canonical server history. A delta may
+ * append a new user message, or replace only the current tail message (approval
+ * responses and sanitized retries update the trailing assistant/user message).
+ * Earlier history can never be rewritten by the client.
+ */
+export async function mergeSessionTurnDelta(
+  sessionIdentifier: string,
+  input: SessionTurnRequest,
+): Promise<{
+  session: SessionMetadata;
+  messages: UIMessage[];
+  appended: boolean;
+}> {
+  const loaded = await loadChatSessionWithMessages(sessionIdentifier);
+  const candidate = {
+    id: input.messageId,
+    role: input.role,
+    parts: input.parts,
+    ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+  };
+  const validation = await safeValidateUIMessages({ messages: [candidate] });
+  if (!validation.success || validation.data.length !== 1) {
+    throw new Error(
+      `Invalid turn message: ${validation.success ? "empty message" : validation.error.message}`,
+    );
+  }
+
+  const [incoming] = await storeInlineMessageBlobs(validation.data);
+  if (!incoming) {
+    throw new Error("Invalid turn message: empty message.");
+  }
+  const existingIndex = loaded.messages.findIndex(
+    (message) => message.id === incoming.id,
+  );
+  if (existingIndex >= 0) {
+    if (existingIndex !== loaded.messages.length - 1) {
+      throw new Error("A turn delta may only replace the latest message.");
+    }
+    if (loaded.messages[existingIndex].role !== incoming.role) {
+      throw new Error("A turn delta cannot change an existing message role.");
+    }
+    return {
+      session: loaded.session,
+      messages: [...loaded.messages.slice(0, -1), incoming],
+      appended: false,
+    };
+  }
+
+  if (incoming.role !== "user") {
+    throw new Error("Only a user message may be appended to canonical history.");
+  }
+
+  return {
+    session: loaded.session,
+    messages: [...loaded.messages, incoming],
+    appended: true,
+  };
+}
+
 export async function listChatSessions(limit = 50): Promise<SessionSummary[]> {
   const safeLimit = Math.min(Math.max(limit, 1), 100);
   const sessions = await prisma.chatSession.findMany({
@@ -760,13 +861,29 @@ export async function forkChatSession(sessionId: string): Promise<{
     });
 
     if (messages.length > 0) {
+      const forkMessages = messages.map((message) => ({
+        ...message,
+        id: crypto.randomUUID(),
+        payload: toPrismaJsonValue(message.payload),
+        sessionId: forkId,
+      }));
       await tx.chatMessage.createMany({
-        data: messages.map((message) => ({
-          ...message,
-          payload: toPrismaJsonValue(message.payload),
-          sessionId: forkId,
-        })),
+        data: forkMessages,
       });
+      const hydratedMessages = await validatePersistedMessages(
+        messages.map((message) => ({
+          sequence: message.sequence,
+          role: message.role,
+          payload: message.payload,
+        })),
+      );
+      const forkParts = toStoredMessageParts(
+        forkMessages,
+        hydratedMessages,
+      );
+      if (forkParts.length > 0) {
+        await tx.chatMessagePart.createMany({ data: forkParts });
+      }
     }
 
     return { id: forkId, copiedMessages: messages.length };

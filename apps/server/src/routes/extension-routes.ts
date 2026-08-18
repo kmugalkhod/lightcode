@@ -3,15 +3,24 @@ import {
   listPlugins,
   listSkills,
   loadSkill,
+  sessionIdentifierSchema,
   skillListOutputSchema,
   skillOutputSchema,
 } from "@lightcode/ai";
 import { Hono } from "hono";
 import { z } from "zod";
 import { mcpServerManager } from "../lib/extension-runtime";
+import {
+  loadChatSessionWithMessages,
+  SessionNotFoundError,
+} from "../lib/chat-store";
 
 const skillParamsSchema = z.object({
   name: z.string().min(1).max(160),
+});
+
+const skillListQuerySchema = z.object({
+  sessionId: sessionIdentifierSchema.optional(),
 });
 
 const mcpServerParamsSchema = z.object({
@@ -19,13 +28,38 @@ const mcpServerParamsSchema = z.object({
 });
 
 export const extensionRoutes = new Hono()
-  .get("/skills", (c) => {
-    return c.json(
-      skillListOutputSchema.parse({
-        skills: listSkills({ cwd: process.cwd() }),
-      }),
-    );
-  })
+  .get(
+    "/skills",
+    zValidator("query", skillListQuerySchema),
+    async (c) => {
+      const { sessionId } = c.req.valid("query");
+      let cwd = process.cwd();
+
+      if (sessionId) {
+        try {
+          const { session } = await loadChatSessionWithMessages(sessionId);
+          if (!session.cwd) {
+            return c.json(
+              { error: "Session has no canonical workspace directory." },
+              409,
+            );
+          }
+          cwd = session.cwd;
+        } catch (error) {
+          if (error instanceof SessionNotFoundError) {
+            return c.json({ error: error.message }, 404);
+          }
+          throw error;
+        }
+      }
+
+      return c.json(
+        skillListOutputSchema.parse({
+          skills: listSkills({ cwd }),
+        }),
+      );
+    },
+  )
   .get("/skills/:name", zValidator("param", skillParamsSchema), (c) => {
     const { name } = c.req.valid("param");
     return c.json(skillOutputSchema.parse(loadSkill({ name })));

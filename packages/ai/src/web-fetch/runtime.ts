@@ -92,15 +92,20 @@ function errorOutput({
   });
 }
 
-export async function executeWebFetch(input: WebFetchInput): Promise<WebFetchOutput> {
+export async function executeWebFetch(
+  input: WebFetchInput,
+  options: { signal?: AbortSignal; fetch?: typeof globalThis.fetch } = {},
+): Promise<WebFetchOutput> {
   const parsedInput = webFetchInputSchema.parse(input);
-  const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), parsedInput.timeoutMs);
+  const timeoutSignal = AbortSignal.timeout(parsedInput.timeoutMs);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeoutSignal])
+    : timeoutSignal;
 
   try {
-    const response = await fetch(parsedInput.url, {
+    const response = await (options.fetch ?? globalThis.fetch)(parsedInput.url, {
       redirect: "follow",
-      signal: abortController.signal,
+      signal,
       headers: {
         "user-agent": "Lightcode/1.0",
         accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.5",
@@ -134,12 +139,12 @@ export async function executeWebFetch(input: WebFetchInput): Promise<WebFetchOut
   } catch (error) {
     return errorOutput({
       parsedInput,
-      code: error instanceof DOMException && error.name === "AbortError"
-        ? "timeout"
-        : "fetch_failed",
+      code: options.signal?.aborted
+        ? "aborted"
+        : timeoutSignal.aborted
+          ? "timeout"
+          : "fetch_failed",
       message: error instanceof Error ? error.message : "Unable to fetch URL.",
     });
-  } finally {
-    clearTimeout(timeout);
   }
 }

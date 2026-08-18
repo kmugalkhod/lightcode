@@ -80,10 +80,9 @@ import {
   computeSessionCostUsd,
   computeUsageCostUsd,
 } from "../utils/usage-cost-utils";
-import { appendMentionAttachments } from "../utils/file-mentions";
+import { resolveMentionAttachments } from "../utils/file-mentions";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../utils/key-utils";
 import { extractCodeBlocks } from "../utils/markdown-code";
-import { truncateInline } from "../utils/text-utils";
 import { listWorkspaceFiles } from "../utils/workspace-files";
 import { Badge } from "../ui/components/badge";
 
@@ -207,6 +206,7 @@ export function ChatScreen() {
     toggleChangesPanel,
     setEditorActive,
     setChatFooterStatus,
+    setChatRunAbortHandler,
   } = useAppState();
 
   const parsedRouteParams = useMemo(
@@ -227,6 +227,7 @@ export function ChatScreen() {
   const [permissionMode, setPermissionMode] = useState<PermissionMode | undefined>(
     locationState.permissionMode,
   );
+  const [sessionCwd, setSessionCwd] = useState(process.cwd());
   const [planConfirmationMessageId, setPlanConfirmationMessageId] = useState<string | null>(null);
   const [handledPlanMessageIds, setHandledPlanMessageIds] = useState<string[]>([]);
   const [queuedImplementationInstruction, setQueuedImplementationInstruction] = useState<string | null>(null);
@@ -294,10 +295,11 @@ export function ChatScreen() {
     setQueuedImplementationInstruction(null);
     setContextState(null);
     setActionNotice(null);
+    setSessionCwd(process.cwd());
   }, [sessionId]);
 
   const chatApi = useMemo(() => {
-    const chatApiUrl = client.sessions[":id"].chat.$url({
+    const chatApiUrl = client.sessions[":id"].turns.$url({
       param: { id: sessionId },
     });
 
@@ -323,6 +325,9 @@ export function ChatScreen() {
 
     const persistedSession = parsedPayload.data.session;
     if (persistedSession) {
+      if (persistedSession.cwd) {
+        setSessionCwd(persistedSession.cwd);
+      }
       if (!locationState.mode) {
         setMode((currentMode) =>
           currentMode === persistedSession.mode
@@ -399,11 +404,13 @@ export function ChatScreen() {
 
   const autoContinueConfig = useAutoContinueConfig();
   const {
+    abortActiveRun,
     autoContinueState,
     messages,
     pendingApprovals,
     pendingUserPrompts,
     canRetryRecoverableResponse,
+    refreshPersistedMessages,
     respondToUserPrompt,
     resolveAllToolApprovals,
     resolveToolApproval,
@@ -412,6 +419,7 @@ export function ChatScreen() {
     errorMessage,
     isLoading,
     isStreaming,
+    status,
     todos,
   } = useCodingSessionChat({
     chatApi,
@@ -423,11 +431,17 @@ export function ChatScreen() {
     resolveInteraction,
     sessionId,
     skipHistoryLoad,
-    cwd: process.cwd(),
+    cwd: sessionCwd,
     mode,
     permissionMode,
     autoContinue: autoContinueConfig,
   });
+
+  useEffect(() => {
+    const requestActive = status === "submitted" || status === "streaming";
+    setChatRunAbortHandler(requestActive ? abortActiveRun : null);
+    return () => setChatRunAbortHandler(null);
+  }, [abortActiveRun, setChatRunAbortHandler, status]);
 
   const elapsedSeconds = useLoadingTimer(isLoading || isStreaming);
   const { contextWindow, pricing } = useModelBudgetInfo();
@@ -467,7 +481,7 @@ export function ChatScreen() {
       try {
         // Dedicated walker: the glob-search tool caps results at 200, which
         // silently hid most files from the picker in larger repos.
-        const files = await listWorkspaceFiles(process.cwd());
+        const files = await listWorkspaceFiles(sessionCwd);
         if (!cancelled) {
           setMentionCandidates(files);
         }
@@ -480,7 +494,7 @@ export function ChatScreen() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [sessionCwd]);
 
   const refreshContextState = useCallback(async () => {
     try {
@@ -527,7 +541,7 @@ export function ChatScreen() {
   const panelVisible = changesPanelOpen && panelFitsTerminal;
 
   // Real git working-tree changes drive the Changes tab + the tree markers.
-  const gitChanges = useGitChanges({ cwd: process.cwd(), enabled: panelVisible });
+  const gitChanges = useGitChanges({ cwd: sessionCwd, enabled: panelVisible });
   const changesFiles = gitChanges.files;
   const changedByPath = useMemo(() => {
     const map = new Map<string, ChangedFileChangeKind>();
@@ -556,7 +570,7 @@ export function ChatScreen() {
 
   // Editor-style project file tree (Files tab) + open-file tabs.
   const fileTree = useFileTree({
-    cwd: process.cwd(),
+    cwd: sessionCwd,
     enabled: panelVisible && panelTab === "files",
   });
   // Open editor tabs (like an IDE). `activeFilePath` is the one shown.
@@ -565,7 +579,7 @@ export function ChatScreen() {
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
   const openFileContent = useFileContent(
     activeFilePath,
-    process.cwd(),
+    sessionCwd,
     fileReloadToken,
   );
 
@@ -813,9 +827,20 @@ export function ChatScreen() {
         notify: notifyChatAction,
         setPermissionMode: setPermissionModeToState,
         copyToClipboard: (text: string) => copyText(renderer, text),
+        isStreaming,
+        abortActiveRun,
+        refreshMessages: refreshPersistedMessages,
       });
     },
-    [messages, notifyChatAction, renderer, sessionId],
+    [
+      abortActiveRun,
+      isStreaming,
+      messages,
+      notifyChatAction,
+      refreshPersistedMessages,
+      renderer,
+      sessionId,
+    ],
   );
 
   const updatePermissionMode = useCallback(
@@ -870,14 +895,21 @@ export function ChatScreen() {
 
       return {
         sessionId,
-        cwd: process.cwd(),
+        cwd: sessionCwd,
         mode,
         permissionMode,
         messageCount: messages.length,
         pendingApprovalCount: pendingApprovals.length,
       };
     },
-    [messages.length, mode, pendingApprovals.length, permissionMode, sessionId],
+    [
+      messages.length,
+      mode,
+      pendingApprovals.length,
+      permissionMode,
+      sessionCwd,
+      sessionId,
+    ],
   );
 
   const navigateIfSlashRoute = useCallback(
@@ -945,11 +977,17 @@ export function ChatScreen() {
 
       setActionNotice(null);
       void (async () => {
-        const expandedText = await appendMentionAttachments(text, process.cwd());
-        submitInput(expandedText, files);
+        const attachment = await resolveMentionAttachments(text, sessionCwd);
+        submitInput(attachment.text, files, attachment.parts);
       })();
     },
-    [closeSlashMenu, navigateIfSlashRoute, runChatSlashAction, submitInput],
+    [
+      closeSlashMenu,
+      navigateIfSlashRoute,
+      runChatSlashAction,
+      sessionCwd,
+      submitInput,
+    ],
   );
 
   const modeDefinition = codingAgentModes[mode];
@@ -959,12 +997,6 @@ export function ChatScreen() {
     () => computeSessionCostUsd(messages, pricing),
     [messages, pricing],
   );
-  const contextMeterColor =
-    contextEstimate.level === "critical"
-      ? cliTheme.semantic.error
-      : contextEstimate.level === "warning"
-        ? cliTheme.semantic.warning
-        : cliTheme.text.muted;
   const anchorVisibleInMessages =
     contextState !== null &&
     messages.some((message) => message.id === contextState.anchorMessageId);
@@ -1413,9 +1445,6 @@ export function ChatScreen() {
                   )}
                 </box>
                 <box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>
-                  <text fg={contextMeterColor}>
-                    {truncateInline(contextEstimate.displayText, 24)}
-                  </text>
                   {/* In the IDE layout the status bar already shows mode +
                       permission; repeating them here just crowds the column. */}
                   {panelVisible ? null : (
@@ -1673,7 +1702,7 @@ export function ChatScreen() {
       </box>
       <box flexGrow={1} flexDirection="column">
         {panelTab === "files" ? (
-          <ExplorerTree tree={fileTree} changedByPath={changedByPath} rootPath={process.cwd()} />
+          <ExplorerTree tree={fileTree} changedByPath={changedByPath} rootPath={sessionCwd} />
         ) : (
           <ChangesTab
             changedFiles={changesFiles}
@@ -1711,7 +1740,7 @@ export function ChatScreen() {
         fileView={fileView}
         onToggleFileView={toggleFileView}
         editing={isEditingFile}
-        cwd={process.cwd()}
+        cwd={sessionCwd}
         onExitEdit={exitFileEdit}
         onSavedEdit={handleFileSaved}
         notify={notifyChatAction}

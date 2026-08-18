@@ -4,7 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { MemoryRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import { HelpOverlay } from "./components/help-overlay";
 import { CommandPalette } from "./commands/command-palette";
-import { searchCommands } from "./commands/command-registry";
+import {
+  clampCommandSelection,
+  searchCommands,
+  type CommandHost,
+} from "./commands/command-registry";
 import { BACK_SHORTCUT_LABEL, getBinding, normalizeKeyName } from "./commands/keymap";
 import { SlashPageMenu } from "./commands/slash-page-menu";
 import { getSlashMenuItems } from "./commands/slash-menu-items";
@@ -108,6 +112,8 @@ function AppContent() {
     toggleChangesPanel,
     editorActive,
     chatFooterStatus,
+    chatRunActive,
+    abortChatRun,
   } = useAppState();
   const [helpOpen, setHelpOpen] = useState(false);
 
@@ -130,6 +136,12 @@ function AppContent() {
   };
 
   const handleCtrlC = () => {
+    if (chatRunActive && abortChatRun()) {
+      ctrlCArmedRef.current = false;
+      showCtrlCNotice("Stopping the active run...");
+      return;
+    }
+
     const selection = renderer.getSelection();
     const selectedText = selection ? selection.getSelectedText() : "";
 
@@ -167,6 +179,11 @@ function AppContent() {
     inChatSession;
 
   const handleAction = (action: string) => {
+    if (action.startsWith("chat:")) {
+      requestChatAction(action.slice("chat:".length));
+      return;
+    }
+
     const path = getPathFromAction(action);
     if (path) {
       navigate(path);
@@ -218,7 +235,6 @@ function AppContent() {
     }
   };
 
-  const filteredCommands = searchCommands(paletteQuery.trim());
   // Must mirror the host each screen passes when rendering its own menu, or
   // Enter would select a different item than the one highlighted.
   const slashMenuHost = inChatSession
@@ -226,6 +242,12 @@ function AppContent() {
     : location.pathname === "/" || location.pathname === "/home"
       ? ("home" as const)
       : ("other" as const);
+  const commandHost: CommandHost = slashMenuHost;
+  const filteredCommands = searchCommands(paletteQuery, commandHost);
+  const selectedPaletteCommandIndex = clampCommandSelection(
+    paletteSelected,
+    filteredCommands.length,
+  );
   const filteredSlashRoutes = getSlashMenuItems(slashMenuQuery, {
     host: slashMenuHost,
   });
@@ -256,17 +278,38 @@ function AppContent() {
 
   const handlePaletteKeyDown = (keyEvent: KeyboardEventLike) => {
     const maxIndex = filteredCommands.length - 1;
+
+    if (maxIndex < 0) {
+      if (isEscapeKey(keyEvent)) {
+        captureKeyEvent(keyEvent);
+        closePalette();
+      } else if (
+        isDownKey(keyEvent) ||
+        isUpKey(keyEvent) ||
+        isEnterKey(keyEvent)
+      ) {
+        captureKeyEvent(keyEvent);
+      }
+      return;
+    }
+
     if (isDownKey(keyEvent)) {
-      setPaletteSelected(Math.min(paletteSelected + 1, maxIndex));
+      captureKeyEvent(keyEvent);
+      setPaletteSelected(
+        Math.min(selectedPaletteCommandIndex + 1, maxIndex),
+      );
     } else if (isUpKey(keyEvent)) {
-      setPaletteSelected(Math.max(paletteSelected - 1, 0));
+      captureKeyEvent(keyEvent);
+      setPaletteSelected(Math.max(selectedPaletteCommandIndex - 1, 0));
     } else if (isEnterKey(keyEvent)) {
-      const cmd = filteredCommands[paletteSelected];
+      captureKeyEvent(keyEvent);
+      const cmd = filteredCommands[selectedPaletteCommandIndex];
       if (cmd) {
         handleAction(cmd.id);
         closePalette();
       }
     } else if (isEscapeKey(keyEvent)) {
+      captureKeyEvent(keyEvent);
       closePalette();
     }
   };
@@ -346,7 +389,14 @@ function AppContent() {
     // Ctrl+C is handled first, regardless of any open menu, so copy / quit
     // always behaves consistently.
     if (keyEvent.ctrl && keyEvent.name === "c") {
+      captureKeyEvent(keyEvent);
       handleCtrlC();
+      return;
+    }
+
+    if (isEscapeKey(keyEvent) && chatRunActive && abortChatRun()) {
+      captureKeyEvent(keyEvent);
+      showCtrlCNotice("Stopping the active run...");
       return;
     }
 
@@ -398,6 +448,10 @@ function AppContent() {
   }, [location.pathname, navigate, needsOnboarding]);
 
   const getFooterStatus = () => {
+    if (chatRunActive) {
+      return "Esc/Ctrl+C abort run · Ctrl+P commands";
+    }
+
     if (slashMenuOpen) {
       return "Slash pages · ↑/↓ select · Enter open · Esc close";
     }
@@ -457,14 +511,19 @@ function AppContent() {
           <Route path="/config" element={<DiagnosticsScreen kind="config" />} />
           <Route path="/model-info" element={<ModelScreen />} />
           <Route path="/model" element={<ModelSelectScreen />} />
+          <Route path="/connect" element={<OnboardingScreen />} />
           <Route path="/onboarding" element={<OnboardingScreen />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         {paletteOpen ? (
           <CommandPalette
             query={paletteQuery}
-            setQuery={setPaletteQuery}
-            selectedIndex={paletteSelected}
+            setQuery={(query) => {
+              setPaletteQuery(query);
+              setPaletteSelected(0);
+            }}
+            selectedIndex={selectedPaletteCommandIndex}
+            host={commandHost}
           />
         ) : null}
         {slashMenuOpen && !inputHostsSlashMenu ? (

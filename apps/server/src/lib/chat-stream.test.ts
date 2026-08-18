@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
-import { shouldUseFastChatPath } from "./chat-stream";
+import {
+  buildFastChatModelMessages,
+  shouldUseFastChatPath,
+} from "./chat-stream";
 
 const userText = (text: string): UIMessage =>
   ({ role: "user", parts: [{ type: "text", text }] }) as UIMessage;
@@ -19,6 +22,27 @@ const assistantWithToolCall = (): UIMessage =>
       },
     ],
   }) as unknown as UIMessage;
+
+const assistantText = (text: string): UIMessage =>
+  ({ role: "assistant", parts: [{ type: "text", text }] }) as UIMessage;
+
+describe("buildFastChatModelMessages", () => {
+  test("retains a token-bounded suffix of complete user turns", () => {
+    const messages = Array.from({ length: 4 }, (_, index) => [
+      userText(`user-${index}`),
+      assistantText(`assistant-${index}`),
+    ]).flat();
+
+    const retained = buildFastChatModelMessages(messages, 100_000);
+
+    expect(retained).toHaveLength(8);
+    expect(retained[0]?.role).toBe("user");
+    for (let index = 0; index < retained.length; index += 2) {
+      expect(retained[index]?.role).toBe("user");
+      expect(retained[index + 1]?.role).toBe("assistant");
+    }
+  });
+});
 
 describe("shouldUseFastChatPath", () => {
   test("a single casual opening message takes the fast path", () => {

@@ -1,5 +1,6 @@
 export * from "./agent-tools";
 export * from "./agent/schema";
+export * from "./attachments/schema";
 export * from "./chat-error";
 export * from "./chat-interaction-schemas";
 export * from "./common/plan-block";
@@ -29,3 +30,4 @@ export * from "./skills/runtime";
 export * from "./skills/schema";
 export * from "./subagent-schemas";
 export * from "./todo-write/schema";
+export * from "./web-search/config";

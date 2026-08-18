@@ -1,6 +1,9 @@
 import { promises as fs } from "node:fs";
 import { z } from "zod";
-import { recordFileCheckpoint } from "../checkpoints/runtime";
+import {
+  recordFileCheckpoint,
+  recordFileCheckpointResult,
+} from "../checkpoints/runtime";
 import {
   getDefaultWorkspaceContext,
   resolveWithinWorkspace,
@@ -48,6 +51,15 @@ export async function executeEditFile(
   }
 
   await fs.writeFile(resolvedPath, updatedContent, "utf8");
+
+  if (editContext.sessionId && editContext.turnKey) {
+    await recordFileCheckpointResult({
+      sessionId: editContext.sessionId,
+      turnKey: editContext.turnKey,
+      absolutePath: resolvedPath,
+      currentContent: updatedContent,
+    });
+  }
 
   return editFileOutputSchema.parse({
     path: relativePath,

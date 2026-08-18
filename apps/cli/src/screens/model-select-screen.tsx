@@ -5,9 +5,9 @@ import { ModelSelector } from "../components/chat/model-selector";
 import { cliTheme } from "../ui/cli-theme";
 
 /**
- * Full-page host for the OpenRouter model picker so /model works from the
- * home screen as well as inside a chat session. Esc (or a successful switch)
- * returns to the previous screen.
+ * Full-page host for the active provider's model picker so /model works from
+ * the home screen as well as inside a chat session. Esc (or a successful
+ * switch) returns to the previous screen.
  */
 export function ModelSelectScreen() {
   const navigate = useNavigate();

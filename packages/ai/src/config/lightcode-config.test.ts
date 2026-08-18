@@ -93,6 +93,13 @@ describe("loadLightcodeConfig", () => {
     expect(result.config.context.contextWindowOverride).toBeNull();
     expect(result.config.context.preserveRecentMessages).toBe(6);
     expect(result.config.context.summaryMaxChars).toBe(4_000);
+    expect(result.config.webSearch).toEqual({
+      backend: "auto",
+      maxResults: 3,
+      maxUsesPerTurn: 3,
+      maxCharactersPerResult: 1200,
+      timeoutMs: 20000,
+    });
     expect(result.config.maxOutputTokens).toBe(32_768);
     expect(result.config.maxSteps).toBe(30);
     expect(result.config.autoContinue).toEqual({
@@ -133,6 +140,7 @@ describe("loadLightcodeConfig", () => {
       env: {
         LIGHTCODE_CONTEXT_AUTO_COMPACT: "false",
         LIGHTCODE_CONTEXT_MAX_INPUT_TOKENS: "12345",
+        LIGHTCODE_CONTEXT_PRESERVE_RECENT_TOKENS: "9000",
         LIGHTCODE_CONTEXT_PRESERVE_RECENT_MESSAGES: "7",
         LIGHTCODE_CONTEXT_SUMMARY_MAX_CHARS: "1600",
       },
@@ -143,6 +151,7 @@ describe("loadLightcodeConfig", () => {
       compactAtFraction: 0.7,
       pruneAtFraction: 0.6,
       contextWindowOverride: 12345,
+      preserveRecentTokens: 9_000,
       preserveRecentMessages: 7,
       maxCoverageTokensPerCompaction: 12_000,
       summaryMaxChars: 1600,
@@ -169,6 +178,38 @@ describe("loadLightcodeConfig", () => {
     expect(result.config.context.compactAtFraction).toBe(0.7);
     expect(result.config.context.pruneAtFraction).toBe(0.5);
     expect(result.config.context.contextWindowOverride).toBe(64_000);
+  });
+
+  test("merges web-search settings and environment overrides", async () => {
+    const cwd = await makeTempDirectory();
+    const userConfigPath = path.join(cwd, "user-settings.json");
+    await writeJson(userConfigPath, {
+      webSearch: {
+        backend: "brave",
+        maxResults: 7,
+        timeoutMs: 30000,
+      },
+    });
+    await writeJson(path.join(cwd, ".lightcode", "settings.json"), {
+      webSearch: { maxCharactersPerResult: 900 },
+    });
+
+    const result = loadLightcodeConfig({
+      cwd,
+      userConfigPath,
+      env: {
+        LIGHTCODE_WEB_SEARCH_MAX_RESULTS: "4",
+        LIGHTCODE_WEB_SEARCH_MAX_USES_PER_TURN: "2",
+      },
+    });
+
+    expect(result.config.webSearch).toEqual({
+      backend: "brave",
+      maxResults: 4,
+      maxUsesPerTurn: 2,
+      maxCharactersPerResult: 900,
+      timeoutMs: 30000,
+    });
   });
 
   test("loads OpenCode Zen provider and base URL from environment", async () => {

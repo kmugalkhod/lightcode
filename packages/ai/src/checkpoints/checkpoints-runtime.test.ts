@@ -4,8 +4,11 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  CheckpointConflictError,
   listCheckpointTurns,
   recordFileCheckpoint,
+  recordFileCheckpointResult,
+  redoLastTurn,
   undoLastTurn,
 } from "./runtime";
 
@@ -125,5 +128,57 @@ describe("checkpoints", () => {
 
   test("undo with no checkpoints returns null", async () => {
     expect(await undoLastTurn({ sessionId: "empty-session" })).toBeNull();
+  });
+
+  test("redo reapplies an undone turn", async () => {
+    const filePath = path.join(workspace, "redo.txt");
+    await writeFile(filePath, "before", "utf8");
+    await recordFileCheckpoint({
+      sessionId,
+      turnKey: "turn-redo",
+      absolutePath: filePath,
+      workspaceRelativePath: "redo.txt",
+      previousContent: "before",
+    });
+    await writeFile(filePath, "after", "utf8");
+    await recordFileCheckpointResult({
+      sessionId,
+      turnKey: "turn-redo",
+      absolutePath: filePath,
+      currentContent: "after",
+    });
+
+    await undoLastTurn({ sessionId });
+    expect(await readFile(filePath, "utf8")).toBe("before");
+
+    const result = await redoLastTurn({ sessionId });
+    expect(result?.turnKey).toBe("turn-redo");
+    expect(await readFile(filePath, "utf8")).toBe("after");
+  });
+
+  test("undo refuses to overwrite workspace drift", async () => {
+    const filePath = path.join(workspace, "drift.txt");
+    await writeFile(filePath, "before", "utf8");
+    await recordFileCheckpoint({
+      sessionId,
+      turnKey: "turn-drift",
+      absolutePath: filePath,
+      workspaceRelativePath: "drift.txt",
+      previousContent: "before",
+    });
+    await writeFile(filePath, "agent edit", "utf8");
+    await recordFileCheckpointResult({
+      sessionId,
+      turnKey: "turn-drift",
+      absolutePath: filePath,
+      currentContent: "agent edit",
+    });
+    await writeFile(filePath, "user edit", "utf8");
+
+    await expect(undoLastTurn({ sessionId })).rejects.toBeInstanceOf(
+      CheckpointConflictError,
+    );
+    expect(await readFile(filePath, "utf8")).toBe("user edit");
+    expect((await listCheckpointTurns({ sessionId })).length).toBe(1);
   });
 });

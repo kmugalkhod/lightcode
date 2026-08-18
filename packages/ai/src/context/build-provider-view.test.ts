@@ -49,6 +49,55 @@ describe("buildProviderView", () => {
     expect(view.anchorResolved).toBe(false);
   });
 
+  test("includes fixed system and tool overhead in the request budget", () => {
+    const messages = conversation(2, 100);
+    const withoutFixed = buildProviderView({
+      messages,
+      contextState: null,
+      config: smallWindowConfig,
+    });
+    const withFixed = buildProviderView({
+      messages,
+      contextState: null,
+      config: smallWindowConfig,
+      fixedInputTokens: 6_000,
+    });
+
+    expect(withFixed.estimate.tokens - withoutFixed.estimate.tokens).toBe(6_000);
+    expect(withFixed.messageBudgetTokens).toBe(
+      withFixed.inputBudgetTokens - 6_000,
+    );
+    expect(withFixed.fixedInputTokens).toBe(6_000);
+  });
+
+  test("does not double-count fixed overhead from prior usage metadata", () => {
+    const messages = [
+      {
+        ...textMessage("assistant", "a1", "done"),
+        metadata: {
+          usage: { totalTokens: 20_000 },
+          context: {
+            inputTokens: 7_000,
+            contextWindow: 128_000,
+            systemTokens: 1_000,
+            toolTokens: 1_000,
+            messageTokens: 5_000,
+            mediaTokens: 0,
+          },
+        },
+      } as UIMessage,
+    ];
+
+    const view = buildProviderView({
+      messages,
+      contextState: null,
+      config: normalizeContextOptimizerConfig(undefined),
+      fixedInputTokens: 2_000,
+    });
+
+    expect(view.estimate.tokens).toBe(7_000);
+  });
+
   test("replaces the covered prefix with the stored summary", () => {
     const messages = conversation(4); // u0 a0 u1 a1 u2 a2 u3 a3
     const view = buildProviderView({
@@ -212,10 +261,10 @@ describe("buildProviderView", () => {
   });
 
   test("uncached: prunes old tool outputs from turn 1, with no context pressure", () => {
-    // Tiny history far below every usage fraction; the only trigger is
+    // History remains below every usage fraction; the only trigger is
     // cacheActive === false. The old bash output (2k chars > uncached 600
-    // threshold) sits outside the default 6-message recent window.
-    const messages = conversation(6, 10);
+    // threshold) sits outside the default 12K-token complete-turn tail.
+    const messages = conversation(6, 8_000);
     messages[1] = {
       id: "a0",
       role: "assistant",
@@ -351,6 +400,19 @@ describe("capCoverageToTokenBudget", () => {
     const messages = [big("u0"), big("u1")];
     const capped = capCoverageToTokenBudget(messages, 1);
     expect(capped.map((m) => m.id)).toEqual(["u0"]);
+  });
+
+  test("never splits a user turn at the coverage limit", () => {
+    const messages = [
+      textMessage("user", "u0", "request"),
+      textMessage("assistant", "a0", "x".repeat(8_000)),
+      textMessage("user", "u1", "next request"),
+    ];
+    const userOnlyBudget = estimateStructuralTokens([messages[0]]) + 10;
+
+    const capped = capCoverageToTokenBudget(messages, userOnlyBudget);
+
+    expect(capped.map((message) => message.id)).toEqual(["u0", "a0"]);
   });
 });
 

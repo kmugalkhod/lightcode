@@ -16,6 +16,13 @@ import {
 } from "../permissions";
 import { sandboxConfigSchema } from "../sandbox/config";
 import { mcpConfigSchema } from "../mcp/config";
+import {
+  defaultWebSearchConfig,
+  normalizeWebSearchConfig,
+  resolvedWebSearchCapabilitySchema,
+  resolvedWebSearchConfigSchema,
+  webSearchConfigSchema,
+} from "../web-search/config";
 
 export const lightcodeProviderSchema = z.enum([
   "anthropic",
@@ -100,6 +107,7 @@ export const lightcodeConfigSchema = z
     sandbox: sandboxConfigSchema.optional(),
     mcp: mcpConfigSchema.optional(),
     context: contextOptimizerConfigSchema.optional(),
+    webSearch: webSearchConfigSchema.optional(),
     maxOutputTokens: z.number().int().min(1).max(1_000_000).optional(),
     maxSteps: z.number().int().min(1).max(100).optional(),
     /** Provider-call retries for transient errors (429/5xx/network). */
@@ -116,6 +124,7 @@ export const lightcodeConfigDefaults = {
   provider: "anthropic",
   defaultMode: defaultCodingAgentMode,
   context: defaultContextOptimizerConfig,
+  webSearch: defaultWebSearchConfig,
   // Reasoning tokens count against the output budget; thinking models need
   // far more than the text alone suggests.
   maxOutputTokens: 32_768,
@@ -133,6 +142,7 @@ export const lightcodeConfigDefaults = {
   | "provider"
   | "defaultMode"
   | "context"
+  | "webSearch"
   | "maxOutputTokens"
   | "maxSteps"
   | "maxRetries"
@@ -152,6 +162,7 @@ export const lightcodeResolvedConfigSchema = lightcodeConfigSchema.extend({
   provider: lightcodeProviderSchema,
   defaultMode: codingAgentModeSchema,
   context: resolvedContextOptimizerConfigSchema,
+  webSearch: resolvedWebSearchConfigSchema,
   maxOutputTokens: z.number().int().min(1).max(1_000_000),
   maxSteps: z.number().int().min(1).max(100),
   maxRetries: z.number().int().min(0).max(10),
@@ -198,6 +209,7 @@ export const lightcodeConfigStatusSchema = z.object({
     /** True when traffic is actively routed through the proxy right now. */
     routed: z.boolean(),
   }),
+  webSearch: resolvedWebSearchCapabilitySchema,
   missingCredentialHints: z.array(z.string()),
 });
 export type LightcodeConfigStatus = z.infer<typeof lightcodeConfigStatusSchema>;
@@ -354,6 +366,10 @@ function readEnvConfig(env: Record<string, string | undefined>): LightcodeConfig
       env.LIGHTCODE_CONTEXT_PRESERVE_RECENT_MESSAGES,
       "LIGHTCODE_CONTEXT_PRESERVE_RECENT_MESSAGES",
     ),
+    preserveRecentTokens: parseNumberEnv(
+      env.LIGHTCODE_CONTEXT_PRESERVE_RECENT_TOKENS,
+      "LIGHTCODE_CONTEXT_PRESERVE_RECENT_TOKENS",
+    ),
     summaryMaxChars: parseNumberEnv(
       env.LIGHTCODE_CONTEXT_SUMMARY_MAX_CHARS,
       "LIGHTCODE_CONTEXT_SUMMARY_MAX_CHARS",
@@ -392,6 +408,33 @@ function readEnvConfig(env: Record<string, string | undefined>): LightcodeConfig
   const compactHeadroomConfig = Object.fromEntries(
     Object.entries(headroomConfig).filter(([, value]) => value !== undefined),
   );
+  const legacyWebSearchProvider = env.LIGHTCODE_WEB_SEARCH_PROVIDER?.trim();
+  const webSearchConfig = {
+    backend:
+      env.LIGHTCODE_WEB_SEARCH_BACKEND?.trim() ||
+      (legacyWebSearchProvider === "brave" || legacyWebSearchProvider === "tavily"
+        ? legacyWebSearchProvider
+        : undefined),
+    maxResults: parseNumberEnv(
+      env.LIGHTCODE_WEB_SEARCH_MAX_RESULTS,
+      "LIGHTCODE_WEB_SEARCH_MAX_RESULTS",
+    ),
+    maxUsesPerTurn: parseNumberEnv(
+      env.LIGHTCODE_WEB_SEARCH_MAX_USES_PER_TURN,
+      "LIGHTCODE_WEB_SEARCH_MAX_USES_PER_TURN",
+    ),
+    maxCharactersPerResult: parseNumberEnv(
+      env.LIGHTCODE_WEB_SEARCH_MAX_CHARACTERS_PER_RESULT,
+      "LIGHTCODE_WEB_SEARCH_MAX_CHARACTERS_PER_RESULT",
+    ),
+    timeoutMs: parseNumberEnv(
+      env.LIGHTCODE_WEB_SEARCH_TIMEOUT_MS,
+      "LIGHTCODE_WEB_SEARCH_TIMEOUT_MS",
+    ),
+  };
+  const compactWebSearchConfig = Object.fromEntries(
+    Object.entries(webSearchConfig).filter(([, value]) => value !== undefined),
+  );
   const rawConfig = {
     provider: env.LIGHTCODE_PROVIDER,
     model: env.LIGHTCODE_CHAT_MODEL,
@@ -411,6 +454,10 @@ function readEnvConfig(env: Record<string, string | undefined>): LightcodeConfig
     headroom:
       Object.keys(compactHeadroomConfig).length > 0
         ? compactHeadroomConfig
+        : undefined,
+    webSearch:
+      Object.keys(compactWebSearchConfig).length > 0
+        ? compactWebSearchConfig
         : undefined,
   };
   const compactConfig = Object.fromEntries(
@@ -453,6 +500,12 @@ function mergeConfig(...configs: LightcodeConfig[]): LightcodeConfig {
             ...config.headroom,
           }
         : mergedConfig.headroom,
+      webSearch: config.webSearch
+        ? {
+            ...mergedConfig.webSearch,
+            ...config.webSearch,
+          }
+        : mergedConfig.webSearch,
       allowedTools: config.allowedTools ?? mergedConfig.allowedTools,
     }),
     {},
@@ -460,7 +513,7 @@ function mergeConfig(...configs: LightcodeConfig[]): LightcodeConfig {
 }
 
 export type UserSettingsUpdate = Partial<
-  Pick<LightcodeConfig, "provider" | "model" | "baseUrl">
+  Pick<LightcodeConfig, "provider" | "model" | "baseUrl" | "webSearch">
 >;
 
 /**
@@ -520,6 +573,7 @@ export function loadLightcodeConfig({
       ...defaultHeadroomConfig,
       ...mergedConfig.headroom,
     },
+    webSearch: normalizeWebSearchConfig(mergedConfig.webSearch),
   };
 
   return lightcodeConfigLoadResultSchema.parse({

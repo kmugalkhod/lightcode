@@ -120,4 +120,22 @@ describe("coding permission policy", () => {
     expect(askDecision.outcome).toBe("ask");
     expect(denyDecision.outcome).toBe("deny");
   });
+
+  test("plan mode exposes live search behind network approval", () => {
+    expect(
+      evaluateCodingToolPermission({
+        toolName: "web_search",
+        input: { query: "current release" },
+        mode: "plan",
+      }).outcome,
+    ).toBe("ask");
+    expect(
+      evaluateCodingToolPermission({
+        toolName: "web_search",
+        input: { query: "current release" },
+        mode: "plan",
+        approved: true,
+      }).outcome,
+    ).toBe("allow");
+  });
 });

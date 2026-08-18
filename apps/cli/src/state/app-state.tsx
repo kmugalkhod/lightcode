@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 
 /**
  * Live chat metrics published by the chat screen so the persistent app
@@ -15,6 +15,11 @@ export interface ChatFooterStatus {
 }
 
 export interface AppStateValue {
+  chatRunActive: boolean;
+  setChatRunAbortHandler: (
+    handler: (() => void | Promise<void>) | null,
+  ) => void;
+  abortChatRun: () => boolean;
   /** Live chat metrics for the footer; null when no chat session is open. */
   chatFooterStatus: ChatFooterStatus | null;
   setChatFooterStatus: (status: ChatFooterStatus | null) => void;
@@ -69,6 +74,27 @@ export interface AppStateValue {
 const AppStateContext = createContext<AppStateValue | null>(null);
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
+  const chatRunAbortHandlerRef = useRef<(() => void | Promise<void>) | null>(null);
+  const [chatRunActive, setChatRunActive] = useState(false);
+  const setChatRunAbortHandler = useCallback(
+    (handler: (() => void | Promise<void>) | null) => {
+      chatRunAbortHandlerRef.current = handler;
+      setChatRunActive(handler !== null);
+    },
+    [],
+  );
+  const abortChatRun = useCallback(() => {
+    const handler = chatRunAbortHandlerRef.current;
+    if (!handler) {
+      return false;
+    }
+    // Disable repeated Esc/Ctrl+C presses immediately. The chat screen will
+    // publish a fresh handler if a later run starts.
+    chatRunAbortHandlerRef.current = null;
+    setChatRunActive(false);
+    void handler();
+    return true;
+  }, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteSelected, setPaletteSelected] = useState(0);
@@ -142,6 +168,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     useState<ChatFooterStatus | null>(null);
 
   const value = useMemo<AppStateValue>(() => ({
+    chatRunActive,
+    setChatRunAbortHandler,
+    abortChatRun,
     chatFooterStatus,
     setChatFooterStatus,
     paletteOpen,
@@ -173,6 +202,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     editorActive,
     setEditorActive,
   }), [
+    chatRunActive,
+    setChatRunAbortHandler,
+    abortChatRun,
     chatFooterStatus,
     paletteOpen,
     paletteQuery,

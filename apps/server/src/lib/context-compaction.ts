@@ -1,11 +1,15 @@
 import {
+  artifactizeLargeToolOutputs,
   buildContextSummary,
+  collectConversationTurnRanges,
   collectMessageText,
   compressSummary,
   contextSummaryTitle,
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
   extractLatestProposedPlan,
   getToolNameFromPart,
   isRecord,
+  ProviderTurnAssembler,
   safeStringify,
   type ContextStateTier,
   type ResolvedContextOptimizerConfig,
@@ -13,7 +17,12 @@ import {
 } from "@lightcode/ai";
 import { createWorkspaceContext, loadSessionTodos } from "@lightcode/ai/runtime";
 import { createLogger, getErrorMessage } from "@lightcode/shared";
-import { generateText, type LanguageModel, type UIMessage } from "ai";
+import {
+  generateText,
+  type LanguageModel,
+  type ModelMessage,
+  type UIMessage,
+} from "ai";
 import { upsertSessionContextState } from "./context-state-store";
 
 const logger = createLogger("context-compaction");
@@ -23,22 +32,23 @@ const COMPACTION_MAX_OUTPUT_TOKENS = 1_500;
 const MAX_TRANSCRIPT_CHARS = 120_000;
 const MAX_MESSAGE_PREVIEW_CHARS = 2_000;
 const MAX_TOOL_INPUT_PREVIEW_CHARS = 200;
+const MAX_TOOL_OUTPUT_PREVIEW_CHARS = 800;
 const MAX_PINNED_PLAN_CHARS = 1_500;
 const MIN_SUMMARY_BODY_CHARS = 400;
 
 const COMPACTION_SYSTEM_PROMPT = `You are compacting the history of an AI coding-agent session so the session can continue seamlessly with a smaller context. Write a dense, factual summary of the conversation transcript you receive. Preserve everything a coding agent needs to keep working without re-reading the original messages.
 
 Structure the summary with exactly these markdown sections:
-## User intent and decisions
-The user's goals, explicit requirements, and decisions made along the way.
-## Current state
-What has been built, changed, or verified so far; the state the work is in right now.
-## Key files
-Files that were read or modified, with one line each on why they matter.
-## Pending work and next steps
-Unfinished work, known follow-ups, and the immediate next step.
-## Tools and commands that mattered
-Important commands run and their relevant outcomes (test results, errors, etc.).
+## Goal, constraints, and decisions
+The user's objective, explicit requirements, approvals, rejected approaches, and decisions.
+## Current implementation and changed files
+What was read or changed, with exact paths/symbols and the current state.
+## Tests, commands, and outcomes
+Commands run, pass/fail counts, relevant output, and verification still required.
+## Tool errors, blockers, and approvals
+Important tool failures, permission decisions, unresolved risks, and blockers.
+## Pending todos and next action
+Unfinished work followed by one concrete immediate next action.
 
 Rules: be specific (real file paths, function names, error messages); never invent details; omit pleasantries; if a "Previously compacted context" section is provided, fold its still-relevant facts into your summary instead of referencing it.`;
 
@@ -48,6 +58,18 @@ function truncateText(text: string, maxChars: number): string {
   }
 
   return `${text.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+/** Retains both the cause and outcome of long tool output. */
+function boundedHeadTail(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const marker = "\n… [middle omitted] …\n";
+  const available = Math.max(0, maxChars - marker.length);
+  const headChars = Math.ceil(available * 0.6);
+  const tailChars = available - headChars;
+  return `${text.slice(0, headChars)}${marker}${text.slice(-tailChars)}`;
 }
 
 function describeMessageForTranscript(message: UIMessage): string {
@@ -69,7 +91,20 @@ function describeMessageForTranscript(message: UIMessage): string {
         safeStringify(input ?? {}),
         MAX_TOOL_INPUT_PREVIEW_CHARS,
       );
-      return `[tool ${toolName} ${inputPreview}]`;
+      const state = isRecord(part) ? Reflect.get(part, "state") : undefined;
+      const output = isRecord(part) ? Reflect.get(part, "output") : undefined;
+      const error = isRecord(part)
+        ? (Reflect.get(part, "errorText") ?? Reflect.get(part, "error"))
+        : undefined;
+      const evidence = error ?? output;
+      const evidencePreview =
+        evidence === undefined
+          ? ""
+          : `\n${error === undefined ? "output" : "error"}: ${boundedHeadTail(
+              safeStringify(evidence),
+              MAX_TOOL_OUTPUT_PREVIEW_CHARS,
+            )}`;
+      return `[tool ${toolName}${typeof state === "string" ? ` state=${state}` : ""} input=${inputPreview}]${evidencePreview}`;
     })
     .filter((segment): segment is string => segment !== null);
 
@@ -81,27 +116,71 @@ function describeMessageForTranscript(message: UIMessage): string {
 export function buildCompactionTranscript(
   messages: readonly UIMessage[],
 ): string {
-  const entries = messages.map(
-    (message) => `${message.role}:\n${describeMessageForTranscript(message)}`,
+  const ranges = collectConversationTurnRanges(messages, () => 0);
+  const groups = ranges.map((range) =>
+    messages
+      .slice(range.startIndex, range.endIndex)
+      .map(
+        (message) =>
+          `${message.role}:\n${describeMessageForTranscript(message)}`,
+      )
+      .join("\n\n"),
   );
 
-  let transcript = entries.join("\n\n");
-  while (entries.length > 1 && transcript.length > MAX_TRANSCRIPT_CHARS) {
-    entries.shift();
-    transcript = `[earlier messages omitted for length]\n\n${entries.join("\n\n")}`;
+  // Histories should start at a user boundary. Preserve any legacy preamble
+  // as one indivisible group so length fitting still never strands an
+  // assistant message apart from its surrounding context.
+  if (ranges[0]?.startIndex && ranges[0].startIndex > 0) {
+    groups.unshift(
+      messages
+        .slice(0, ranges[0].startIndex)
+        .map(
+          (message) =>
+            `${message.role}:\n${describeMessageForTranscript(message)}`,
+        )
+        .join("\n\n"),
+    );
+  }
+  if (groups.length === 0) {
+    groups.push(
+      messages
+        .map(
+          (message) =>
+            `${message.role}:\n${describeMessageForTranscript(message)}`,
+        )
+        .join("\n\n"),
+    );
   }
 
-  return transcript;
+  let omitted = false;
+  const render = () =>
+    `${omitted ? "[earlier complete turns omitted for length]\n\n" : ""}${groups.join("\n\n")}`;
+  let transcript = render();
+  while (groups.length > 1 && transcript.length > MAX_TRANSCRIPT_CHARS) {
+    groups.shift();
+    omitted = true;
+    transcript = render();
+  }
+
+  // A single pathological turn remains one turn; bound its internal evidence
+  // head/tail rather than dropping only its user or assistant half.
+  return transcript.length > MAX_TRANSCRIPT_CHARS
+    ? boundedHeadTail(transcript, MAX_TRANSCRIPT_CHARS)
+    : transcript;
 }
 
 async function generateLlmSummary({
   coveredMessages,
   previousSummary,
   model,
+  abortSignal,
+  contextWindow,
 }: {
   coveredMessages: readonly UIMessage[];
   previousSummary: string | null;
   model: LanguageModel;
+  abortSignal?: AbortSignal;
+  contextWindow: number;
 }): Promise<string> {
   const transcript = buildCompactionTranscript(coveredMessages);
   const prompt = [
@@ -112,14 +191,37 @@ async function generateLlmSummary({
   ]
     .filter(Boolean)
     .join("\n\n");
+  const assembler = new ProviderTurnAssembler({
+    system: COMPACTION_SYSTEM_PROMPT,
+    contextWindow,
+    reservedOutputTokens: COMPACTION_MAX_OUTPUT_TOKENS,
+  });
+  const artifactized = await artifactizeLargeToolOutputs(
+    [{ role: "user", content: prompt } satisfies ModelMessage],
+    { signal: abortSignal },
+  );
+  const assembled = assembler.assembleModelMessages(
+    artifactized.messages,
+    { preserveRecentTokens: 0 },
+  );
+  if (!assembled.withinBudget) {
+    throw new Error(
+      "context_input_too_large: the compaction transcript cannot fit the model context window.",
+    );
+  }
 
   const result = await generateText({
     model,
     system: COMPACTION_SYSTEM_PROMPT,
-    prompt,
+    messages: assembled.messages,
     maxOutputTokens: COMPACTION_MAX_OUTPUT_TOKENS,
     maxRetries: 2,
-    abortSignal: AbortSignal.timeout(COMPACTION_TIMEOUT_MS),
+    abortSignal: abortSignal
+      ? AbortSignal.any([
+          abortSignal,
+          AbortSignal.timeout(COMPACTION_TIMEOUT_MS),
+        ])
+      : AbortSignal.timeout(COMPACTION_TIMEOUT_MS),
   });
 
   const text = result.text.trim();
@@ -218,6 +320,8 @@ export async function compactSessionContext({
   cwd,
   config,
   estimatedTokens,
+  abortSignal,
+  contextWindow = DEFAULT_CONTEXT_WINDOW_TOKENS,
 }: {
   sessionId: string;
   coveredMessages: readonly UIMessage[];
@@ -227,10 +331,13 @@ export async function compactSessionContext({
   cwd: string | undefined;
   config: ResolvedContextOptimizerConfig;
   estimatedTokens: number;
+  abortSignal?: AbortSignal;
+  contextWindow?: number;
 }): Promise<CompactSessionContextResult> {
   if (coveredMessages.length === 0) {
     throw new Error("Context compaction requires at least one covered message.");
   }
+  abortSignal?.throwIfAborted();
 
   const anchorMessageId = coveredMessages[coveredMessages.length - 1].id;
   const coveredMessageCount =
@@ -248,10 +355,21 @@ export async function compactSessionContext({
       coveredMessages,
       previousSummary: previousState?.summary ?? null,
       model,
+      abortSignal,
+      contextWindow,
     });
     body = `${contextSummaryTitle}\n\n${llmSummary}`;
     tier = "llm";
   } catch (error) {
+    // Provider failures can safely use the extractive fallback; an explicit
+    // run abort cannot. Persisting a new summary after cancellation would make
+    // the supposedly stopped run mutate session state.
+    if (
+      abortSignal?.aborted ||
+      (error instanceof Error && error.name === "AbortError")
+    ) {
+      throw error;
+    }
     logger.warn("context_llm_summary_failed", {
       sessionId,
       error: getErrorMessage(error),

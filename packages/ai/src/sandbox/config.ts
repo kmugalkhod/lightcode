@@ -18,11 +18,13 @@ export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
 
 export interface SandboxRuntimeStatus extends SandboxConfig {
   supported: boolean;
+  isolation: "process-guards";
   unsupportedReason?: string;
 }
 
 export const sandboxRuntimeStatusSchema = sandboxConfigSchema.extend({
   supported: z.boolean(),
+  isolation: z.literal("process-guards"),
   unsupportedReason: z.string().optional(),
 });
 
@@ -37,6 +39,7 @@ export function getSandboxRuntimeStatus(
       ...parsedConfig,
       enabled: false,
       supported: true,
+      isolation: "process-guards",
     };
   }
 
@@ -45,6 +48,7 @@ export function getSandboxRuntimeStatus(
       ...parsedConfig,
       enabled: true,
       supported: false,
+      isolation: "process-guards",
       unsupportedReason:
         "Shell sandbox execution is not supported on Windows yet.",
     };
@@ -54,5 +58,8 @@ export function getSandboxRuntimeStatus(
     ...parsedConfig,
     enabled: true,
     supported: true,
+    isolation: "process-guards",
+    unsupportedReason:
+      "Process-level path and command guards only; Lightcode does not provide OS-level filesystem or network isolation yet.",
   };
 }

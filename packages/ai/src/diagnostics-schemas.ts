@@ -14,6 +14,7 @@ import { sandboxRuntimeStatusSchema } from "./sandbox/config";
 import { sessionSummarySchema } from "./chat-schemas";
 import { chatInteractionPendingSummarySchema } from "./chat-interaction-schemas";
 import { mcpServerStatusSchema } from "./mcp/config";
+import { resolvedWebSearchCapabilitySchema } from "./web-search/config";
 
 export const diagnosticStatusSchema = z.enum(["ok", "warn", "error"]);
 export type DiagnosticStatus = z.infer<typeof diagnosticStatusSchema>;
@@ -60,7 +61,19 @@ export const diagnosticsToolSchema = z.object({
   name: codingAgentToolNameSchema,
   description: z.string().min(1),
   permissionMode: permissionModeSchema,
+  permissionSubject: codingAgentToolNameSchema,
   activeInModes: z.array(codingAgentModeSchema),
+  availability: z.enum([
+    "always",
+    "model",
+    "git-workspace",
+    "skills",
+    "mcp",
+    "web",
+  ]),
+  execution: z.enum(["server", "client", "server-or-provider"]),
+  activation: z.enum(["core", "specialized"]),
+  outputPolicy: z.enum(["inline", "artifact-if-large"]),
   providerOptionalPropertyCount: z.number().int().nonnegative(),
   providerSchemaStatus: diagnosticStatusSchema,
 });
@@ -83,6 +96,7 @@ export const diagnosticsStatusResponseSchema = z.object({
     latest: sessionSummarySchema.nullable(),
   }),
   tools: diagnosticsToolSummarySchema,
+  webSearch: resolvedWebSearchCapabilitySchema,
   extensions: z.object({
     skills: z.object({
       count: z.number().int().nonnegative(),

@@ -154,6 +154,11 @@ function renderStatus(payload: DiagnosticsStatusResponse, routeState: unknown) {
         <InfoRow label="Database" value={payload.database.status} tone={payload.database.status} />
         <InfoRow label="Tool count" value={payload.tools.total} />
         <InfoRow label="Schema status" value={payload.tools.providerSchemaStatus} tone={payload.tools.providerSchemaStatus} />
+        <InfoRow
+          label="Web search"
+          value={`${payload.webSearch.backend} (${payload.webSearch.execution})`}
+          tone={payload.webSearch.available ? "ok" : payload.webSearch.backend === "disabled" ? "muted" : "warn"}
+        />
       </Section>
 
       <Section title="Extensions">
@@ -263,6 +268,7 @@ function renderPermissions(payload: DiagnosticsPermissionsResponse, routeState: 
       <Section title="Sandbox">
         <InfoRow label="Enabled" value={payload.sandbox.enabled ? "yes" : "no"} />
         <InfoRow label="Mode" value={payload.sandbox.mode} />
+        <InfoRow label="Isolation" value={payload.sandbox.isolation} tone="warn" />
         <InfoRow label="Supported" value={payload.sandbox.supported ? "yes" : "no"} tone={payload.sandbox.supported ? "ok" : "warn"} />
         {payload.sandbox.unsupportedReason ? (
           <text fg={cliTheme.semantic.warning}>{payload.sandbox.unsupportedReason}</text>
@@ -302,7 +308,7 @@ function renderTools(payload: DiagnosticsToolsResponse) {
             </box>
             <text fg={cliTheme.text.secondary}>{tool.description}</text>
             <text fg={cliTheme.text.muted} attributes={TextAttributes.DIM}>
-              Modes: {tool.activeInModes.join(", ") || "none"} | optional fields: {tool.providerOptionalPropertyCount}
+              Modes: {tool.activeInModes.join(", ") || "none"} | {tool.activation} | {tool.execution} | output: {tool.outputPolicy} | optional fields: {tool.providerOptionalPropertyCount}
             </text>
           </box>
         ))}
@@ -323,7 +329,22 @@ function renderConfig(payload: LightcodeConfigStatus) {
         <InfoRow label="Permission mode" value={payload.permissionMode} />
         <InfoRow label="Max output tokens" value={payload.maxOutputTokens} />
         <InfoRow label="Max steps" value={payload.maxSteps} />
+        <InfoRow
+          label="Web search"
+          value={`${payload.webSearch.backend} (${payload.webSearch.execution})`}
+          tone={payload.webSearch.available ? "ok" : payload.webSearch.backend === "disabled" ? "muted" : "warn"}
+        />
+        <InfoRow
+          label="Search limits"
+          value={`${payload.webSearch.limits.maxUsesPerTurn} uses / ${payload.webSearch.limits.maxTotalResults} results`}
+        />
       </Section>
+
+      {payload.webSearch.reason ? (
+        <Section title="Web Search Setup">
+          <text fg={cliTheme.semantic.warning}>{payload.webSearch.reason}</text>
+        </Section>
+      ) : null}
 
       <Section title="Loaded Files">
         {payload.loadedFiles.map((file) => (

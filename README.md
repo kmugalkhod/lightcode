@@ -27,9 +27,10 @@ bun run cli:dev        # starts the TUI; it boots the server automatically
 ```
 
 Lightcode is aware of the directory you launch it in: each turn it reads the
-project's shape (top-level files, git branch/status) and any `AGENTS.md` /
-`CLAUDE.md` / `README.md`, so "review my code" or "explain this" inspects your
-actual files instead of asking you to paste them.
+project's shape (top-level files and git branch/status), uses root `AGENTS.md`
+instructions with `CLAUDE.md` as a fallback, and loads nested instructions only
+when related paths are accessed. `README.md` remains ordinary project context,
+not privileged instructions.
 
 On first run Lightcode walks you through provider setup (Anthropic,
 OpenRouter, OpenCode Zen, or any OpenAI-compatible endpoint) and stores the
@@ -61,6 +62,8 @@ variables. Notable keys:
 | `context.compactAtFraction` | Context compaction threshold (default 0.8) |
 | `context.pruneAtFraction` | Tool-output pruning threshold (default 0.6) |
 | `context.contextWindowOverride` | Override the model context window |
+| `webSearch.backend` | `auto`, `provider`, `brave`, `tavily`, or `disabled` |
+| `webSearch.maxResults`, `webSearch.maxUsesPerTurn` | Bound search results and per-turn search usage |
 | `maxRetries` | Provider-call retries for transient errors (default 5) |
 | `autoContinue.stallTimeoutSeconds` | Abort+retry a byte-silent stream (default 300; raise for very slow reasoning models) |
 | `autoContinue.maxErrorRetries` | Auto-resends before surfacing a stream error (default 8) |

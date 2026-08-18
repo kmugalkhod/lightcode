@@ -102,4 +102,49 @@ describe("persistChatMessages incremental writes", () => {
     },
     20_000,
   );
+
+  test("forks normalized message parts with the legacy payload", async () => {
+    const {
+      createChatSession,
+      deleteChatSession,
+      forkChatSession,
+      persistChatMessages,
+    } = await import("./chat-store");
+    const { prisma } = await import("./prisma-client");
+    const source = await createChatSession({
+      cwd: process.cwd(),
+      title: "normalized fork source",
+    });
+    let forkId: string | null = null;
+
+    try {
+      await persistChatMessages({
+        sessionId: source.id,
+        messages: [
+          userMessage("fork-u1", "copy this"),
+          assistantMessage("fork-a1", "copied"),
+        ],
+      });
+      const fork = await forkChatSession(source.id);
+      forkId = fork.id;
+
+      const forkedRows = await prisma.chatMessage.findMany({
+        where: { sessionId: fork.id },
+        orderBy: { sequence: "asc" },
+        include: { parts: { orderBy: { partIndex: "asc" } } },
+      });
+
+      expect(forkedRows).toHaveLength(2);
+      expect(forkedRows.map((message) => message.parts.length)).toEqual([1, 1]);
+      expect(forkedRows[0]?.parts[0]?.payload).toMatchObject({
+        type: "text",
+        text: "copy this",
+      });
+    } finally {
+      if (forkId) {
+        await deleteChatSession(forkId);
+      }
+      await deleteChatSession(source.id);
+    }
+  });
 });

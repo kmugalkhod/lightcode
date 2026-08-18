@@ -5,6 +5,7 @@ import {
   normalizeContextOptimizerConfig,
   resolveContextWindowTokens,
   resolveInputBudgetTokens,
+  resolvePreserveRecentTokens,
 } from "./config";
 
 describe("maxCoverageTokensPerCompaction", () => {
@@ -91,5 +92,22 @@ describe("resolveInputBudgetTokens", () => {
         reservedOutputTokens: 50_000,
       }),
     ).toBe(0);
+  });
+});
+
+describe("resolvePreserveRecentTokens", () => {
+  test("uses the smaller of the configured tail and 20% of input", () => {
+    expect(
+      resolvePreserveRecentTokens({
+        config: defaultContextOptimizerConfig,
+        inputBudgetTokens: 100_000,
+      }),
+    ).toBe(12_000);
+    expect(
+      resolvePreserveRecentTokens({
+        config: defaultContextOptimizerConfig,
+        inputBudgetTokens: 20_000,
+      }),
+    ).toBe(4_000);
   });
 });

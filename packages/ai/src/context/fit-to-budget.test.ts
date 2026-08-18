@@ -47,8 +47,9 @@ describe("fitMessagesToBudget", () => {
 
   test("is idempotent: a second pass changes nothing", () => {
     const messages = [
+      textMessage("user", "u0", "old request"),
       toolMessage("t1", big(40_000)),
-      textMessage("user", "u1", big(40_000)),
+      textMessage("user", "u1", "recent request"),
       textMessage("assistant", "a1", "done"),
     ];
     const once = fitMessagesToBudget(messages, {
@@ -104,21 +105,39 @@ describe("fitMessagesToBudget", () => {
     // The two recent messages survive.
     expect(result.messages.some((m) => m.id === "u2")).toBe(true);
     expect(result.messages.some((m) => m.id === "a2")).toBe(true);
+    // The old turn is removed atomically; no orphan assistant remains.
+    expect(result.messages.some((m) => m.id === "u1")).toBe(false);
+    expect(result.messages.some((m) => m.id === "a1")).toBe(false);
     expect(result.withinBudget).toBe(true);
   });
 
-  test("hard-truncates a single oversized preserved message", () => {
-    // One enormous message that the drop pass cannot remove (it is the only
-    // preserved message). This is the hole overflow recovery cannot close.
+  test("treats recent-turn retention as soft under hard budget pressure", () => {
+    const messages = [
+      textMessage("user", "u1", big(40_000)),
+      textMessage("assistant", "a1", big(40_000)),
+      textMessage("user", "u2", "latest request must survive"),
+    ];
+    const result = fitMessagesToBudget(messages, {
+      inputBudgetTokens: 500,
+      // Deliberately protects both turns during the quality-preserving pass.
+      preserveRecentTokens: 100_000,
+    });
+
+    expect(result.withinBudget).toBe(true);
+    expect(result.messages.map((message) => message.id)).toEqual(["u2"]);
+    expect(result.messages[0]).toEqual(messages[2]);
+  });
+
+  test("refuses to truncate a single oversized latest user message", () => {
     const messages = [textMessage("user", "u1", big(500_000))];
     const result = fitMessagesToBudget(messages, {
       inputBudgetTokens: 1_000,
       preserveRecentMessages: 6,
     });
 
-    expect(result.truncatedTextParts).toBeGreaterThan(0);
-    expect(result.withinBudget).toBe(true);
-    expect(estimateStructuralTokens(result.messages)).toBeLessThanOrEqual(1_000);
+    expect(result.truncatedTextParts).toBe(0);
+    expect(result.withinBudget).toBe(false);
+    expect(result.messages).toEqual(messages);
   });
 
   test("keeps the compaction summary message during the drop pass", () => {
@@ -138,10 +157,24 @@ describe("fitMessagesToBudget", () => {
     expect(result.withinBudget).toBe(true);
   });
 
+  test("drops the compaction summary only when the latest request needs the space", () => {
+    const summary = createSummaryMessage(big(40_000));
+    const latest = textMessage("user", "u2", "latest request");
+    const result = fitMessagesToBudget([summary, latest], {
+      inputBudgetTokens: 100,
+      preserveRecentTokens: 100_000,
+    });
+
+    expect(result.withinBudget).toBe(true);
+    expect(result.messages).toEqual([latest]);
+  });
+
   test("always lands within budget for a massive history", () => {
     const messages: UIMessage[] = [];
     for (let i = 0; i < 50; i += 1) {
-      messages.push(textMessage("user", `u${i}`, big(20_000)));
+      messages.push(
+        textMessage("user", `u${i}`, i === 49 ? "latest request" : big(20_000)),
+      );
       messages.push(toolMessage(`t${i}`, big(20_000)));
     }
     const result = fitMessagesToBudget(messages, {

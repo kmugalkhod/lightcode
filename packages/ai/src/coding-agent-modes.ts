@@ -93,6 +93,7 @@ export const codingAgentModes: Record<CodingAgentMode, CodingAgentModeDefinition
       "list_mcp_resources",
       "read_mcp_resource",
       "request_user_input",
+      "web_search",
     ],
   },
 };

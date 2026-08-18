@@ -1,18 +1,17 @@
 import { z } from "zod";
-import { MAX_TOOL_SEARCH_RESULTS } from "../constants";
 import { integerRangeSchema } from "../common/base-schemas";
 
 export const webSearchDescription =
-  "Search the web through a configured search API provider. Requires network permission and a provider API key.";
+  "Search the live web through the configured provider-native or local search backend and return citable sources.";
 
 export const webSearchProviderSchema = z.enum(["auto", "brave", "tavily"]);
 
 export const webSearchInputSchema = z.object({
   query: z.string().min(1).max(500),
   provider: webSearchProviderSchema.optional().default("auto"),
-  maxResults: integerRangeSchema(1, MAX_TOOL_SEARCH_RESULTS, "maxResults")
+  maxResults: integerRangeSchema(1, 25, "maxResults")
     .optional()
-    .default(5),
+    .default(3),
 });
 
 export const webSearchProviderInputSchema = z.object({

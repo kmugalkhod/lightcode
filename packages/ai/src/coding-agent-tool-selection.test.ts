@@ -3,6 +3,7 @@ import {
   limitProviderActiveTools,
   selectCodingAgentIntentTools,
 } from "./intent-tool-selection";
+import { resolveCodingAgentStepActiveTools } from "./coding-agent";
 
 describe("coding agent dynamic tool selection", () => {
   test("does not send tools for casual chat", () => {
@@ -22,7 +23,7 @@ describe("coding agent dynamic tool selection", () => {
     ).toEqual([]);
   });
 
-  test("exposes the full build tool set for a real task", () => {
+  test("adds explicitly requested specialized tools to the build core", () => {
     const tools = selectCodingAgentIntentTools({
       mode: "build",
       prompt: "Use tool_search to find git tools, then check git status.",
@@ -32,16 +33,18 @@ describe("coding agent dynamic tool selection", () => {
     expect(tools).toContain("tool_search");
     expect(tools).toContain("git_status");
     expect(tools).toContain("read_file");
-    // The model now gets the whole mode set and chooses for itself, so
-    // unrequested tools are available too (opencode-style).
+    // Git intent enables the Git family, while unrelated specialized schemas
+    // remain out of the provider context.
     expect(tools).toContain("git_diff");
     expect(tools).toContain("write_file");
+    expect(tools).not.toContain("web_search");
+    expect(tools).not.toContain("skill");
   });
 
   test("non-casual prompts always get tools (never an empty set)", () => {
     // We cannot reliably tell "explain recursion" from "explain the auth code",
-    // so any non-greeting message gets the core tools; the model uses them only
-    // if needed. This is the fix for the 'No tools are available' failure.
+    // so any non-greeting message gets registry core tools. This preserves the
+    // fix for the 'No tools are available' failure without every optional schema.
     const tools = selectCodingAgentIntentTools({
       mode: "build",
       prompt: "Explain recursion in simple words.",
@@ -49,6 +52,8 @@ describe("coding agent dynamic tool selection", () => {
     });
 
     expect(tools).toContain("read_file");
+    expect(tools).toContain("tool_search");
+    expect(tools).not.toContain("git_status");
     expect(tools.length).toBeGreaterThan(0);
   });
 
@@ -112,5 +117,58 @@ describe("coding agent dynamic tool selection", () => {
       "bash",
     ]);
     expect(tools.length).toBe(7);
+  });
+
+  test("activates tool_search discoveries without bypassing provider-search approval", () => {
+    const messages = [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "search-1",
+            toolName: "tool_search",
+            output: {
+              type: "json",
+              value: {
+                results: [{ name: "git_status" }, { name: "web_search" }],
+              },
+            },
+          },
+        ],
+      },
+    ];
+    const availableToolNames = [
+      "read_file",
+      "tool_search",
+      "git_status",
+      "web_search",
+    ] as const;
+
+    const gated = resolveCodingAgentStepActiveTools({
+      context: {
+        mode: "build",
+        permissionMode: "workspace-write",
+        activeTools: ["read_file", "tool_search"],
+      },
+      messages,
+      availableToolNames,
+      providerWebSearchTool: true,
+    });
+    expect(gated).toContain("git_status");
+    expect(gated).not.toContain("web_search");
+
+    const approved = resolveCodingAgentStepActiveTools({
+      context: {
+        mode: "build",
+        permissionMode: "workspace-write",
+        providerWebSearchDecision: "approved",
+        activeTools: ["read_file", "tool_search"],
+      },
+      messages,
+      availableToolNames,
+      providerWebSearchTool: true,
+    });
+    expect(approved).toContain("web_search");
   });
 });

@@ -1,7 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { recordFileCheckpoint } from "../checkpoints/runtime";
+import {
+  recordFileCheckpoint,
+  recordFileCheckpointResult,
+} from "../checkpoints/runtime";
 import {
   getDefaultWorkspaceContext,
   resolveWithinWorkspace,
@@ -64,6 +67,14 @@ export async function executeWriteFile(
   await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
 
   await fs.writeFile(resolvedPath, parsedInput.content, "utf8");
+  if (editContext.sessionId && editContext.turnKey) {
+    await recordFileCheckpointResult({
+      sessionId: editContext.sessionId,
+      turnKey: editContext.turnKey,
+      absolutePath: resolvedPath,
+      currentContent: parsedInput.content,
+    });
+  }
   const bytesWritten = Buffer.byteLength(parsedInput.content, "utf8");
 
   return writeFileOutputSchema.parse({
