@@ -7,6 +7,53 @@ if (cliArgs.includes("--version") || cliArgs.includes("-v")) {
   process.exit(0);
 }
 
+if (cliArgs.includes("--help") || cliArgs.includes("-h")) {
+  console.log(`Usage:
+  lightcode                 Open the terminal UI
+  lightcode web             Open the localhost browser UI
+  lightcode web --no-open   Start the browser UI without opening a tab
+  lightcode --version       Print the installed version`);
+  process.exit(0);
+}
+
+const webMode = cliArgs[0] === "web" || cliArgs.includes("--web");
+if (webMode) {
+  const { startAuthenticatedWebServer } = await import("./lib/server-launcher");
+  const { buildWebAppUrl, openWebApp } = await import("./lib/web-launcher");
+  const webLaunch = await startAuthenticatedWebServer();
+
+  if (webLaunch.error || !webLaunch.ownedProcess || !webLaunch.token) {
+    console.error(`\n${webLaunch.error ?? "Unable to start Lightcode web."}\n`);
+    process.exit(1);
+  }
+
+  const webUrl = buildWebAppUrl(webLaunch.url, webLaunch.token);
+  const shouldOpen = !cliArgs.includes("--no-open");
+  const browserOpened = shouldOpen ? openWebApp(webUrl) : false;
+  if (shouldOpen && !browserOpened) {
+    console.warn("The browser could not be opened automatically.");
+  }
+
+  console.log(`Lightcode web is running at ${webLaunch.url}/app/`);
+  if (!shouldOpen || !browserOpened) {
+    console.log(webUrl);
+  }
+  console.log("Press Ctrl+C to stop it.");
+
+  const ownedProcess = webLaunch.ownedProcess;
+  const stopWebServer = () => {
+    try {
+      ownedProcess.kill();
+    } catch {
+      // It may already have stopped.
+    }
+  };
+  process.on("SIGINT", stopWebServer);
+  process.on("SIGTERM", stopWebServer);
+  const exitCode = await ownedProcess.exited;
+  process.exit(exitCode);
+}
+
 const { ensureServerRunning } = await import("./lib/server-launcher");
 const serverLaunch = await ensureServerRunning();
 

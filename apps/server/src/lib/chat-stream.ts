@@ -55,9 +55,11 @@ import {
 import { mergeFinishedMessagesIntoFullHistory } from "./chat-history-merge";
 import { listChatInteractions } from "./chat-interaction-store";
 import {
+  assertSessionWorkspaceIdentity,
   persistChatMessages,
   resolveChatSessionIdentifier,
   SessionNotFoundError,
+  SessionWorkspaceIdentityError,
 } from "./chat-store";
 import { compactSessionContext } from "./context-compaction";
 import {
@@ -317,6 +319,21 @@ export async function streamSessionChat(
       return c.json({ error: error.message }, 404);
     }
 
+    throw error;
+  }
+
+  try {
+    const workspace = await assertSessionWorkspaceIdentity(sessionId);
+    // The database identity is authoritative even for compatibility callers
+    // that still include a cwd argument.
+    cwd = workspace.cwd;
+  } catch (error) {
+    if (error instanceof SessionWorkspaceIdentityError) {
+      return c.json(
+        { error: error.message, code: error.code },
+        error.code === "workspace_unavailable" ? 404 : 409,
+      );
+    }
     throw error;
   }
 

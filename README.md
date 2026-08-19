@@ -1,7 +1,8 @@
 # Lightcode
 
-A personal AI coding agent with a terminal UI. Lightcode pairs an OpenTUI
-chat interface with a local Hono API server, persistent SQLite sessions, a
+A personal AI coding agent with terminal and localhost browser interfaces.
+Lightcode pairs an OpenTUI client and a React browser workspace with one local
+Hono API server, persistent SQLite sessions, a
 permission-gated tool suite (files, shell, git, web, MCP), and tiered context
 optimization that keeps long sessions inside the model's context window
 without ever losing history.
@@ -10,7 +11,8 @@ without ever losing history.
 
 ```bash
 npm install -g @kmugalkhod/lightcode
-lightcode
+lightcode              # terminal UI
+lightcode web          # browser UI on 127.0.0.1
 ```
 
 Works on macOS (Apple Silicon and Intel), Linux, and Windows. Bun ships with
@@ -19,11 +21,24 @@ uses the bundled runtime automatically (and reuses a system Bun if you already
 have one). The published package is scoped as `@kmugalkhod/lightcode`; the
 command it installs is `lightcode`.
 
+The two interfaces share the same local sessions, history, provider settings,
+and agent engine. `lightcode web` opens a dedicated loopback-only server and
+launches your browser. Start from Home, Desktop, Documents, Downloads, or
+Projects, browse into any nested folder, then start or resume a project chat.
+The per-launch browser credential stays in the URL fragment and the current
+browser tab; it is never passed to agent subprocesses.
+
+The first browser release runs one Lightcode interface at a time: press Ctrl+C
+to stop the TUI or browser server before switching. Sessions remain available
+when you reopen them in the other interface. Use `lightcode web --no-open` on
+headless systems; set `LIGHTCODE_WEB_PORT` to choose its starting port.
+
 ## Quick start (from source)
 
 ```bash
 bun install
 bun run cli:dev        # starts the TUI; it boots the server automatically
+bun run web:build && bun apps/cli/src/index.tsx web  # browser UI from source
 ```
 
 Lightcode is aware of the directory you launch it in: each turn it reads the
@@ -41,6 +56,8 @@ API key in `~/.lightcode/credentials.json`. Environment variables such as
 
 ```bash
 bun run cli:dev          # TUI (auto-starts the server)
+bun run web:dev          # asset-only browser dev server (no agent API proxy)
+bun run web:build        # build the browser assets
 bun run server:dev       # API server alone, watch mode
 bun run typecheck        # TypeScript + tool schema preflight
 bun test                 # test suite
@@ -67,6 +84,7 @@ variables. Notable keys:
 | `maxRetries` | Provider-call retries for transient errors (default 5) |
 | `autoContinue.stallTimeoutSeconds` | Abort+retry a byte-silent stream (default 300; raise for very slow reasoning models) |
 | `autoContinue.maxErrorRetries` | Auto-resends before surfacing a stream error (default 8) |
+| `LIGHTCODE_DESKTOP_PATH`, `LIGHTCODE_DOCUMENTS_PATH`, `LIGHTCODE_DOWNLOADS_PATH`, `LIGHTCODE_PROJECTS_PATH` | Optional absolute overrides for browser picker locations |
 
 The local companion server listens on `127.0.0.1:4983` (uncommon on purpose —
 port 3000 belongs to the apps you build). Override with `PORT` for the server
@@ -116,6 +134,7 @@ are parsed (`name`, `description`); the rest of the file is the instruction body
 ## Workspaces
 
 - `apps/cli` — OpenTUI React terminal interface
+- `apps/web` — React localhost browser interface
 - `apps/server` — Hono API server (sessions, streaming, diagnostics)
 - `packages/ai` — agent core: tools, permissions, context engine, config
 - `packages/db` — Prisma + local SQLite storage

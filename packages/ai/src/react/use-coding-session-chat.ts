@@ -34,8 +34,7 @@ import {
   type ChatInteractionUpsertRequest,
 } from "../chat-interaction-schemas";
 import { toSingleLinePreview } from "../common/output-utils";
-import { createWorkspaceContext } from "../common/resolve-within-workspace";
-import { parseCodingToolInput } from "../runtime-registry";
+import { parseCodingToolInput } from "../tool-input";
 import {
   defaultCodingAgentMode,
   type CodingAgentMode,
@@ -50,7 +49,6 @@ import {
   requestUserInputToolOutputSchema,
   type RequestUserInputToolOutput,
 } from "../request-user-input/schema";
-import { loadSessionTodos } from "../todo-write/runtime";
 import type { TodoItem } from "../todo-write/schema";
 import {
   decideAutoContinue,
@@ -60,6 +58,11 @@ import {
   type AutoContinueKind,
 } from "./auto-continue";
 import { resolveDanglingToolParts } from "../context/normalize-provider-messages";
+import {
+  resolveCodingSessionRequestOption,
+  type CodingSessionFetch,
+  type CodingSessionRequestHeadersOption,
+} from "./request-options";
 
 export type ToolApprovalAction = "approve" | "deny";
 
@@ -269,7 +272,21 @@ export interface UseCodingSessionChatOptions {
   ) => Promise<void>;
   sessionId: string;
   skipHistoryLoad?: boolean;
-  cwd?: string;
+  /** Canonical workspace path assigned to the server-authoritative session. */
+  cwd: string;
+  /**
+   * Optional host adapter for restoring persisted todos. Browser clients
+   * should load them through the companion server; Node clients may adapt the
+   * existing filesystem todo runtime.
+   */
+  loadTodos?: (options: {
+    sessionId: string;
+    cwd: string;
+  }) => readonly TodoItem[] | PromiseLike<readonly TodoItem[]>;
+  /** Custom fetch shared by chat submission, stream resume, and abort. */
+  fetch?: CodingSessionFetch;
+  /** Static or lazily refreshed headers, including browser bearer tokens. */
+  headers?: CodingSessionRequestHeadersOption;
   mode?: CodingAgentMode;
   permissionMode?: PermissionMode;
   allowedTools?: readonly CodingToolName[];
@@ -644,7 +661,10 @@ export function useCodingSessionChat({
   resolveInteraction,
   sessionId,
   skipHistoryLoad = false,
-  cwd = process.cwd(),
+  cwd,
+  loadTodos,
+  fetch: requestFetch,
+  headers: requestHeaders,
   mode = defaultCodingAgentMode,
   permissionMode,
   allowedTools,
@@ -662,6 +682,8 @@ export function useCodingSessionChat({
   const allowedToolsRef = useRef(allowedTools);
   const permissionRulesRef = useRef(permissionRules);
   const sandboxRef = useRef(sandbox);
+  const requestFetchRef = useRef(requestFetch);
+  const requestHeadersRef = useRef(requestHeaders);
   const sessionRevisionRef = useRef(0);
   const activeRunIdRef = useRef<string | null>(null);
   const runCursorRef = useRef(-1);
@@ -782,6 +804,8 @@ export function useCodingSessionChat({
   allowedToolsRef.current = allowedTools;
   permissionRulesRef.current = permissionRules;
   sandboxRef.current = sandbox;
+  requestFetchRef.current = requestFetch;
+  requestHeadersRef.current = requestHeaders;
   loadPersistedMessagesRef.current = loadPersistedMessages;
   loadPersistedInteractionsRef.current = loadPersistedInteractions;
 
@@ -817,7 +841,10 @@ export function useCodingSessionChat({
         activeRunIdRef.current = null;
         runCursorRef.current = -1;
       }
-      const response = await globalThis.fetch(input, init);
+      const response = await (requestFetchRef.current ?? globalThis.fetch)(
+        input,
+        init,
+      );
       const revisionHeader = response.headers.get("x-lightcode-revision");
       if (revisionHeader) {
         const revision = Number(revisionHeader);
@@ -924,6 +951,9 @@ export function useCodingSessionChat({
     return new DefaultChatTransport({
       api: chatApi,
       fetch: monitoredFetch,
+      headers: async () =>
+        (await resolveCodingSessionRequestOption(requestHeadersRef.current)) ??
+        {},
       body: () => ({
         mode: modeRef.current,
         permissionMode: permissionModeRef.current,
@@ -1945,15 +1975,21 @@ export function useCodingSessionChat({
     let active = true;
 
     async function refreshTodos() {
+      if (!loadTodos) {
+        if (active) {
+          setTodos([]);
+        }
+        return;
+      }
+
       try {
-        const workspaceContext = createWorkspaceContext(cwd);
-        const loadedTodos = await loadSessionTodos({
+        const loadedTodos = await loadTodos({
           sessionId,
-          workspaceContext,
+          cwd,
         });
 
         if (active) {
-          setTodos(loadedTodos);
+          setTodos([...loadedTodos]);
         }
       } catch {
         if (active) {
@@ -1967,7 +2003,7 @@ export function useCodingSessionChat({
     return () => {
       active = false;
     };
-  }, [cwd, sessionId]);
+  }, [cwd, loadTodos, sessionId]);
 
   useEffect(() => {
     if (!isSessionIdValid) {
@@ -2045,7 +2081,13 @@ export function useCodingSessionChat({
         `/runs/${encodeURIComponent(runId)}/abort`,
       );
       try {
-        await globalThis.fetch(abortUrl, { method: "POST" });
+        const headers = await resolveCodingSessionRequestOption(
+          requestHeadersRef.current,
+        );
+        await (requestFetchRef.current ?? globalThis.fetch)(abortUrl, {
+          method: "POST",
+          ...(headers ? { headers } : {}),
+        });
       } catch {
         // Detach locally below; the error remains visible because only the
         // companion server can authoritatively stop its provider/tool work.

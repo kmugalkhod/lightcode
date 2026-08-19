@@ -8,7 +8,7 @@
  * external and are declared in the generated manifest so native modules
  * (OpenTUI zig libs, libsql) install normally on the target machine.
  */
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { lightcodeVersion } from "../packages/shared/src/version";
 
@@ -149,6 +149,50 @@ await buildEntry({
   outfile: "cli.js",
   externals: externalNames,
 });
+
+const webBuild = Bun.spawnSync(
+  ["bun", "run", "--cwd", "apps/web", "build"],
+  {
+    cwd: repoRoot,
+    stdout: "inherit",
+    stderr: "inherit",
+  },
+);
+if (webBuild.exitCode !== 0) {
+  throw new Error("Lightcode web build failed.");
+}
+
+const webAssetsSource = path.join(repoRoot, "apps", "web", "dist");
+const webIndexPath = path.join(webAssetsSource, "index.html");
+if (!existsSync(webIndexPath)) {
+  throw new Error("Lightcode web build did not produce index.html.");
+}
+const webIndex = readFileSync(webIndexPath, "utf8");
+const referencedWebAssets = new Set(
+  [...webIndex.matchAll(/(?:href|src)="\.\/([^"?#]+)(?:[?#][^"]*)?"/g)]
+    .map((match) => match[1])
+    .filter((name): name is string => Boolean(name)),
+);
+const expectedWebAssets = new Set(["index.html", ...referencedWebAssets]);
+const actualWebAssets = readdirSync(webAssetsSource, { withFileTypes: true });
+const unexpectedWebAssets = actualWebAssets.filter(
+  (entry) => !entry.isFile() || !expectedWebAssets.has(entry.name),
+);
+if (
+  referencedWebAssets.size === 0 ||
+  actualWebAssets.length !== expectedWebAssets.size ||
+  unexpectedWebAssets.length > 0
+) {
+  throw new Error(
+    `Lightcode web build contains stale or unexpected assets: ${unexpectedWebAssets
+      .map((entry) => entry.name)
+      .join(", ") || "asset count mismatch"}`,
+  );
+}
+cpSync(webAssetsSource, path.join(distDir, "assets", "web"), {
+  recursive: true,
+});
+console.log("Copied Lightcode web assets into dist/assets/web");
 
 // Bun keeps the entry shebang, but guarantee it for the bin script.
 const cliPath = path.join(distDir, "cli.js");
@@ -330,7 +374,7 @@ writeFileSync(
       name: "@kmugalkhod/lightcode",
       version: lightcodeVersion,
       description:
-        "Lightcode — a personal AI coding agent with a terminal UI and local session storage.",
+        "Lightcode — a local AI coding agent with terminal and browser interfaces.",
       type: "module",
       license: "MIT",
       repository: {

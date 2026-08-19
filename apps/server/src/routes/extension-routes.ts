@@ -11,8 +11,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { mcpServerManager } from "../lib/extension-runtime";
 import {
+  assertSessionWorkspaceIdentity,
   loadChatSessionWithMessages,
   SessionNotFoundError,
+  SessionWorkspaceIdentityError,
 } from "../lib/chat-store";
 
 const skillParamsSchema = z.object({
@@ -44,10 +46,16 @@ export const extensionRoutes = new Hono()
               409,
             );
           }
-          cwd = session.cwd;
+          cwd = (await assertSessionWorkspaceIdentity(session.id)).cwd;
         } catch (error) {
           if (error instanceof SessionNotFoundError) {
             return c.json({ error: error.message }, 404);
+          }
+          if (error instanceof SessionWorkspaceIdentityError) {
+            return c.json(
+              { error: error.message, code: error.code },
+              error.code === "workspace_unavailable" ? 404 : 409,
+            );
           }
           throw error;
         }

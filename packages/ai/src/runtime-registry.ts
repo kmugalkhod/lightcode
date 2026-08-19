@@ -1,5 +1,4 @@
 import {
-  codingToolInputSchemas,
   codingToolOutputSchemas,
   evaluateCodingToolPermission,
   type CodingToolInputByName,
@@ -7,7 +6,7 @@ import {
   type CodingToolOutputByName,
 } from "./agent-tools";
 import type { CodingAgentMode } from "./coding-agent-modes";
-import { coerceToolInputToSchema } from "./common/coerce-tool-input";
+import { parseCodingToolInput } from "./tool-input";
 import { assertNotRepeatingToolCall } from "./tool-call-repeat-guard";
 import { executeBash } from "./bash/runtime";
 import { executeEditFile } from "./edit-file/runtime";
@@ -179,31 +178,6 @@ const codingToolRuntimes: {
     }),
 };
 
-export function parseCodingToolInput<K extends CodingToolName>(
-  toolName: K,
-  rawInput: unknown,
-): CodingToolInputByName[K] {
-  // The schema map is keyed by tool name; indexing erases the per-key
-  // relation, so narrow the parsed union back to the requested tool.
-  const schema = codingToolInputSchemas[toolName];
-  const parsed = schema.safeParse(rawInput);
-  if (parsed.success) {
-    return parsed.data as CodingToolInputByName[K];
-  }
-
-  // Cheaper models get the argument shape right but the types wrong (a number
-  // sent as "10", a boolean as "true"). Coerce against the schema before giving
-  // up so the call succeeds instead of failing strict validation.
-  const coerced = coerceToolInputToSchema(rawInput, schema);
-  if (coerced !== null) {
-    return coerced as CodingToolInputByName[K];
-  }
-
-  // Still invalid (e.g. a required field is genuinely missing) — surface the
-  // original, descriptive validation error.
-  return schema.parse(rawInput) as CodingToolInputByName[K];
-}
-
 export async function executeCodingTool<K extends CodingToolName>(
   toolName: K,
   input: CodingToolInputByName[K],
@@ -228,3 +202,4 @@ export async function executeCodingTool<K extends CodingToolName>(
 }
 
 export { isPermissionDeniedError } from "./permissions";
+export { parseCodingToolInput } from "./tool-input";

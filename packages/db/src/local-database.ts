@@ -103,6 +103,8 @@ export function initializeLocalDatabase(databaseUrl: string) {
         "id" TEXT NOT NULL PRIMARY KEY,
         "title" TEXT,
         "cwd" TEXT,
+        "workspace_device" TEXT,
+        "workspace_inode" TEXT,
         "mode" TEXT NOT NULL DEFAULT 'build',
         "permission_mode" TEXT,
         "model" TEXT,
@@ -309,6 +311,18 @@ function applyAdditiveMigrations(database: Database) {
   if (!sessionColumns.some((column) => column.name === "auto_titled")) {
     database.exec(
       'ALTER TABLE "sessions" ADD COLUMN "auto_titled" BOOLEAN NOT NULL DEFAULT 0',
+    );
+  }
+
+  if (!sessionColumns.some((column) => column.name === "workspace_device")) {
+    database.exec(
+      'ALTER TABLE "sessions" ADD COLUMN "workspace_device" TEXT',
+    );
+  }
+
+  if (!sessionColumns.some((column) => column.name === "workspace_inode")) {
+    database.exec(
+      'ALTER TABLE "sessions" ADD COLUMN "workspace_inode" TEXT',
     );
   }
 }

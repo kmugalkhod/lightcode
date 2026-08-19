@@ -4,6 +4,12 @@ import {
   getErrorMessage,
 } from "@lightcode/shared";
 import type { app as appInstance } from "./app";
+import {
+  acquireServerInstanceLock,
+  ServerInstanceLockError,
+  type ServerInstanceLock,
+} from "./lib/server-instance-lock";
+import { isLoopbackBindHost } from "./lib/server-bind-policy";
 
 export type AppType = typeof appInstance;
 
@@ -20,6 +26,64 @@ function isChatStreamingRoute(request: Request) {
   return /^\/sessions\/[^/]+\/(?:chat|turns)$/.test(pathname);
 }
 
+function serverLockFailureMessage(error: unknown): string {
+  if (
+    error instanceof ServerInstanceLockError &&
+    error.code === "server_already_running"
+  ) {
+    return [
+      "",
+      "Lightcode is already running:",
+      `  ${error.message}`,
+      "",
+      "Lightcode currently supports one CLI or browser server per data",
+      "directory. Stop the existing Lightcode session, then try again.",
+      `Lock: ${error.lockPath}`,
+      "",
+    ].join("\n");
+  }
+
+  if (error instanceof ServerInstanceLockError) {
+    return [
+      "",
+      "Lightcode could not safely claim its local data directory:",
+      `  ${error.message}`,
+      "",
+      "Do not remove the lock while another Lightcode process is running.",
+      `Lock: ${error.lockPath}`,
+      "",
+    ].join("\n");
+  }
+
+  return [
+    "",
+    "Lightcode could not claim its local data directory:",
+    `  ${getErrorMessage(error)}`,
+    "",
+  ].join("\n");
+}
+
+async function releaseServerLock(
+  instanceLock: ServerInstanceLock,
+  reason: string,
+) {
+  try {
+    const released = await instanceLock.release();
+    if (!released) {
+      logger.warn("server_lock_release_skipped", {
+        reason,
+        lockPath: instanceLock.lockPath,
+      });
+    }
+  } catch (error) {
+    logger.error("server_lock_release_failed", {
+      reason,
+      lockPath: instanceLock.lockPath,
+      error: getErrorMessage(error),
+    });
+  }
+}
+
 async function startServer() {
   const logDirectory = enableFileLogSink(Bun.env);
   if (logDirectory) {
@@ -29,14 +93,39 @@ async function startServer() {
   // Uncommon default on purpose: 3000 is what scaffolded user apps (Next.js,
   // CRA, Express) grab, and sharing it breaks the CLI<->server channel.
   const port = Number(Bun.env.PORT ?? 4983);
-  // Bind loopback-only by default: the server is a local companion process
-  // with no authentication and must not be reachable from the network.
+  // Bind loopback-only: this high-privilege local API can read and change a
+  // selected workspace and is never exposed on a LAN interface.
   const hostname = Bun.env.LIGHTCODE_HOST ?? "127.0.0.1";
+  if (!isLoopbackBindHost(hostname)) {
+    process.stderr.write(
+      [
+        "",
+        `Lightcode refused the non-loopback bind address: ${hostname}`,
+        "",
+        "The local agent API can read and change project files, so this",
+        "release only binds to 127.x.x.x or ::1.",
+        "",
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
+
+  let instanceLock: ServerInstanceLock;
+  try {
+    // Claim the persisted store before importing application modules or
+    // recovering interrupted runs. This prevents a CLI and browser server
+    // from independently repairing/mutating the same active-run records.
+    instanceLock = await acquireServerInstanceLock();
+  } catch (error) {
+    process.stderr.write(serverLockFailureMessage(error));
+    process.exit(1);
+  }
 
   let app: AppType;
   try {
     ({ app } = await import("./app"));
   } catch (error) {
+    await releaseServerLock(instanceLock, "app-import-failure");
     process.stderr.write(
       [
         "",
@@ -72,7 +161,6 @@ async function startServer() {
       });
     });
 
-  let server: ReturnType<typeof Bun.serve>;
   try {
     const { recoverInterruptedChatRuns } = await import(
       "./lib/chat-run-store"
@@ -81,6 +169,23 @@ async function startServer() {
     if (recoveredRuns > 0) {
       logger.warn("interrupted_chat_runs_recovered", { count: recoveredRuns });
     }
+  } catch (error) {
+    await releaseServerLock(instanceLock, "run-recovery-failure");
+    process.stderr.write(
+      [
+        "",
+        "Lightcode could not initialize its local session store:",
+        `  ${getErrorMessage(error)}`,
+        "",
+        "No server was started and the server lock was released.",
+        "",
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
+
+  let server: ReturnType<typeof Bun.serve>;
+  try {
     server = Bun.serve({
       idleTimeout: httpIdleTimeoutSeconds,
       port,
@@ -94,6 +199,7 @@ async function startServer() {
       },
     });
   } catch (error) {
+    await releaseServerLock(instanceLock, "bind-failure");
     process.stderr.write(
       [
         "",
@@ -117,19 +223,22 @@ async function startServer() {
     logger.info("server_shutdown", { signal });
 
     // Force-exit if in-flight streams keep the server alive too long.
-    const forceExitTimer = setTimeout(() => {
-      server.stop(true);
+    const forceExitTimer = setTimeout(async () => {
+      await server.stop(true);
+      await releaseServerLock(instanceLock, "forced-shutdown");
       process.exit(0);
     }, shutdownForceExitMs);
     forceExitTimer.unref();
 
-    server.stop();
+    await server.stop();
     try {
       const { prisma } = await import("./lib/prisma-client");
       await prisma.$disconnect();
     } catch {
       // Database may never have been touched; nothing to release.
     }
+
+    await releaseServerLock(instanceLock, "graceful-shutdown");
 
     process.exit(0);
   };

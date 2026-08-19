@@ -2,4 +2,4 @@
  * Single source of truth for the published version. The release script bumps
  * this together with the package manifest.
  */
-export const lightcodeVersion = "0.12.0";
+export const lightcodeVersion = "0.14.0";

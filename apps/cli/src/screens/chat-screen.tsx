@@ -15,6 +15,10 @@ import {
   sessionPathParamsSchema,
 } from "@lightcode/ai";
 import { useCodingSessionChat } from "@lightcode/ai/react";
+import {
+  createWorkspaceContext,
+  loadSessionTodos,
+} from "@lightcode/ai/runtime";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import type { FileUIPart, UIMessage } from "ai";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -92,6 +96,18 @@ const defaultPlanRevisionRequest =
   "Please revise the plan with a different approach and ask clarifying questions if needed.";
 const defaultPromptDismissResponse =
   "I want to skip this question for now. Please continue with reasonable assumptions and state them clearly.";
+
+const loadCodingSessionTodos = ({
+  sessionId,
+  cwd,
+}: {
+  sessionId: string;
+  cwd: string;
+}) =>
+  loadSessionTodos({
+    sessionId,
+    workspaceContext: createWorkspaceContext(cwd),
+  });
 const planConfirmationAcceptKeywords = [
   "yes",
   "y",
@@ -432,6 +448,7 @@ export function ChatScreen() {
     sessionId,
     skipHistoryLoad,
     cwd: sessionCwd,
+    loadTodos: loadCodingSessionTodos,
     mode,
     permissionMode,
     autoContinue: autoContinueConfig,

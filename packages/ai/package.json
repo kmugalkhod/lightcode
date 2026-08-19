@@ -6,6 +6,7 @@
     ".": "./src/index.ts",
     "./runtime": "./src/runtime.ts",
     "./react": "./src/react/index.ts",
+    "./tool-input": "./src/tool-input.ts",
     "./testing": "./src/parity/mock-provider.ts"
   },
   "scripts": {
@@ -16,7 +17,7 @@
     "@lightcode/shared": "workspace:*",
     "ai": "6.0.182",
     "diff": "^9.0.0",
-    "react": "^19.0.0",
+    "react": "19.2.6",
     "zod": "^4.4.3"
   }
 }

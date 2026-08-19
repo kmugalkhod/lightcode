@@ -30,4 +30,6 @@ export * from "./skills/runtime";
 export * from "./skills/schema";
 export * from "./subagent-schemas";
 export * from "./todo-write/schema";
+export * from "./tool-input";
 export * from "./web-search/config";
+export * from "./workspace-browser";

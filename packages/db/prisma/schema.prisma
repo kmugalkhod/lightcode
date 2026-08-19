@@ -60,6 +60,9 @@ model ChatSession {
   /** True once a title is pinned (user rename or LLM auto-title). */
   autoTitled       Boolean              @default(false) @map("auto_titled")
   cwd              String?
+  /** Canonical workspace directory identity; nullable only for legacy rows. */
+  workspaceDevice  String?              @map("workspace_device")
+  workspaceInode   String?              @map("workspace_inode")
   mode             String               @default("build")
   permissionMode   String?              @map("permission_mode")
   model            String?

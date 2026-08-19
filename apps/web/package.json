@@ -1,0 +1,19 @@
+{
+  "name": "@lightcode/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot index.html",
+    "build": "bun scripts/build.ts",
+    "typecheck": "bunx tsc --noEmit --project tsconfig.json",
+    "test": "bun test src"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "3.0.184",
+    "@lightcode/ai": "workspace:*",
+    "ai": "6.0.182",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "zod": "^4.4.3"
+  }
+}

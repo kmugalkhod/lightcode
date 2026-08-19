@@ -1,5 +1,5 @@
 import type { MessageRole, Prisma } from "@lightcode/db/types";
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import {
   codingAgentModeSchema,
@@ -28,6 +28,28 @@ export class SessionNotFoundError extends Error {
     super(`Session not found: ${sessionIdentifier}`);
     this.name = "SessionNotFoundError";
   }
+}
+
+export type SessionWorkspaceIdentityErrorCode =
+  | "workspace_unavailable"
+  | "workspace_replaced"
+  | "workspace_identity_unavailable";
+
+export class SessionWorkspaceIdentityError extends Error {
+  constructor(
+    readonly code: SessionWorkspaceIdentityErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "SessionWorkspaceIdentityError";
+  }
+}
+
+export interface SessionWorkspaceIdentity {
+  cwd: string;
+  device: string;
+  inode: string;
+  initializedLegacy: boolean;
 }
 
 type JsonPrimitive = string | number | boolean | null;
@@ -280,24 +302,236 @@ function isPrismaTransactionStartTimeoutError(error: unknown) {
   return getErrorCode(error) === "P2028";
 }
 
+interface CanonicalWorkspaceIdentity {
+  cwd: string;
+  device: string;
+  inode: string;
+}
+
+function toPortableWorkspaceIdentity(
+  metadata: { dev: bigint; ino: bigint },
+): Pick<CanonicalWorkspaceIdentity, "device" | "inode"> {
+  // Node does not expose a stable directory file id on every Windows
+  // filesystem. Canonical/no-symlink checks still apply there; Unix persists
+  // the native device+inode pair so a same-path replacement is detected.
+  if (metadata.ino === 0n) {
+    return { device: "unsupported", inode: "unsupported" };
+  }
+  return {
+    device: metadata.dev.toString(10),
+    inode: metadata.ino.toString(10),
+  };
+}
+
+async function readCanonicalWorkspaceIdentity(
+  cwd: string,
+  { requireAlreadyCanonical = false }: { requireAlreadyCanonical?: boolean } = {},
+): Promise<CanonicalWorkspaceIdentity> {
+  const resolved = path.resolve(cwd);
+  try {
+    const lexicalMetadata = await lstat(resolved, { bigint: true });
+    if (lexicalMetadata.isSymbolicLink()) {
+      throw new SessionWorkspaceIdentityError(
+        "workspace_replaced",
+        "The saved workspace root is now a symbolic link. Select the workspace again.",
+      );
+    }
+    if (!lexicalMetadata.isDirectory()) {
+      throw new SessionWorkspaceIdentityError(
+        "workspace_unavailable",
+        "The saved workspace root is not a directory.",
+      );
+    }
+
+    const canonical = await realpath(resolved);
+    if (requireAlreadyCanonical && canonical !== resolved) {
+      throw new SessionWorkspaceIdentityError(
+        "workspace_identity_unavailable",
+        "This legacy workspace path is not canonical. Select the workspace again before running tools.",
+      );
+    }
+    const canonicalMetadata = await lstat(canonical, { bigint: true });
+    if (
+      canonicalMetadata.isSymbolicLink() ||
+      !canonicalMetadata.isDirectory()
+    ) {
+      throw new SessionWorkspaceIdentityError(
+        "workspace_unavailable",
+        "The saved workspace root is not a real directory.",
+      );
+    }
+
+    return {
+      cwd: canonical,
+      ...toPortableWorkspaceIdentity(canonicalMetadata),
+    };
+  } catch (error) {
+    if (error instanceof SessionWorkspaceIdentityError) {
+      throw error;
+    }
+    const code = getErrorCode(error);
+    if (code === "EACCES" || code === "EPERM") {
+      throw new SessionWorkspaceIdentityError(
+        "workspace_unavailable",
+        "Lightcode no longer has permission to access this workspace.",
+      );
+    }
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw new SessionWorkspaceIdentityError(
+        "workspace_unavailable",
+        "The saved workspace no longer exists.",
+      );
+    }
+    throw error;
+  }
+}
+
+function workspaceIdentitiesMatch(
+  stored: { workspaceDevice: string; workspaceInode: string },
+  current: CanonicalWorkspaceIdentity,
+): boolean {
+  if (
+    stored.workspaceDevice === "unsupported" &&
+    stored.workspaceInode === "unsupported"
+  ) {
+    return current.device === "unsupported" && current.inode === "unsupported";
+  }
+  return (
+    stored.workspaceDevice === current.device &&
+    stored.workspaceInode === current.inode
+  );
+}
+
+/**
+ * Revalidates the server-authoritative workspace immediately before a run can
+ * read files or execute tools. Legacy rows initialize only when their saved
+ * root is already canonical and is a real directory—not a replacement link.
+ */
+export async function assertSessionWorkspaceIdentity(
+  sessionId: string,
+): Promise<SessionWorkspaceIdentity> {
+  const session = await prisma.chatSession.findUnique({
+    where: { id: sessionId },
+    select: {
+      id: true,
+      cwd: true,
+      workspaceDevice: true,
+      workspaceInode: true,
+    },
+  });
+  if (!session) {
+    throw new SessionNotFoundError(sessionId);
+  }
+  if (!session.cwd) {
+    throw new SessionWorkspaceIdentityError(
+      "workspace_unavailable",
+      "Session has no canonical workspace directory.",
+    );
+  }
+
+  const current = await readCanonicalWorkspaceIdentity(session.cwd, {
+    requireAlreadyCanonical: true,
+  });
+  const hasDevice = session.workspaceDevice !== null;
+  const hasInode = session.workspaceInode !== null;
+  if (hasDevice !== hasInode) {
+    throw new SessionWorkspaceIdentityError(
+      "workspace_identity_unavailable",
+      "The saved workspace identity is incomplete. Select the workspace again.",
+    );
+  }
+
+  if (!hasDevice || !hasInode) {
+    // Re-check after the first read, then initialize with an optimistic null
+    // predicate so concurrent legacy resumes cannot overwrite one another.
+    const confirmed = await readCanonicalWorkspaceIdentity(session.cwd, {
+      requireAlreadyCanonical: true,
+    });
+    if (
+      confirmed.cwd !== current.cwd ||
+      confirmed.device !== current.device ||
+      confirmed.inode !== current.inode
+    ) {
+      throw new SessionWorkspaceIdentityError(
+        "workspace_replaced",
+        "The workspace changed while its identity was being verified.",
+      );
+    }
+    const initialized = await prisma.chatSession.updateMany({
+      where: {
+        id: session.id,
+        cwd: session.cwd,
+        workspaceDevice: null,
+        workspaceInode: null,
+      },
+      data: {
+        workspaceDevice: confirmed.device,
+        workspaceInode: confirmed.inode,
+      },
+    });
+    if (initialized.count === 0) {
+      return assertSessionWorkspaceIdentity(sessionId);
+    }
+    return { ...confirmed, initializedLegacy: true };
+  }
+
+  if (session.workspaceDevice === null || session.workspaceInode === null) {
+    throw new SessionWorkspaceIdentityError(
+      "workspace_identity_unavailable",
+      "The saved workspace identity is incomplete. Select the workspace again.",
+    );
+  }
+
+  if (
+    !workspaceIdentitiesMatch(
+      {
+        workspaceDevice: session.workspaceDevice,
+        workspaceInode: session.workspaceInode,
+      },
+      current,
+    )
+  ) {
+    throw new SessionWorkspaceIdentityError(
+      "workspace_replaced",
+      "The workspace was replaced on disk. Select it again before running tools.",
+    );
+  }
+
+  return { ...current, initializedLegacy: false };
+}
+
 export async function createChatSession({
   cwd = process.cwd(),
   mode = defaultCodingAgentMode,
   permissionMode = null,
   model = null,
   title,
+  expectedWorkspaceIdentity,
 }: {
   cwd?: string;
   mode?: CodingAgentMode;
   permissionMode?: PermissionMode | null;
   model?: string | null;
   title?: string;
+  expectedWorkspaceIdentity?: { device: string; inode: string };
 } = {}): Promise<{ id: string }> {
-  const canonicalCwd = await realpath(path.resolve(cwd));
+  const workspace = await readCanonicalWorkspaceIdentity(cwd);
+  if (
+    expectedWorkspaceIdentity &&
+    (workspace.device !== expectedWorkspaceIdentity.device ||
+      workspace.inode !== expectedWorkspaceIdentity.inode)
+  ) {
+    throw new SessionWorkspaceIdentityError(
+      "workspace_replaced",
+      "The workspace changed before the session could be created. Select it again.",
+    );
+  }
   const createdSession = await prisma.chatSession.create({
     data: {
       id: crypto.randomUUID(),
-      cwd: canonicalCwd,
+      cwd: workspace.cwd,
+      workspaceDevice: workspace.device,
+      workspaceInode: workspace.inode,
       mode,
       permissionMode,
       model,
@@ -356,6 +590,13 @@ export async function persistChatMessages({
   mode?: CodingAgentMode;
   permissionMode?: PermissionMode | null;
 }): Promise<PersistChatMessagesResult> {
+  const existingSession = await prisma.chatSession.findUnique({
+    where: { id: sessionId },
+    select: { id: true },
+  });
+  const workspace = existingSession
+    ? await assertSessionWorkspaceIdentity(sessionId)
+    : await readCanonicalWorkspaceIdentity(cwd ?? process.cwd());
   const normalizedMessages = await normalizeAndValidateMessages(messages);
   const sessionTitle = deriveSessionTitle(normalizedMessages);
   const storedMessages = normalizedMessages.map((message, sequence) =>
@@ -375,7 +616,9 @@ export async function persistChatMessages({
             create: {
               id: sessionId,
               title: sessionTitle,
-              cwd: cwd ?? process.cwd(),
+              cwd: workspace.cwd,
+              workspaceDevice: workspace.device,
+              workspaceInode: workspace.inode,
               mode: mode ?? defaultCodingAgentMode,
               permissionMode: permissionMode ?? null,
               model: assistantModel,
@@ -460,11 +703,6 @@ export async function persistChatMessages({
               revision: {
                 increment: 1,
               },
-              ...(cwd
-                ? {
-                    cwd,
-                  }
-                : {}),
               ...(mode
                 ? {
                     mode,
@@ -827,6 +1065,8 @@ export async function forkChatSession(sessionId: string): Promise<{
       select: {
         title: true,
         cwd: true,
+        workspaceDevice: true,
+        workspaceInode: true,
         mode: true,
         permissionMode: true,
         model: true,

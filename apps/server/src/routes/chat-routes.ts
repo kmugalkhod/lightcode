@@ -30,7 +30,7 @@ import {
   type SessionMetadata,
 } from "@lightcode/ai";
 import { getErrorMessage } from "@lightcode/shared";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { convertToModelMessages, type UIMessage } from "ai";
 import {
   ChatInteractionNotFoundError,
@@ -46,6 +46,7 @@ import {
   undoSessionTurn,
 } from "../lib/chat-history-store";
 import {
+  assertSessionWorkspaceIdentity,
   createChatSession,
   deleteChatSession,
   exportChatSessionJson,
@@ -57,6 +58,7 @@ import {
   resolveChatSessionIdentifier,
   updateSessionMetadata,
   SessionNotFoundError,
+  SessionWorkspaceIdentityError,
 } from "../lib/chat-store";
 import {
   abortActiveRun,
@@ -106,6 +108,16 @@ import {
 } from "../lib/workspace-context";
 import { internalErrorResponse } from "./route-helpers";
 
+function sessionWorkspaceErrorResponse(
+  c: Context,
+  error: SessionWorkspaceIdentityError,
+) {
+  return c.json(
+    { error: error.message, code: error.code },
+    error.code === "workspace_unavailable" ? 404 : 409,
+  );
+}
+
 async function assembleStoredSessionProviderTurn({
   session,
   messages,
@@ -120,6 +132,7 @@ async function assembleStoredSessionProviderTurn({
   if (!session.cwd) {
     throw new Error("Session has no canonical workspace directory.");
   }
+  await assertSessionWorkspaceIdentity(session.id);
 
   const providerMessages = await materializeProviderAttachments({
     messages,
@@ -257,6 +270,9 @@ export const sessionRoutes = new Hono()
       });
       return c.json(session, 201);
     } catch (error) {
+      if (error instanceof SessionWorkspaceIdentityError) {
+        return sessionWorkspaceErrorResponse(c, error);
+      }
       return internalErrorResponse(c, {
         event: "session_create_failed",
         message: "Unable to create chat session.",
@@ -276,6 +292,9 @@ export const sessionRoutes = new Hono()
     } catch (error) {
       if (error instanceof SessionNotFoundError) {
         return c.json({ error: error.message }, 404);
+      }
+      if (error instanceof SessionWorkspaceIdentityError) {
+        return sessionWorkspaceErrorResponse(c, error);
       }
 
       return internalErrorResponse(c, {
@@ -334,6 +353,9 @@ export const sessionRoutes = new Hono()
       if (error instanceof SessionNotFoundError) {
         return c.json({ error: error.message }, 404);
       }
+      if (error instanceof SessionWorkspaceIdentityError) {
+        return sessionWorkspaceErrorResponse(c, error);
+      }
 
       return internalErrorResponse(c, {
         event: "session_context_load_failed",
@@ -375,6 +397,7 @@ export const sessionRoutes = new Hono()
         );
       }
 
+      await assertSessionWorkspaceIdentity(sessionId);
       const compaction = await compactSessionContext({
         sessionId,
         coveredMessages: view.coveredMessages,
@@ -398,6 +421,9 @@ export const sessionRoutes = new Hono()
     } catch (error) {
       if (error instanceof SessionNotFoundError) {
         return c.json({ error: error.message }, 404);
+      }
+      if (error instanceof SessionWorkspaceIdentityError) {
+        return sessionWorkspaceErrorResponse(c, error);
       }
 
       return internalErrorResponse(c, {
@@ -673,6 +699,14 @@ export const sessionRoutes = new Hono()
           409,
         );
       }
+      try {
+        await assertSessionWorkspaceIdentity(sessionId);
+      } catch (error) {
+        if (error instanceof SessionWorkspaceIdentityError) {
+          return sessionWorkspaceErrorResponse(c, error);
+        }
+        throw error;
+      }
       const providerWebSearchGate = resolveProviderWebSearchGate({
         capability: resolvedProviderModel.webSearchCapability,
         providerToolAvailable: Boolean(
@@ -839,6 +873,9 @@ export const sessionRoutes = new Hono()
         if (error instanceof SessionNotFoundError) {
           return c.json({ error: error.message }, 404);
         }
+        if (error instanceof SessionWorkspaceIdentityError) {
+          return sessionWorkspaceErrorResponse(c, error);
+        }
         return internalErrorResponse(c, {
           event: "session_turn_failed",
           message: "Unable to start the session turn.",
@@ -854,6 +891,7 @@ export const sessionRoutes = new Hono()
       const { id } = c.req.valid("param");
       try {
         const sessionId = await resolveChatSessionIdentifier(id);
+        await assertSessionWorkspaceIdentity(sessionId);
         const activeRunId = getActiveRunId(sessionId);
         if (activeRunId) {
           return c.json(
@@ -880,6 +918,9 @@ export const sessionRoutes = new Hono()
         ) {
           return c.json({ error: error.message, code: "history_conflict" }, 409);
         }
+        if (error instanceof SessionWorkspaceIdentityError) {
+          return sessionWorkspaceErrorResponse(c, error);
+        }
         return internalErrorResponse(c, {
           event: "session_undo_failed",
           message: "Unable to undo the latest session turn.",
@@ -895,6 +936,7 @@ export const sessionRoutes = new Hono()
       const { id } = c.req.valid("param");
       try {
         const sessionId = await resolveChatSessionIdentifier(id);
+        await assertSessionWorkspaceIdentity(sessionId);
         const activeRunId = getActiveRunId(sessionId);
         if (activeRunId) {
           return c.json(
@@ -920,6 +962,9 @@ export const sessionRoutes = new Hono()
           error instanceof CheckpointConflictError
         ) {
           return c.json({ error: error.message, code: "history_conflict" }, 409);
+        }
+        if (error instanceof SessionWorkspaceIdentityError) {
+          return sessionWorkspaceErrorResponse(c, error);
         }
         return internalErrorResponse(c, {
           event: "session_redo_failed",
