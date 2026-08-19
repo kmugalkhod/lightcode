@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatSurface } from "./components/chat-surface";
+import { CommandComposer } from "./components/command-composer";
 import { Icon } from "./components/icons";
 import { ProjectBrowser } from "./components/project-browser";
 import { SessionRail } from "./components/session-rail";
@@ -17,6 +18,11 @@ import {
   type Session,
   type Workspace,
 } from "./lib/api";
+import type { SlashCommandDefinition } from "./lib/slash-command-registry";
+import {
+  executeWebCommand,
+  type CommandResult,
+} from "./lib/web-command-executor";
 
 const activeSessionStorageKey = "lightcode.web.active-session";
 const newSessionMode: CodingMode = "plan";
@@ -130,11 +136,22 @@ export function App() {
       setSessionError(null);
       try {
         const createdReference = await api.createSession({ workspaceId: workspace.id, mode, permissionMode });
-        const loaded = await api.loadSession(createdReference.id);
-        if (!loaded.session) {
-          throw new Error("Lightcode created the session but could not load it.");
-        }
-        const created = loaded.session;
+        const now = new Date().toISOString();
+        const created: Session = {
+          id: createdReference.id,
+          title: null,
+          cwd: null,
+          pathLabel: workspace.pathLabel,
+          workspaceId: workspace.id,
+          mode,
+          permissionMode,
+          model: providerStatus?.selectedModel ?? null,
+          revision: 0,
+          messageCount: 0,
+          latestUserPromptPreview: null,
+          createdAt: now,
+          updatedAt: now,
+        };
         setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)]);
         setActiveSession(created);
         safeSessionStorage().setItem(activeSessionStorageKey, created.id);
@@ -145,7 +162,7 @@ export function App() {
         setIsCreating(false);
       }
     },
-    [api, isCreating, mode, permissionMode, workspace],
+    [api, isCreating, mode, permissionMode, providerStatus?.selectedModel, workspace],
   );
 
   function openProjectBrowser() {
@@ -247,6 +264,30 @@ export function App() {
     }
   }
 
+  const applyPermissionModeLocally = useCallback((nextMode: PermissionMode) => {
+    setPermissionMode(nextMode);
+    setActiveSession((current) => current ? { ...current, permissionMode: nextMode } : current);
+    setSessions((current) => current.map((entry) =>
+      entry.id === activeSession?.id ? { ...entry, permissionMode: nextMode } : entry
+    ));
+  }, [activeSession?.id]);
+
+  async function persistPermissionMode(nextMode: PermissionMode) {
+    if (mode === "plan" && nextMode !== "read-only") return;
+    if (!activeSession) {
+      setPermissionMode(nextMode);
+      return;
+    }
+    setSessionError(null);
+    try {
+      const updated = await api?.updateSessionPermission(activeSession.id, nextMode);
+      if (!updated) return;
+      applyPermissionModeLocally(nextMode);
+    } catch (cause) {
+      setSessionError(cause instanceof Error ? cause.message : "Unable to update permission mode.");
+    }
+  }
+
   if (!token || authorizationError) {
     return <AuthorizationGate detail={authorizationError} />;
   }
@@ -282,7 +323,7 @@ export function App() {
           onOpenMenu={openRail}
           onOpenProject={openProjectBrowser}
           onModeChange={setMode}
-          onPermissionModeChange={setPermissionMode}
+          onPermissionModeChange={(nextMode) => void persistPermissionMode(nextMode)}
         />
 
         {activeSession ? (
@@ -294,16 +335,33 @@ export function App() {
             workspace={workspace}
             mode={mode}
             permissionMode={permissionMode}
+            providerStatus={providerStatus}
+            sessions={sessions}
             initialPrompt={initialPrompt?.sessionId === activeSession.id ? initialPrompt.text : undefined}
             onRunStateChange={setIsRunning}
             onSessionUpdated={() => void loadSessions()}
+            onNewSession={beginNewSession}
+            onOpenSessions={openRail}
+            onSelectSession={selectSession}
+            onPermissionModeChange={applyPermissionModeLocally}
+            onProviderStatusChange={setProviderStatus}
           />
         ) : (
           <NewSessionSurface
+            api={api}
             workspace={workspace}
+            sessions={sessions}
+            mode={mode}
+            permissionMode={permissionMode}
+            providerStatus={providerStatus}
             isCreating={isCreating}
             error={sessionError}
             onChooseProject={openProjectBrowser}
+            onNewSession={beginNewSession}
+            onOpenSessions={openRail}
+            onSelectSession={selectSession}
+            onPermissionModeChange={applyPermissionModeLocally}
+            onProviderStatusChange={setProviderStatus}
             onStart={(prompt) => void createSession(prompt)}
           />
         )}
@@ -334,30 +392,72 @@ function AuthorizationGate({ detail }: { detail?: string | null }) {
 }
 
 function NewSessionSurface({
+  api,
   workspace,
+  sessions,
+  mode,
+  permissionMode,
+  providerStatus,
   isCreating,
   error,
   onChooseProject,
+  onNewSession,
+  onOpenSessions,
+  onSelectSession,
+  onPermissionModeChange,
+  onProviderStatusChange,
   onStart,
 }: {
+  api: ReturnType<typeof createLightcodeApi>;
   workspace: Workspace | null;
+  sessions: Session[];
+  mode: CodingMode;
+  permissionMode: PermissionMode;
+  providerStatus: ProviderStatus | null;
   isCreating: boolean;
   error: string | null;
   onChooseProject: () => void;
+  onNewSession: () => void;
+  onOpenSessions: () => void;
+  onSelectSession: (session: Session) => void;
+  onPermissionModeChange: (mode: PermissionMode) => void;
+  onProviderStatusChange: (status: ProviderStatus) => void;
   onStart: (prompt: string) => void;
 }) {
-  const [value, setValue] = useState("");
+  const [commandResult, setCommandResult] = useState<CommandResult | null>(null);
+  const [commandBusy, setCommandBusy] = useState<string | null>(null);
 
-  function send() {
-    if (!workspace || !value.trim() || isCreating) return;
-    onStart(value.trim());
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      send();
+  async function runCommand(
+    command: SlashCommandDefinition,
+    args: string,
+    available: boolean,
+  ) {
+    if (!available) {
+      setCommandResult({
+        title: `${command.command} needs a session`,
+        detail: "Start or open a session, then run the command again.",
+        tone: "error",
+      });
+      return;
     }
+    setCommandResult(null);
+    setCommandBusy(command.id);
+    const next = await executeWebCommand(command.id, args, {
+      api,
+      messages: [],
+      sessions,
+      mode,
+      permissionMode,
+      providerStatus,
+      isStreaming: false,
+      onNewSession,
+      onOpenSessions,
+      onSelectSession,
+      onPermissionModeChange,
+      onProviderStatusChange,
+    });
+    setCommandBusy(null);
+    setCommandResult(next);
   }
 
   return (
@@ -375,24 +475,26 @@ function NewSessionSurface({
           </div>
         </div>
 
-        <div className="starter-composer">
-          <textarea
-            value={value}
-            rows={3}
-            disabled={!workspace || isCreating}
-            aria-label="First message to Lightcode"
-            placeholder={workspace ? "What are you building?" : "Choose a project first"}
-            onChange={(event) => setValue(event.currentTarget.value)}
-            onKeyDown={handleKeyDown}
-            autoFocus={Boolean(workspace)}
-          />
-          <div className="starter-toolbar">
-            <span><Icon name="agent" size={16} />Agent</span>
-            <button className="send-button" type="button" onClick={send} disabled={!workspace || !value.trim() || isCreating} aria-label="Create session and send">
-              {isCreating ? <span className="button-loading" /> : <Icon name="arrow-up" size={17} />}
-            </button>
-          </div>
-        </div>
+        <CommandComposer
+          appearance="starter"
+          hasSession={false}
+          canSendMessage={Boolean(workspace) && !isCreating}
+          autoFocus={Boolean(workspace)}
+          placeholder={workspace ? "What are you building? Type / for commands" : "Type / for commands, or choose a project first"}
+          commandResult={commandResult}
+          commandBusy={commandBusy}
+          onDismissResult={() => setCommandResult(null)}
+          onSubmit={(text) => {
+            setCommandResult(null);
+            onStart(text);
+          }}
+          onCommand={(command, args, available) => void runCommand(command, args, available)}
+          onUnknownCommand={(invokedAs) => setCommandResult({
+            title: `Unknown command ${invokedAs}`,
+            detail: "Type / to see every available command.",
+            tone: "error",
+          })}
+        />
         {error ? <div className="new-session-error" role="alert"><Icon name="warning" size={16} />{error}</div> : null}
         <div className="starter-suggestions" aria-label="Suggested prompts">
           {["Explain this project", "Find the highest-risk issue", "Plan the next change"].map((suggestion) => (

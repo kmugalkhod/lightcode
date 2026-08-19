@@ -7,6 +7,7 @@ import {
   isRecoverableChatErrorMessage,
   normalizeChatErrorMessage,
   scanRunCursorText,
+  shouldMonitorChatResponseBody,
   sanitizeMessagesForRetry,
 } from "./use-coding-session-chat";
 
@@ -207,6 +208,16 @@ describe("sanitizeMessagesForRetry", () => {
 });
 
 describe("run stream resumption helpers", () => {
+  test("does not wrap statuses that forbid response bodies", () => {
+    const body = new Response("stream data").body;
+    expect(body).not.toBeNull();
+    expect(shouldMonitorChatResponseBody({ body, status: 200 })).toBe(true);
+    expect(shouldMonitorChatResponseBody({ body, status: 204 })).toBe(false);
+    expect(shouldMonitorChatResponseBody({ body, status: 205 })).toBe(false);
+    expect(shouldMonitorChatResponseBody({ body, status: 304 })).toBe(false);
+    expect(shouldMonitorChatResponseBody({ body: null, status: 200 })).toBe(false);
+  });
+
   test("builds discovery and run-specific resume URLs without stale query data", () => {
     expect(
       buildSessionRunResumeUrl({

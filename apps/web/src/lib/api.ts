@@ -34,6 +34,13 @@ export const sessionSchema = z
   .passthrough();
 export type Session = z.infer<typeof sessionSchema>;
 
+const sessionPermissionUpdateSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().nullable(),
+  permissionMode: permissionModeSchema.nullable(),
+});
+export type SessionPermissionUpdate = z.infer<typeof sessionPermissionUpdateSchema>;
+
 export const sessionListSchema = z.object({
   sessions: z.array(sessionSchema),
 });
@@ -49,8 +56,189 @@ const providerStatusSchema = z.object({
   selectedProvider: z.string().min(1),
   selectedModel: z.string().min(1),
   missingCredentialHints: z.array(z.string()),
-});
+  configuredModel: z.string().nullable().optional(),
+  baseUrl: z.string().nullable().optional(),
+  defaultMode: codingModeSchema.optional(),
+  permissionMode: permissionModeSchema.nullable().optional(),
+  maxOutputTokens: z.number().int().positive().optional(),
+  maxSteps: z.number().int().positive().optional(),
+  contextWindow: z.number().int().positive().optional(),
+  pricing: z
+    .object({
+      inputPerMTok: z.number().nonnegative(),
+      outputPerMTok: z.number().nonnegative(),
+      cachedInputPerMTok: z.number().nonnegative().nullable(),
+    })
+    .nullable()
+    .optional(),
+  webSearch: z
+    .object({
+      available: z.boolean(),
+      backend: z.string(),
+      execution: z.string(),
+      reason: z.string().nullable().optional(),
+    })
+    .passthrough()
+    .optional(),
+}).passthrough();
 export type ProviderStatus = z.infer<typeof providerStatusSchema>;
+
+const contextReportSchema = z.object({
+  estimate: z.object({ tokens: z.number().nonnegative(), basis: z.string() }),
+  contextWindow: z.number().int().positive(),
+  breakdown: z.object({
+    systemTokens: z.number().int().nonnegative(),
+    toolTokens: z.number().int().nonnegative(),
+    messageTokens: z.number().int().nonnegative(),
+    mediaTokens: z.number().int().nonnegative(),
+    inputTokens: z.number().int().nonnegative(),
+    inputBudgetTokens: z.number().int().nonnegative(),
+    messageBudgetTokens: z.number().int().nonnegative(),
+    reservedOutputTokens: z.number().int().nonnegative(),
+    contextWindow: z.number().int().positive(),
+    remainingTokens: z.number().int().nonnegative(),
+    compactedTokens: z.number().int().nonnegative(),
+  }),
+  withinBudget: z.boolean(),
+}).passthrough();
+export type ContextReport = z.infer<typeof contextReportSchema>;
+
+const compactResultSchema = z.object({
+  contextState: z.unknown(),
+  usedFallback: z.boolean(),
+});
+
+const historyActionResultSchema = z.object({
+  turnKey: z.string().min(1),
+  restoredFiles: z.array(z.string()),
+  messageCount: z.number().int().nonnegative(),
+  revision: z.number().int().nonnegative(),
+});
+export type HistoryActionResult = z.infer<typeof historyActionResultSchema>;
+
+const sessionExportSchema = z.object({
+  exportedAt: z.string().min(1),
+  session: sessionSchema,
+  messages: z.array(z.json()),
+});
+export type SessionExport = z.infer<typeof sessionExportSchema>;
+
+const skillListSchema = z.object({
+  skills: z.array(z.object({
+    name: z.string().min(1),
+    description: z.string().nullable(),
+    path: z.string().min(1),
+    source: z.enum(["project", "user"]),
+  })),
+});
+export type SkillList = z.infer<typeof skillListSchema>;
+
+const diagnosticStateSchema = z.enum(["ok", "warn", "error"]);
+const diagnosticCheckSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  status: diagnosticStateSchema,
+  summary: z.string().min(1),
+  details: z.array(z.string()).default([]),
+});
+const diagnosticsStatusSchema = z.object({
+  server: z.object({
+    status: diagnosticStateSchema,
+    name: z.string(),
+    uptimeSeconds: z.number().nonnegative(),
+    platform: z.string(),
+    bunVersion: z.string().nullable(),
+  }),
+  provider: z.object({
+    status: diagnosticStateSchema,
+    provider: z.string(),
+    model: z.string(),
+    missingCredentialHints: z.array(z.string()),
+  }).passthrough(),
+  database: z.object({
+    status: diagnosticStateSchema,
+    reachable: z.boolean(),
+    sessionCount: z.number().int().nonnegative().nullable(),
+    messageCount: z.number().int().nonnegative().nullable(),
+    error: z.string().nullable(),
+  }),
+  tools: z.object({
+    total: z.number().int().nonnegative(),
+    readOnly: z.number().int().nonnegative(),
+    workspaceWrite: z.number().int().nonnegative(),
+    dangerFullAccess: z.number().int().nonnegative(),
+  }).passthrough(),
+  webSearch: z.object({
+    available: z.boolean(),
+    backend: z.string(),
+    execution: z.string(),
+    reason: z.string().nullable().optional(),
+  }).passthrough(),
+  extensions: z.object({
+    skills: z.object({ count: z.number().int().nonnegative() }),
+    mcp: z.object({
+      configuredServers: z.number().int().nonnegative(),
+      runningServers: z.number().int().nonnegative(),
+      degradedServers: z.number().int().nonnegative(),
+    }).passthrough(),
+    plugins: z.object({ count: z.number().int().nonnegative() }).passthrough(),
+  }),
+}).passthrough();
+export type DiagnosticsStatus = z.infer<typeof diagnosticsStatusSchema>;
+
+const diagnosticsDoctorSchema = z.object({
+  status: diagnosticStateSchema,
+  checks: z.array(diagnosticCheckSchema),
+}).passthrough();
+export type DiagnosticsDoctor = z.infer<typeof diagnosticsDoctorSchema>;
+
+const diagnosticsPermissionsSchema = z.object({
+  defaultMode: codingModeSchema,
+  effectivePermissionMode: permissionModeSchema,
+  configuredPermissionMode: permissionModeSchema.nullable(),
+  allowedTools: z.array(z.string()).nullable(),
+  rules: z.object({
+    allow: z.array(z.string()).optional(),
+    deny: z.array(z.string()).optional(),
+    ask: z.array(z.string()).optional(),
+    deniedTools: z.array(z.string()).optional(),
+  }),
+  sandbox: z.object({}).passthrough(),
+  pendingApprovalsPersisted: z.boolean(),
+  notes: z.array(z.string()),
+}).passthrough();
+export type DiagnosticsPermissions = z.infer<typeof diagnosticsPermissionsSchema>;
+
+const diagnosticsToolsSchema = z.object({
+  summary: z.object({
+    total: z.number().int().nonnegative(),
+    readOnly: z.number().int().nonnegative(),
+    workspaceWrite: z.number().int().nonnegative(),
+    dangerFullAccess: z.number().int().nonnegative(),
+  }).passthrough(),
+  tools: z.array(z.object({
+    name: z.string(),
+    description: z.string(),
+    permissionMode: permissionModeSchema,
+    activeInModes: z.array(codingModeSchema),
+    availability: z.string(),
+  }).passthrough()),
+}).passthrough();
+export type DiagnosticsTools = z.infer<typeof diagnosticsToolsSchema>;
+
+const modelListSchema = z.object({
+  provider: z.string(),
+  fromCache: z.boolean(),
+  models: z.array(z.object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    contextLength: z.number().int().positive().nullable(),
+    maxCompletionTokens: z.number().int().positive().nullable(),
+    supportsTools: z.boolean(),
+    supportsReasoning: z.boolean(),
+  }).passthrough()),
+}).passthrough();
+export type ModelList = z.infer<typeof modelListSchema>;
 
 export const workspaceLocationSchema = z
   .object({
@@ -385,6 +573,79 @@ export function createLightcodeApi(fetcher: AuthenticatedFetch) {
       return providerStatusSchema.parse(await request("/config/status"));
     },
 
+    async getContext(sessionId: string): Promise<ContextReport> {
+      return contextReportSchema.parse(
+        await request(`/sessions/${encodeURIComponent(sessionId)}/context`),
+      );
+    },
+
+    async compactSession(sessionId: string) {
+      return compactResultSchema.parse(
+        await request(`/sessions/${encodeURIComponent(sessionId)}/compact`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+      );
+    },
+
+    async changeSessionHistory(sessionId: string, action: "undo" | "redo") {
+      return historyActionResultSchema.parse(
+        await request(`/sessions/${encodeURIComponent(sessionId)}/${action}`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+      );
+    },
+
+    async exportSession(sessionId: string): Promise<SessionExport> {
+      return sessionExportSchema.parse(
+        await request(`/sessions/${encodeURIComponent(sessionId)}/export`),
+      );
+    },
+
+    async listSkills(sessionId: string): Promise<SkillList> {
+      return skillListSchema.parse(
+        await request(`/extensions/skills?sessionId=${encodeURIComponent(sessionId)}`),
+      );
+    },
+
+    async getDiagnosticsStatus(): Promise<DiagnosticsStatus> {
+      return diagnosticsStatusSchema.parse(await request("/diagnostics/status"));
+    },
+
+    async runDoctor(): Promise<DiagnosticsDoctor> {
+      return diagnosticsDoctorSchema.parse(await request("/diagnostics/doctor"));
+    },
+
+    async getDiagnosticsPermissions(): Promise<DiagnosticsPermissions> {
+      return diagnosticsPermissionsSchema.parse(
+        await request("/diagnostics/permissions"),
+      );
+    },
+
+    async getDiagnosticsTools(): Promise<DiagnosticsTools> {
+      return diagnosticsToolsSchema.parse(await request("/diagnostics/tools"));
+    },
+
+    async listModels(provider: string): Promise<ModelList> {
+      return modelListSchema.parse(
+        await request(`/config/models?provider=${encodeURIComponent(provider)}`),
+      );
+    },
+
+    async selectModel(provider: string, model: string): Promise<ProviderStatus> {
+      const payload = z.object({
+        ok: z.literal(true),
+        configStatus: providerStatusSchema,
+      }).passthrough().parse(
+        await request("/config/model", {
+          method: "PUT",
+          body: JSON.stringify({ provider, model }),
+        }),
+      );
+      return payload.configStatus;
+    },
+
     async createSession({
       workspaceId,
       mode,
@@ -407,6 +668,18 @@ export function createLightcodeApi(fetcher: AuthenticatedFetch) {
     async loadSession(sessionId: string): Promise<SessionMessages> {
       return sessionMessagesSchema.parse(
         await request(`/sessions/${encodeURIComponent(sessionId)}/messages`),
+      );
+    },
+
+    async updateSessionPermission(
+      sessionId: string,
+      permissionMode: PermissionMode,
+    ): Promise<SessionPermissionUpdate> {
+      return sessionPermissionUpdateSchema.parse(
+        await request(`/sessions/${encodeURIComponent(sessionId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ permissionMode }),
+        }),
       );
     },
 

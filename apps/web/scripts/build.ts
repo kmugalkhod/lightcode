@@ -17,6 +17,7 @@ const result = Bun.spawnSync(
     "dist",
     "--target",
     "browser",
+    "--production",
     "--minify",
   ],
   {

@@ -1,5 +1,5 @@
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
-import { Fragment, useMemo, useState, type ReactNode } from "react";
+import { Fragment, memo, useMemo, useState, type ReactNode } from "react";
 import { Icon } from "./icons";
 
 interface ChatMessageProps {
@@ -42,7 +42,7 @@ function inlineMarkdown(value: string, keyPrefix: string): ReactNode[] {
   return result;
 }
 
-function MarkdownText({ value, blockKey }: { value: string; blockKey: string }) {
+const MarkdownText = memo(function MarkdownText({ value, blockKey }: { value: string; blockKey: string }) {
   const lines = value.replaceAll("\r\n", "\n").split("\n");
   const blocks: ReactNode[] = [];
   let index = 0;
@@ -133,9 +133,9 @@ function MarkdownText({ value, blockKey }: { value: string; blockKey: string }) 
   }
 
   return blocks;
-}
+});
 
-function TextPart({ text }: { text: string }) {
+const CompletedTextPart = memo(function CompletedTextPart({ text }: { text: string }) {
   const blocks = useMemo(() => {
     const result: Array<
       | { kind: "text"; value: string }
@@ -178,7 +178,15 @@ function TextPart({ text }: { text: string }) {
       )}
     </div>
   );
-}
+});
+
+const TextPart = memo(function TextPart({ text, streaming = false }: { text: string; streaming?: boolean }) {
+  return streaming ? (
+    <div className="message-text streaming-message-text">
+      <p>{text}</p>
+    </div>
+  ) : <CompletedTextPart text={text} />;
+});
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
@@ -276,7 +284,7 @@ function ToolPart({ part }: { part: Extract<UIMessage["parts"][number], { toolCa
   );
 }
 
-export function ChatMessage({ message }: ChatMessageProps) {
+export const ChatMessage = memo(function ChatMessage({ message }: ChatMessageProps) {
   const roleLabel = message.role === "user" ? "You" : message.role === "assistant" ? "Lightcode" : "System";
   const visibleParts = message.parts.filter((part) => part.type !== "step-start");
   if (visibleParts.length === 0) return null;
@@ -292,7 +300,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
       <div className="message-parts">
         {visibleParts.map((part, index) => {
           const key = `${message.id}-${part.type}-${index}`;
-          if (part.type === "text") return <TextPart key={key} text={part.text} />;
+          if (part.type === "text") return <TextPart key={key} text={part.text} streaming={part.state === "streaming"} />;
           if (part.type === "reasoning") {
             return (
               <details className="reasoning-part" key={key}>
@@ -322,4 +330,4 @@ export function ChatMessage({ message }: ChatMessageProps) {
       </div>
     </article>
   );
-}
+});

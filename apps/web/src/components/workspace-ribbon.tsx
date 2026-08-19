@@ -57,6 +57,7 @@ export function WorkspaceRibbon({
     : needsProviderSetup
       ? providerStatus?.missingCredentialHints.join(" ")
       : undefined;
+  const effectivePermissionMode = mode === "plan" ? "read-only" : permissionMode;
 
   return (
     <header className="workspace-ribbon">
@@ -96,13 +97,16 @@ export function WorkspaceRibbon({
         <Icon name="chevron-down" size={13} />
       </label>
 
-      <label className="ribbon-select permission-select" title={`Permission: ${permissionLabels[permissionMode]}`}>
+      <label
+        className="ribbon-select permission-select"
+        title={mode === "plan" ? "Permission: Read (Plan mode is always read-only)" : `Permission: ${permissionLabels[permissionMode]}`}
+      >
         <span className="sr-only">Permission mode</span>
         <Icon name="shield" size={15} />
         <select
-          value={permissionMode}
+          value={effectivePermissionMode}
           onChange={(event) => onPermissionModeChange(event.currentTarget.value as PermissionMode)}
-          disabled={isRunning}
+          disabled={isRunning || mode === "plan"}
         >
           {Object.entries(permissionLabels).map(([value, label]) => (
             <option key={value} value={value}>{label}</option>

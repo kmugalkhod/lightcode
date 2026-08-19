@@ -110,6 +110,17 @@ export function scanRunCursorText(
   };
 }
 
+export function shouldMonitorChatResponseBody(
+  response: Pick<Response, "body" | "status">,
+): boolean {
+  return Boolean(
+    response.body &&
+    response.status !== 204 &&
+    response.status !== 205 &&
+    response.status !== 304,
+  );
+}
+
 export function buildSessionRunResumeUrl({
   chatApi,
   runId,
@@ -911,7 +922,11 @@ export function useCodingSessionChat({
       }
       lastStreamActivityRef.current = Date.now();
 
-      if (!response.body) {
+      if (!shouldMonitorChatResponseBody(response)) {
+        return response;
+      }
+      const responseBody = response.body;
+      if (!responseBody) {
         return response;
       }
 
@@ -920,7 +935,7 @@ export function useCodingSessionChat({
         carry: "",
         cursor: runCursorRef.current,
       };
-      const monitoredBody = response.body.pipeThrough(
+      const monitoredBody = responseBody.pipeThrough(
         new TransformStream<Uint8Array, Uint8Array>({
           transform(chunk, controller) {
             lastStreamActivityRef.current = Date.now();

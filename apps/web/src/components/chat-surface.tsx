@@ -1,15 +1,22 @@
 import type { PendingToolApproval, PendingUserPrompt } from "@lightcode/ai/react";
 import { useCodingSessionChat } from "@lightcode/ai/react";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import type {
   CodingMode,
   LightcodeApi,
   PermissionMode,
+  ProviderStatus,
   Session,
   Workspace,
 } from "../lib/api";
+import type { SlashCommandDefinition } from "../lib/slash-command-registry";
+import {
+  executeWebCommand,
+  type CommandResult,
+} from "../lib/web-command-executor";
 import { ChatMessage } from "./chat-message";
+import { CommandComposer } from "./command-composer";
 import { Icon } from "./icons";
 
 interface ChatSurfaceProps {
@@ -19,9 +26,16 @@ interface ChatSurfaceProps {
   workspace: Workspace | null;
   mode: CodingMode;
   permissionMode: PermissionMode;
+  providerStatus: ProviderStatus | null;
+  sessions: Session[];
   initialPrompt?: string;
   onRunStateChange: (running: boolean) => void;
   onSessionUpdated: () => void;
+  onNewSession: () => void;
+  onOpenSessions: () => void;
+  onSelectSession: (session: Session) => void;
+  onPermissionModeChange: (mode: PermissionMode) => void;
+  onProviderStatusChange: (status: ProviderStatus) => void;
 }
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -33,9 +47,16 @@ export function ChatSurface({
   workspace,
   mode,
   permissionMode,
+  providerStatus,
+  sessions,
   initialPrompt,
   onRunStateChange,
   onSessionUpdated,
+  onNewSession,
+  onOpenSessions,
+  onSelectSession,
+  onPermissionModeChange,
+  onProviderStatusChange,
 }: ChatSurfaceProps) {
   const chat = useCodingSessionChat({
     chatApi: `/sessions/${encodeURIComponent(session.id)}/turns`,
@@ -57,8 +78,11 @@ export function ChatSurface({
       api.resolveInteraction(session.id, toolCallId, resolution),
   });
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const followOutputRef = useRef(true);
   const previousStreamingRef = useRef(false);
+  const [commandResult, setCommandResult] = useState<CommandResult | null>(null);
+  const [commandBusy, setCommandBusy] = useState<string | null>(null);
 
   useEffect(() => {
     onRunStateChange(chat.isStreaming);
@@ -71,13 +95,65 @@ export function ChatSurface({
   useEffect(() => {
     const element = scrollRef.current;
     if (!element || !followOutputRef.current) return;
-    element.scrollTo({ top: element.scrollHeight, behavior: chat.isStreaming ? "auto" : "smooth" });
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      if (followOutputRef.current) {
+        element.scrollTop = element.scrollHeight;
+      }
+    });
   }, [chat.isStreaming, chat.messages]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
+  }, []);
 
   function handleScroll() {
     const element = scrollRef.current;
     if (!element) return;
     followOutputRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 140;
+  }
+
+  async function runCommand(
+    command: SlashCommandDefinition,
+    args: string,
+    available: boolean,
+  ) {
+    if (!available) {
+      setCommandResult({
+        title: `${command.command} needs a session`,
+        detail: "Start or open a session, then run the command again.",
+        tone: "error",
+      });
+      return;
+    }
+    setCommandResult(null);
+    setCommandBusy(command.id);
+    const next = await executeWebCommand(command.id, args, {
+      api,
+      sessionId: session.id,
+      messages: chat.messages as UIMessage[],
+      sessions,
+      mode,
+      permissionMode,
+      providerStatus,
+      isStreaming: chat.isStreaming,
+      abortActiveRun: chat.abortActiveRun,
+      refreshMessages: chat.refreshPersistedMessages,
+      onSessionUpdated,
+      onNewSession,
+      onOpenSessions,
+      onSelectSession,
+      onPermissionModeChange,
+      onProviderStatusChange,
+    });
+    setCommandBusy(null);
+    setCommandResult(next);
   }
 
   return (
@@ -124,14 +200,29 @@ export function ChatSurface({
             <PromptDock key={prompt.toolCallId} prompt={prompt} onRespond={chat.respondToUserPrompt} />
           ))}
 
-          <Composer
-            disabled={chat.isLoading || chat.pendingApprovals.length > 0 || chat.pendingUserPrompts.length > 0}
+          <CommandComposer
+            appearance="conversation"
+            hasSession
+            canSendMessage={!chat.isLoading && chat.pendingApprovals.length === 0 && chat.pendingUserPrompts.length === 0}
             isStreaming={chat.isStreaming}
+            placeholder={chat.pendingApprovals.length > 0 || chat.pendingUserPrompts.length > 0 ? "Resolve the active step, or type / for commands" : "What are you building? Type / for commands"}
+            commandResult={commandResult}
+            commandBusy={commandBusy}
+            onDismissResult={() => setCommandResult(null)}
             onAbort={() => void chat.abortActiveRun()}
-            onSubmit={chat.submitInput}
+            onSubmit={(text) => {
+              setCommandResult(null);
+              chat.submitInput(text);
+            }}
+            onCommand={(command, args, available) => void runCommand(command, args, available)}
+            onUnknownCommand={(invokedAs) => setCommandResult({
+              title: `Unknown command ${invokedAs}`,
+              detail: "Type / to see every available command.",
+              tone: "error",
+            })}
           />
           <div className="composer-hint">
-            <span>Enter to send · Shift+Enter for a new line</span>
+            <span>Enter to send · Shift+Enter for a new line · / for commands</span>
             <span>History is shared with the CLI</span>
           </div>
         </div>
@@ -208,62 +299,6 @@ function PromptDock({
         </form>
       ) : null}
     </section>
-  );
-}
-
-function Composer({
-  disabled,
-  isStreaming,
-  onAbort,
-  onSubmit,
-}: {
-  disabled: boolean;
-  isStreaming: boolean;
-  onAbort: () => void;
-  onSubmit: (text: string) => void;
-}) {
-  const [value, setValue] = useState("");
-
-  function send() {
-    const message = value.trim();
-    if (!message || disabled) return;
-    onSubmit(message);
-    setValue("");
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      send();
-    }
-  }
-
-  return (
-    <div className={disabled ? "composer disabled" : "composer"}>
-      <textarea
-        value={value}
-        rows={1}
-        disabled={disabled}
-        aria-label="Message Lightcode"
-        placeholder={disabled ? "Resolve the active step to continue" : "What are you building?"}
-        onChange={(event) => {
-          setValue(event.currentTarget.value);
-        }}
-        onKeyDown={handleKeyDown}
-      />
-      <div className="composer-toolbar">
-        <span><Icon name="agent" size={16} />Agent</span>
-        {isStreaming ? (
-          <button className="abort-button" type="button" onClick={onAbort}>
-            <Icon name="abort" size={14} />Stop run
-          </button>
-        ) : (
-          <button className="send-button" type="button" onClick={send} disabled={!value.trim() || disabled} aria-label="Send message">
-            <Icon name="arrow-up" size={17} />
-          </button>
-        )}
-      </div>
-    </div>
   );
 }
 
