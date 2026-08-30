@@ -11,8 +11,12 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Hono } from "hono";
+import { NativeDirectoryPickerError } from "../lib/native-directory-picker";
+import { createWebSecurityMiddleware } from "../lib/web-auth";
 import {
   createWorkspaceRoutes,
+  isFilesystemRootPath,
   resolveDesktopDirectoryPath,
   resolveDocumentsDirectoryPath,
   resolveDownloadsDirectoryPath,
@@ -60,6 +64,184 @@ afterEach(async () => {
       rm(directory, { recursive: true, force: true }),
     ),
   );
+});
+
+describe("filesystem root guard", () => {
+  test("recognizes POSIX, Windows drive, and UNC share roots", () => {
+    expect(isFilesystemRootPath("/", "linux")).toBe(true);
+    expect(isFilesystemRootPath("/workspace", "linux")).toBe(false);
+    expect(isFilesystemRootPath("C:\\", "win32")).toBe(true);
+    expect(isFilesystemRootPath("D:\\", "win32")).toBe(true);
+    expect(isFilesystemRootPath("C:\\workspace", "win32")).toBe(false);
+    expect(isFilesystemRootPath("\\\\server\\share\\", "win32")).toBe(true);
+    expect(
+      isFilesystemRootPath("\\\\server\\share\\workspace", "win32"),
+    ).toBe(false);
+  });
+});
+
+describe("native workspace picker route", () => {
+  test("accepts only an empty object and treats cancellation as success", async () => {
+    let calls = 0;
+    const app = createWorkspaceRoutes({
+      authorizeNativePickerRequest: () => true,
+      nativeDirectoryPicker: {
+        pick: async () => {
+          calls += 1;
+          return { outcome: "cancelled" };
+        },
+      },
+    });
+
+    const rejected = await app.request(
+      "/picker/open",
+      jsonRequest({ path: "/tmp/browser-controlled" }),
+    );
+    expect(rejected.status).toBe(400);
+    expect(calls).toBe(0);
+
+    const cancelled = await app.request("/picker/open", jsonRequest({}));
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toEqual({ outcome: "cancelled" });
+    expect(calls).toBe(1);
+  });
+
+  test("canonicalizes a selected folder and creates a session through its grant", async () => {
+    const { desktop } = await makeDesktop();
+    let sessionCwd = "";
+    const sessionId = crypto.randomUUID();
+    const app = createWorkspaceRoutes({
+      authorizeNativePickerRequest: () => true,
+      nativeDirectoryPicker: {
+        pick: async () => ({ outcome: "selected", directory: desktop }),
+      },
+      createSession: async (input) => {
+        sessionCwd = input?.cwd ?? "";
+        return { id: sessionId };
+      },
+    });
+
+    const selected = await app.request("/picker/open", jsonRequest({}));
+    expect(selected.status).toBe(201);
+    const body = (await selected.json()) as {
+      outcome: string;
+      workspace: { id: string; name: string; pathLabel: string };
+    };
+    expect(body).toMatchObject({
+      outcome: "selected",
+      workspace: { name: "Desktop", pathLabel: await realpath(desktop) },
+    });
+
+    const session = await app.request(
+      `/${body.workspace.id}/sessions`,
+      jsonRequest({}),
+    );
+    expect(session.status).toBe(201);
+    expect(await session.json()).toEqual({ id: sessionId });
+    expect(sessionCwd).toBe(await realpath(desktop));
+  });
+
+  for (const [error, status, code, retryable] of [
+    [
+      new NativeDirectoryPickerError(
+        "native_picker_busy",
+        "A folder picker is already open.",
+      ),
+      409,
+      "native_picker_busy",
+      true,
+    ],
+    [
+      new NativeDirectoryPickerError(
+        "native_picker_unavailable",
+        "No supported system folder picker is available.",
+      ),
+      503,
+      "native_picker_unavailable",
+      false,
+    ],
+    [new Error("process details must remain hidden"), 500, "native_picker_failed", true],
+  ] as const) {
+    test(`maps ${code} without exposing process details`, async () => {
+      const app = createWorkspaceRoutes({
+        authorizeNativePickerRequest: () => true,
+        nativeDirectoryPicker: { pick: async () => Promise.reject(error) },
+      });
+      const response = await app.request("/picker/open", jsonRequest({}));
+      expect(response.status).toBe(status);
+      const payload = (await response.json()) as {
+        code: string;
+        error: string;
+        retryable: boolean;
+      };
+      expect(payload).toMatchObject({ code, retryable });
+      expect(payload.error).not.toContain("process details");
+    });
+  }
+
+  test("can be triggered only by an authenticated same-origin web request", async () => {
+    const expectedOrigin = "http://127.0.0.1:4983";
+    const token = Buffer.alloc(32, 9).toString("base64url");
+    let calls = 0;
+    const routes = createWorkspaceRoutes({
+      nativeDirectoryPicker: {
+        pick: async () => {
+          calls += 1;
+          return { outcome: "cancelled" };
+        },
+      },
+    });
+    const app = new Hono()
+      .use(
+        "*",
+        createWebSecurityMiddleware({
+          expectedOrigin,
+          authState: { available: true, token },
+        }),
+      )
+      .route("/workspaces", routes);
+    const browserHeaders = {
+      authorization: `Bearer ${token}`,
+      host: "127.0.0.1:4983",
+      origin: expectedOrigin,
+      "content-type": "application/json",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-site": "same-origin",
+      "user-agent": "Mozilla/5.0",
+    };
+
+    const valid = await app.request(`${expectedOrigin}/workspaces/picker/open`, {
+      ...jsonRequest({}),
+      headers: browserHeaders,
+    });
+    expect(valid.status).toBe(200);
+
+    const bearerOnly = await app.request(
+      `${expectedOrigin}/workspaces/picker/open`,
+      {
+        ...jsonRequest({}),
+        headers: {
+          authorization: `Bearer ${token}`,
+          host: "127.0.0.1:4983",
+          "content-type": "application/json",
+        },
+      },
+    );
+    expect(bearerOnly.status).toBe(403);
+    expect(await bearerOnly.json()).toMatchObject({
+      code: "web_browser_required",
+    });
+
+    const wrongOrigin = await app.request(
+      `${expectedOrigin}/workspaces/picker/open`,
+      {
+        ...jsonRequest({}),
+        headers: { ...browserHeaders, origin: "http://127.0.0.1:9999" },
+      },
+    );
+    expect(wrongOrigin.status).toBe(403);
+    expect(calls).toBe(1);
+  });
 });
 
 describe("Desktop known-folder resolver", () => {

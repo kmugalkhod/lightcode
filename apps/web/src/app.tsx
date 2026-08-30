@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatSurface } from "./components/chat-surface";
 import { CommandComposer } from "./components/command-composer";
 import { Icon } from "./components/icons";
-import { ProjectBrowser } from "./components/project-browser";
+import {
+  ProjectBrowser,
+  type ProjectBrowserNotice,
+} from "./components/project-browser";
 import { SessionRail } from "./components/session-rail";
 import { WorkspaceRibbon } from "./components/workspace-ribbon";
 import {
@@ -35,6 +38,65 @@ function isWebAuthorizationFailure(cause: unknown): cause is LightcodeApiError {
       ? Reflect.get(cause.payload, "code")
       : null;
   return cause.status === 401 || (typeof code === "string" && code.startsWith("web_auth_"));
+}
+
+function nativePickerFallbackNotice(cause: unknown): ProjectBrowserNotice {
+  const code =
+    cause instanceof LightcodeApiError &&
+    cause.payload &&
+    typeof cause.payload === "object"
+      ? Reflect.get(cause.payload, "code")
+      : null;
+  if (code === "native_picker_unavailable") {
+    return {
+      tone: "info",
+      title: "The system folder picker is unavailable",
+      detail:
+        "Choose a project from one of the common locations in this window. Lightcode will still grant only the folder you select.",
+      retryable: false,
+    };
+  }
+  if (code === "native_picker_busy") {
+    return {
+      tone: "error",
+      title: "Another folder picker is already open",
+      detail:
+        "Close the existing system dialog, then retry, or browse a common location in this window.",
+      retryable: true,
+    };
+  }
+  if (
+    typeof code === "string" &&
+    [
+      "workspace_unavailable",
+      "workspace_missing",
+      "workspace_not_directory",
+      "workspace_replaced",
+      "os_permission_denied",
+    ].includes(code)
+  ) {
+    const reason =
+      cause instanceof Error
+        ? cause.message
+        : "Lightcode could not grant access to that folder.";
+    const guidance =
+      code === "workspace_unavailable"
+        ? "Choose a child project folder rather than a filesystem, drive, or network-share root."
+        : "Choose another folder and try again.";
+    return {
+      tone: "error",
+      title: "That folder cannot be used",
+      detail: `${reason} ${guidance}`,
+      retryable: true,
+    };
+  }
+  return {
+    tone: "error",
+    title: "The system folder picker did not open",
+    detail:
+      "Retry the system dialog, or choose a project from a common location in this window.",
+    retryable: true,
+  };
 }
 
 function safeSessionStorage(): Storage {
@@ -72,7 +134,9 @@ export function App() {
   const [initialPrompt, setInitialPrompt] = useState<{ sessionId: string; text: string } | null>(null);
   const [mode, setMode] = useState<CodingMode>(newSessionMode);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(newSessionPermissionMode);
-  const [isBrowserOpen, setIsBrowserOpen] = useState(() => !initialWorkspace());
+  const [isBrowserOpen, setIsBrowserOpen] = useState(false);
+  const [isPickingProject, setIsPickingProject] = useState(false);
+  const [pickerNotice, setPickerNotice] = useState<ProjectBrowserNotice | null>(null);
   const [isRailOpen, setIsRailOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -82,6 +146,7 @@ export function App() {
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
   const [providerStatusError, setProviderStatusError] = useState(false);
   const projectBrowserTriggerRef = useRef<HTMLElement | null>(null);
+  const pickerRequestRef = useRef(false);
   const railTriggerRef = useRef<HTMLElement | null>(null);
 
   const api = useMemo(() => {
@@ -165,24 +230,35 @@ export function App() {
     [api, isCreating, mode, permissionMode, providerStatus?.selectedModel, workspace],
   );
 
-  function openProjectBrowser() {
-    projectBrowserTriggerRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  function rememberProjectChooserTrigger() {
+    if (projectBrowserTriggerRef.current?.isConnected) return;
+    projectBrowserTriggerRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+  }
+
+  function openProjectBrowserFallback() {
+    rememberProjectChooserTrigger();
+    setPickerNotice(null);
     setIsBrowserOpen(true);
   }
 
-  function restoreProjectBrowserFocus() {
+  function restoreProjectBrowserFocus(preferWorkspace = false) {
     const trigger = projectBrowserTriggerRef.current;
     projectBrowserTriggerRef.current = null;
     window.requestAnimationFrame(() => {
       const fallback = document.querySelector<HTMLElement>(".workspace-path, .session-item");
-      const focusTarget = trigger?.isConnected && !trigger.closest("[inert]") ? trigger : fallback;
+      const focusTarget =
+        !preferWorkspace && trigger?.isConnected && !trigger.closest("[inert]")
+          ? trigger
+          : fallback;
       focusTarget?.focus();
     });
   }
 
   function closeProjectBrowser() {
     setIsBrowserOpen(false);
+    setPickerNotice(null);
     restoreProjectBrowserFocus();
   }
 
@@ -201,11 +277,9 @@ export function App() {
     }
   }
 
-  const beginNewSession = useCallback(() => {
+  function beginNewSession() {
     if (!workspace) {
-      projectBrowserTriggerRef.current =
-        document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setIsBrowserOpen(true);
+      void openNativeProjectPicker();
       return;
     }
 
@@ -220,7 +294,7 @@ export function App() {
     } catch {
       // The new-session surface remains available without storage.
     }
-  }, [workspace]);
+  }
 
   useEffect(() => {
     function handleKeyDown(event: globalThis.KeyboardEvent) {
@@ -241,13 +315,62 @@ export function App() {
     setMode(newSessionMode);
     setPermissionMode(newSessionPermissionMode);
     setIsBrowserOpen(false);
+    setPickerNotice(null);
     setIsRailOpen(false);
-    restoreProjectBrowserFocus();
+    restoreProjectBrowserFocus(true);
     try {
       storeWorkspace(safeSessionStorage(), selected);
       safeSessionStorage().removeItem(activeSessionStorageKey);
     } catch {
       // The current tab can continue even when storage is unavailable.
+    }
+  }
+
+  async function openNativeProjectPicker({
+    retryFromFallback = false,
+  }: {
+    retryFromFallback?: boolean;
+  } = {}) {
+    if (pickerRequestRef.current) return;
+    const attemptTrigger =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    if (!retryFromFallback) {
+      rememberProjectChooserTrigger();
+      setPickerNotice(null);
+    }
+    pickerRequestRef.current = true;
+    setIsPickingProject(true);
+    try {
+      const result = await api?.openWorkspacePicker();
+      if (!result) return;
+      if (result.outcome === "selected") {
+        selectWorkspace(result.workspace);
+      } else if (retryFromFallback) {
+        window.requestAnimationFrame(() => {
+          const fallback = document.querySelector<HTMLElement>(
+            ".project-browser button:not(:disabled)",
+          );
+          const focusTarget =
+            attemptTrigger?.isConnected && !attemptTrigger.closest("[inert]")
+              ? attemptTrigger
+              : fallback;
+          focusTarget?.focus();
+        });
+      } else {
+        restoreProjectBrowserFocus();
+      }
+    } catch (cause) {
+      if (isWebAuthorizationFailure(cause)) {
+        setAuthorizationError(cause.message);
+        return;
+      }
+      setPickerNotice(nativePickerFallbackNotice(cause));
+      setIsBrowserOpen(true);
+    } finally {
+      pickerRequestRef.current = false;
+      setIsPickingProject(false);
     }
   }
 
@@ -301,12 +424,13 @@ export function App() {
         activeSessionId={activeSession?.id ?? null}
         workspace={workspace}
         isLoading={isLoadingSessions}
+        isPickingProject={isPickingProject}
         error={sessionError}
         mobileOpen={isRailOpen}
         backgroundInert={isBrowserOpen}
         onCloseMobile={closeRail}
         onNewSession={beginNewSession}
-        onOpenProject={openProjectBrowser}
+        onOpenProject={() => void openNativeProjectPicker()}
         onSelectSession={selectSession}
       />
 
@@ -320,8 +444,9 @@ export function App() {
           providerStatusError={providerStatusError}
           isRunning={isRunning}
           isCreating={isCreating}
+          isPickingProject={isPickingProject}
           onOpenMenu={openRail}
-          onOpenProject={openProjectBrowser}
+          onOpenProject={() => void openNativeProjectPicker()}
           onModeChange={setMode}
           onPermissionModeChange={(nextMode) => void persistPermissionMode(nextMode)}
         />
@@ -355,8 +480,10 @@ export function App() {
             permissionMode={permissionMode}
             providerStatus={providerStatus}
             isCreating={isCreating}
+            isPickingProject={isPickingProject}
             error={sessionError}
-            onChooseProject={openProjectBrowser}
+            onChooseProject={() => void openNativeProjectPicker()}
+            onBrowseCommonLocations={openProjectBrowserFallback}
             onNewSession={beginNewSession}
             onOpenSessions={openRail}
             onSelectSession={selectSession}
@@ -370,8 +497,13 @@ export function App() {
       {isBrowserOpen ? (
         <ProjectBrowser
           api={api}
-          dismissible={Boolean(workspace || sessions.length)}
+          dismissible
+          nativePickerPending={isPickingProject}
+          notice={pickerNotice}
           onClose={closeProjectBrowser}
+          onRetryNativePicker={() =>
+            void openNativeProjectPicker({ retryFromFallback: true })
+          }
           onSelect={selectWorkspace}
         />
       ) : null}
@@ -399,8 +531,10 @@ function NewSessionSurface({
   permissionMode,
   providerStatus,
   isCreating,
+  isPickingProject,
   error,
   onChooseProject,
+  onBrowseCommonLocations,
   onNewSession,
   onOpenSessions,
   onSelectSession,
@@ -415,8 +549,10 @@ function NewSessionSurface({
   permissionMode: PermissionMode;
   providerStatus: ProviderStatus | null;
   isCreating: boolean;
+  isPickingProject: boolean;
   error: string | null;
   onChooseProject: () => void;
+  onBrowseCommonLocations: () => void;
   onNewSession: () => void;
   onOpenSessions: () => void;
   onSelectSession: (session: Session) => void;
@@ -467,11 +603,44 @@ function NewSessionSurface({
           <span className="new-session-mark"><Icon name="lightcode" size={25} /></span>
           <div>
             <h1>{workspace ? `New session in ${workspace.name}` : "Choose a project to begin"}</h1>
-            <button type="button" onClick={onChooseProject}>
-              <Icon name="folder-open" size={16} />
-              {workspace?.pathLabel ?? "Browse local folders"}
-              <Icon name="chevron-down" size={14} />
-            </button>
+            <div className="new-session-project-controls">
+              <button
+                className="new-session-project-button"
+                type="button"
+                onClick={onChooseProject}
+                disabled={isPickingProject}
+                aria-busy={isPickingProject}
+              >
+                {isPickingProject ? (
+                  <span className="inline-spinner" aria-hidden="true" />
+                ) : (
+                  <Icon name="folder-open" size={17} />
+                )}
+                <span>
+                  <strong>
+                    {isPickingProject
+                      ? "Opening system folder picker"
+                      : workspace?.pathLabel ?? "Open a project folder"}
+                  </strong>
+                  <small>
+                    {isPickingProject
+                      ? "Complete the choice in the system dialog"
+                      : workspace
+                        ? "Choose another local project"
+                        : "Uses your system folder dialog"}
+                  </small>
+                </span>
+                <Icon name="chevron-right" size={15} />
+              </button>
+              <button
+                className="browse-common-locations-button"
+                type="button"
+                onClick={onBrowseCommonLocations}
+                disabled={isPickingProject}
+              >
+                Browse common locations instead
+              </button>
+            </div>
           </div>
         </div>
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  createLightcodeApi,
   displaySessionTitle,
   extractLaunchToken,
   formatRelativeTime,
@@ -7,6 +8,7 @@ import {
   requiresBroadWorkspaceConfirmation,
   webTokenStorageKey,
   withBearerToken,
+  type AuthenticatedFetch,
   type StorageLike,
 } from "./api";
 
@@ -72,5 +74,53 @@ describe("workspace selection", () => {
   test("requires explicit confirmation for any broad location root", () => {
     expect(requiresBroadWorkspaceConfirmation([])).toBe(true);
     expect(requiresBroadWorkspaceConfirmation(["lightcode"])).toBe(false);
+  });
+
+  test("opens the native picker with a strict empty browser request", async () => {
+    const calls: Array<{ input: string; init?: RequestInit }> = [];
+    const fetcher = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ input: String(input), init });
+        return new Response(
+          JSON.stringify({
+            outcome: "selected",
+            workspace: {
+              id: "workspace-1",
+              name: "lightcode",
+              pathLabel: "C:\\Users\\Kunal\\lightcode",
+              createdAt: "2026-08-30T00:00:00.000Z",
+            },
+          }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        );
+      },
+      { preconnect: (() => undefined) as AuthenticatedFetch["preconnect"] },
+    ) satisfies AuthenticatedFetch;
+    const api = createLightcodeApi(fetcher);
+
+    await expect(api.openWorkspacePicker()).resolves.toMatchObject({
+      outcome: "selected",
+      workspace: { name: "lightcode" },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toBe("/workspaces/picker/open");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.body).toBe("{}");
+  });
+
+  test("preserves native-picker cancellation as a normal outcome", async () => {
+    const fetcher = Object.assign(
+      async () =>
+        new Response(JSON.stringify({ outcome: "cancelled" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      { preconnect: (() => undefined) as AuthenticatedFetch["preconnect"] },
+    ) satisfies AuthenticatedFetch;
+    const api = createLightcodeApi(fetcher);
+
+    await expect(api.openWorkspacePicker()).resolves.toEqual({
+      outcome: "cancelled",
+    });
   });
 });

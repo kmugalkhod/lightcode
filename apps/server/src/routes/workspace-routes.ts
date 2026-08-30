@@ -10,6 +10,8 @@ import {
   workspaceBrowserSelectResponseSchema,
   workspaceGrantSchema,
   workspaceLocationsResponseSchema,
+  workspaceNativePickerRequestSchema,
+  workspaceNativePickerResponseSchema,
   workspaceSessionCreateRequestSchema,
   workspaceSessionPathParamsSchema,
   type WorkspaceApiErrorCode,
@@ -37,6 +39,12 @@ import {
   chatModelId,
   lightcodeConfigResult,
 } from "../lib/runtime-config";
+import {
+  createNativeDirectoryPicker,
+  NativeDirectoryPickerError,
+  type NativeDirectoryPicker,
+} from "../lib/native-directory-picker";
+import { isAuthenticatedWebRequest } from "../lib/web-auth";
 
 const logger = createLogger("workspace-routes");
 const defaultBrowserCapabilityTtlMs = 10 * 60 * 1_000;
@@ -86,13 +94,17 @@ export interface WorkspaceRoutesOptions {
   createSession?: (
     input: CreateSessionInput,
   ) => Promise<{ id: string }>;
+  /** Injectable seam; tests must never open a real host dialog. */
+  nativeDirectoryPicker?: NativeDirectoryPicker;
+  /** Defaults to the marker set by the authenticated global web middleware. */
+  authorizeNativePickerRequest?: (request: Request) => boolean;
 }
 
 class WorkspaceRouteError extends Error {
   constructor(
     readonly code: WorkspaceApiErrorCode,
     message: string,
-    readonly status: 400 | 403 | 404 | 409 | 410 | 422 | 500,
+    readonly status: 400 | 403 | 404 | 409 | 410 | 422 | 500 | 503,
     readonly retryable: boolean,
   ) {
     super(message);
@@ -142,6 +154,15 @@ function pathImplementation(platform: DesktopResolverPlatform) {
   return platform === "win32" ? path.win32 : path.posix;
 }
 
+export function isFilesystemRootPath(
+  candidate: string,
+  platform: DesktopResolverPlatform = process.platform,
+): boolean {
+  const pathApi = pathImplementation(platform);
+  const normalized = pathApi.normalize(candidate);
+  return normalized === pathApi.parse(normalized).root;
+}
+
 function normalizeKnownFolderCandidate(
   candidate: string,
   platform: DesktopResolverPlatform,
@@ -154,7 +175,7 @@ function normalizeKnownFolderCandidate(
     return null;
   }
   const normalized = pathApi.normalize(candidate);
-  if (normalized === pathApi.parse(normalized).root) {
+  if (isFilesystemRootPath(normalized, platform)) {
     return null;
   }
   return normalized;
@@ -641,12 +662,45 @@ function mapFilesystemError(error: unknown): WorkspaceRouteError {
   );
 }
 
+function mapNativePickerError(error: unknown): WorkspaceRouteError {
+  if (!(error instanceof NativeDirectoryPickerError)) {
+    return new WorkspaceRouteError(
+      "native_picker_failed",
+      "The system folder picker could not be opened.",
+      500,
+      true,
+    );
+  }
+  if (error.code === "native_picker_busy") {
+    return new WorkspaceRouteError(
+      error.code,
+      "A folder picker is already open.",
+      409,
+      true,
+    );
+  }
+  if (error.code === "native_picker_unavailable") {
+    return new WorkspaceRouteError(
+      error.code,
+      "No supported system folder picker is available.",
+      503,
+      false,
+    );
+  }
+  return new WorkspaceRouteError(
+    error.code,
+    "The system folder picker could not be opened.",
+    500,
+    true,
+  );
+}
+
 function workspaceErrorResponse(c: Context, error: unknown) {
   const mapped =
     error instanceof WorkspaceRouteError ? error : mapFilesystemError(error);
   if (mapped.status === 500) {
     logger.error("workspace_request_failed", {
-      error: getErrorMessage(error),
+      error: getErrorMessage(mapped),
     });
   }
   return c.json(
@@ -700,7 +754,7 @@ async function resolveKnownDirectory(directory: string): Promise<{
 }> {
   try {
     const root = await fs.realpath(path.resolve(directory));
-    if (root === path.parse(root).root) {
+    if (isFilesystemRootPath(root)) {
       throw new WorkspaceRouteError(
         "workspace_unavailable",
         "A filesystem root cannot be opened as a workspace location.",
@@ -1187,6 +1241,10 @@ export function createWorkspaceRoutes(
     definitions.map((definition) => [definition.id, definition]),
   );
   const createSession = options.createSession ?? createChatSession;
+  const nativeDirectoryPicker =
+    options.nativeDirectoryPicker ?? createNativeDirectoryPicker();
+  const authorizeNativePickerRequest =
+    options.authorizeNativePickerRequest ?? isAuthenticatedWebRequest;
   const cursorSecret = randomBytes(32);
   const browserCapabilities = new Map<string, BrowserCapability>();
   const workspaceGrants = new Map<string, StoredWorkspaceGrant>();
@@ -1220,7 +1278,92 @@ export function createWorkspaceRoutes(
     return grant;
   };
 
+  const storeWorkspaceGrant = async ({
+    root,
+    identity,
+    name,
+    pathLabel,
+  }: {
+    root: string;
+    identity: RootIdentity;
+    name: string;
+    pathLabel: string;
+  }): Promise<WorkspaceGrant> => {
+    await fs.access(root, fsConstants.R_OK | fsConstants.X_OK);
+    const createdAt = new Date(now()).toISOString();
+    const id = crypto.randomUUID();
+    const grant: StoredWorkspaceGrant = {
+      id,
+      name,
+      pathLabel,
+      createdAt,
+      root,
+      identity,
+    };
+    workspaceGrants.set(id, grant);
+    trimOldestEntries(workspaceGrants, maximumWorkspaceGrants);
+    try {
+      await assertRootIdentity(grant);
+    } catch (error) {
+      workspaceGrants.delete(id);
+      throw error;
+    }
+    return workspaceGrantSchema.parse({ id, name, pathLabel, createdAt });
+  };
+
   return new Hono()
+    .post(
+      "/picker/open",
+      zValidator("json", workspaceNativePickerRequestSchema, (result, c) => {
+        if (!result.success) {
+          return invalidRequestResponse(c);
+        }
+      }),
+      async (c) => {
+        if (!authorizeNativePickerRequest(c.req.raw)) {
+          return c.json(
+            {
+              error:
+                "The system folder picker is available only to an authenticated Lightcode web session.",
+              code: "web_browser_required",
+            },
+            403,
+          );
+        }
+        try {
+          let picked;
+          try {
+            picked = await nativeDirectoryPicker.pick(c.req.raw.signal);
+          } catch (error) {
+            throw mapNativePickerError(error);
+          }
+          if (picked.outcome === "cancelled") {
+            return c.json(
+              workspaceNativePickerResponseSchema.parse({
+                outcome: "cancelled",
+              }),
+              200,
+            );
+          }
+
+          const directory = await resolveKnownDirectory(picked.directory);
+          const workspace = await storeWorkspaceGrant({
+            ...directory,
+            name: path.basename(directory.root),
+            pathLabel: directory.root,
+          });
+          return c.json(
+            workspaceNativePickerResponseSchema.parse({
+              outcome: "selected",
+              workspace,
+            }),
+            201,
+          );
+        } catch (error) {
+          return workspaceErrorResponse(c, error);
+        }
+      },
+    )
     .get("/locations", (c) =>
       c.json(
         workspaceLocationsResponseSchema.parse({
@@ -1430,41 +1573,20 @@ export function createWorkspaceRoutes(
             operation: "select",
             directory: directory.path,
           });
-          await fs.access(
-            directory.path,
-            fsConstants.R_OK | fsConstants.X_OK,
-          );
-          const createdAt = new Date(now()).toISOString();
-          const id = crypto.randomUUID();
           const name = segments.at(-1) ?? capability.rootName;
           const pathLabel = [
             capability.location.pathLabel,
             ...segments,
           ].join("/");
-          const grant: StoredWorkspaceGrant = {
-            id,
-            name,
-            pathLabel,
-            createdAt,
+          const workspace = await storeWorkspaceGrant({
             root: directory.path,
             identity: directory.identity,
-          };
-          workspaceGrants.set(id, grant);
-          trimOldestEntries(workspaceGrants, maximumWorkspaceGrants);
-          try {
-            await assertRootIdentity(grant);
-          } catch (error) {
-            workspaceGrants.delete(id);
-            throw error;
-          }
+            name,
+            pathLabel,
+          });
           return c.json(
             workspaceBrowserSelectResponseSchema.parse({
-              workspace: workspaceGrantSchema.parse({
-                id,
-                name,
-                pathLabel,
-                createdAt,
-              }),
+              workspace,
             }),
             201,
           );

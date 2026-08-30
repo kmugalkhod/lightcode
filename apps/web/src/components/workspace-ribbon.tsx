@@ -10,6 +10,7 @@ interface WorkspaceRibbonProps {
   providerStatusError: boolean;
   isRunning: boolean;
   isCreating: boolean;
+  isPickingProject: boolean;
   onOpenMenu: () => void;
   onOpenProject: () => void;
   onModeChange: (mode: CodingMode) => void;
@@ -31,6 +32,7 @@ export function WorkspaceRibbon({
   providerStatusError,
   isRunning,
   isCreating,
+  isPickingProject,
   onOpenMenu,
   onOpenProject,
   onModeChange,
@@ -58,17 +60,32 @@ export function WorkspaceRibbon({
       ? providerStatus?.missingCredentialHints.join(" ")
       : undefined;
   const effectivePermissionMode = mode === "plan" ? "read-only" : permissionMode;
+  const modeDisabled = isRunning;
+  const permissionDisabled = isRunning || mode === "plan";
 
   return (
     <header className="workspace-ribbon">
       <button className="icon-button mobile-only ribbon-menu" type="button" onClick={onOpenMenu} aria-label="Open sessions">
         <Icon name="menu" />
       </button>
-      <button className="workspace-path" type="button" onClick={onOpenProject} title={pathLabel}>
-        <span className="workspace-icon"><Icon name="folder-open" size={16} /></span>
+      <button
+        className="workspace-path"
+        type="button"
+        onClick={onOpenProject}
+        title={pathLabel}
+        disabled={isPickingProject}
+        aria-busy={isPickingProject}
+      >
+        <span className="workspace-icon">
+          {isPickingProject ? (
+            <span className="inline-spinner" aria-hidden="true" />
+          ) : (
+            <Icon name="folder-open" size={16} />
+          )}
+        </span>
         <span className="workspace-path-copy">
-          <strong>{projectName}</strong>
-          <small>{pathLabel}</small>
+          <strong>{isPickingProject ? "Opening folder picker" : projectName}</strong>
+          <small>{isPickingProject ? "Choose a project in the system dialog" : pathLabel}</small>
         </span>
         <Icon name="chevron-down" size={15} />
       </button>
@@ -87,32 +104,48 @@ export function WorkspaceRibbon({
         </span>
       ) : null}
 
-      <label className="ribbon-select">
+      <label className={modeDisabled ? "ribbon-select disabled" : "ribbon-select"}>
         <span className="sr-only">Agent mode</span>
         <Icon name="code" size={15} />
-        <select value={mode} onChange={(event) => onModeChange(event.currentTarget.value as CodingMode)} disabled={isRunning}>
+        <span className="ribbon-select-value" aria-hidden="true">
+          {mode === "build" ? "Build" : "Plan"}
+        </span>
+        <select
+          aria-label="Agent mode"
+          value={mode}
+          onChange={(event) => onModeChange(event.currentTarget.value as CodingMode)}
+          disabled={modeDisabled}
+        >
           <option value="build">Build</option>
           <option value="plan">Plan</option>
         </select>
-        <Icon name="chevron-down" size={13} />
+        {modeDisabled ? null : <Icon name="chevron-down" size={13} />}
       </label>
 
       <label
-        className="ribbon-select permission-select"
+        className={
+          permissionDisabled
+            ? "ribbon-select permission-select disabled"
+            : "ribbon-select permission-select"
+        }
         title={mode === "plan" ? "Permission: Read (Plan mode is always read-only)" : `Permission: ${permissionLabels[permissionMode]}`}
       >
         <span className="sr-only">Permission mode</span>
         <Icon name="shield" size={15} />
+        <span className="ribbon-select-value" aria-hidden="true">
+          {permissionLabels[effectivePermissionMode]}
+        </span>
         <select
+          aria-label="Permission mode"
           value={effectivePermissionMode}
           onChange={(event) => onPermissionModeChange(event.currentTarget.value as PermissionMode)}
-          disabled={isRunning || mode === "plan"}
+          disabled={permissionDisabled}
         >
           {Object.entries(permissionLabels).map(([value, label]) => (
             <option key={value} value={value}>{label}</option>
           ))}
         </select>
-        <Icon name="chevron-down" size={13} />
+        {permissionDisabled ? null : <Icon name="chevron-down" size={13} />}
       </label>
     </header>
   );

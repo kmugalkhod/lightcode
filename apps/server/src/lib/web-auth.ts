@@ -26,6 +26,7 @@ const webAuthHandoffSchema = z
 const maximumHandoffBytes = 4_096;
 const maximumHandoffAgeMs = 5 * 60 * 1_000;
 const maximumHandoffClockSkewMs = 30 * 1_000;
+const authenticatedWebRequests = new WeakSet<Request>();
 
 export interface WebAuthState {
   available: boolean;
@@ -39,6 +40,16 @@ export interface WebSecurityMiddlewareOptions {
   expectedOrigin?: string;
   authState?: WebAuthState;
   allowUnauthenticatedCli?: boolean;
+}
+
+/**
+ * Returns true only after the global web middleware has accepted this exact
+ * Request as a browser request with the per-launch bearer credential. This is
+ * used by local-UI side effects (such as opening a host folder dialog) that
+ * must never be reachable through the headerless CLI compatibility path.
+ */
+export function isAuthenticatedWebRequest(request: Request): boolean {
+  return authenticatedWebRequests.has(request);
 }
 
 function defaultExpectedOrigin(
@@ -351,6 +362,9 @@ export function createWebSecurityMiddleware(
             "web_auth_required",
             "A valid Lightcode browser token is required.",
           );
+        }
+        if (browserRequest) {
+          authenticatedWebRequests.add(request);
         }
       } else if (browserRequest || authState.configured) {
         return jsonSecurityError(

@@ -20,8 +20,18 @@ import { Icon } from "./icons";
 interface ProjectBrowserProps {
   api: LightcodeApi;
   dismissible: boolean;
+  nativePickerPending: boolean;
+  notice: ProjectBrowserNotice | null;
   onClose: () => void;
+  onRetryNativePicker: () => void;
   onSelect: (workspace: Workspace) => void;
+}
+
+export interface ProjectBrowserNotice {
+  tone: "info" | "error";
+  title: string;
+  detail: string;
+  retryable: boolean;
 }
 
 interface BrowserState {
@@ -64,13 +74,17 @@ function classifyBrowserError(cause: unknown): BrowserErrorKind {
 export function ProjectBrowser({
   api,
   dismissible,
+  nativePickerPending,
+  notice,
   onClose,
+  onRetryNativePicker,
   onSelect,
 }: ProjectBrowserProps) {
   const [locations, setLocations] = useState<WorkspaceLocation[]>([]);
   const [browser, setBrowser] = useState<BrowserState | null>(null);
   const [includeHidden, setIncludeHidden] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadingLabel, setLoadingLabel] = useState("Loading common locations");
   const [isSelecting, setIsSelecting] = useState(false);
   const [confirmBroadRoot, setConfirmBroadRoot] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,6 +119,7 @@ export function ProjectBrowser({
       append = false,
       cursor,
       includeHiddenValue,
+      loadingMessage,
       requestId,
     }: {
       browserId: string;
@@ -113,6 +128,7 @@ export function ProjectBrowser({
       append?: boolean;
       cursor?: string;
       includeHiddenValue?: boolean;
+      loadingMessage?: string;
       requestId?: number;
     }) => {
       const ownsRequest = requestId === undefined;
@@ -121,6 +137,12 @@ export function ProjectBrowser({
 
       setConfirmBroadRoot(false);
       setIsLoading(true);
+      setLoadingLabel(
+        loadingMessage ??
+          (append
+            ? "Loading more folders"
+            : `Opening ${segments.at(-1) ?? workspaceLocationName(location)}`),
+      );
       setError(null);
       setRetry(null);
       try {
@@ -169,6 +191,7 @@ export function ProjectBrowser({
 
       setConfirmBroadRoot(false);
       setIsLoading(true);
+      setLoadingLabel(`Opening ${workspaceLocationName(location)}`);
       setError(null);
       setRetry(null);
       setOpeningLocationId(location.id);
@@ -202,6 +225,7 @@ export function ProjectBrowser({
 
     setConfirmBroadRoot(false);
     setIsLoading(true);
+    setLoadingLabel("Loading common locations");
     setError(null);
     setRetry(null);
     try {
@@ -281,6 +305,7 @@ export function ProjectBrowser({
       browserId: browser.browserId,
       location: browser.location,
       segments: [...browser.segments, entry.name],
+      loadingMessage: `Opening ${entry.name}`,
     });
   }
 
@@ -290,6 +315,10 @@ export function ProjectBrowser({
       browserId: browser.browserId,
       location: browser.location,
       segments: browser.segments.slice(0, index),
+      loadingMessage:
+        index === 0
+          ? `Opening ${workspaceLocationName(browser.location)}`
+          : `Opening ${browser.segments[index - 1] ?? "folder"}`,
     });
   }
 
@@ -303,6 +332,7 @@ export function ProjectBrowser({
       location: browser.location,
       segments: browser.segments,
       includeHiddenValue: nextIncludeHidden,
+      loadingMessage: "Updating folders",
     });
   }
 
@@ -320,7 +350,7 @@ export function ProjectBrowser({
   }
 
   const defaultLocation = locations[0] ?? null;
-  const interactionsLocked = isLoading || isSelecting;
+  const interactionsLocked = isLoading || isSelecting || nativePickerPending;
   const activeLocationId = openingLocationId ?? browser?.location.id ?? null;
   const failedLocation =
     retry?.kind === "open" || retry?.kind === "directory"
@@ -353,16 +383,49 @@ export function ProjectBrowser({
         aria-labelledby="project-browser-title"
         tabIndex={-1}
         onKeyDown={(event) => {
-          if (event.key === "Escape" && dismissible) onClose();
+          if (event.key === "Escape" && dismissible && !nativePickerPending) {
+            event.stopPropagation();
+            onClose();
+            return;
+          }
+          if (event.key !== "Tab") return;
+          const dialog = dialogRef.current;
+          if (!dialog) return;
+          const focusable = Array.from(
+            dialog.querySelectorAll<HTMLElement>(
+              'button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+            ),
+          ).filter((element) => element.getClientRects().length > 0);
+          if (focusable.length === 0) {
+            event.preventDefault();
+            dialog.focus();
+            return;
+          }
+          const first = focusable[0];
+          const last = focusable.at(-1);
+          if (
+            (event.shiftKey &&
+              (document.activeElement === first || document.activeElement === dialog)) ||
+            (!event.shiftKey && document.activeElement === last)
+          ) {
+            event.preventDefault();
+            (event.shiftKey ? last : first)?.focus();
+          }
         }}
       >
         <header className="project-browser-header">
           <div>
-            <h1 id="project-browser-title">Choose a project</h1>
-            <p>Browse local folders. The agent works only inside the folder you select.</p>
+            <h1 id="project-browser-title">Browse common locations</h1>
+            <p>Choose a bounded local folder. The agent works only inside the folder you select.</p>
           </div>
           {dismissible ? (
-            <button className="icon-button" type="button" onClick={onClose} aria-label="Close project browser">
+            <button
+              className="icon-button"
+              type="button"
+              onClick={onClose}
+              disabled={nativePickerPending}
+              aria-label="Close project browser"
+            >
               <Icon name="x" />
             </button>
           ) : null}
@@ -419,7 +482,57 @@ export function ProjectBrowser({
           )}
         </nav>
 
-        <div className="project-browser-body" aria-live="polite" aria-busy={isLoading}>
+        <div
+          className="project-browser-body"
+          aria-live="polite"
+          aria-busy={isLoading || nativePickerPending}
+        >
+          {notice ? (
+            <div
+              className={`picker-fallback-notice ${notice.tone}`}
+              role={notice.tone === "error" ? "alert" : "status"}
+            >
+              <Icon name={notice.tone === "error" ? "warning" : "folder-open"} size={18} />
+              <span>
+                <strong>{notice.title}</strong>
+                <small>{notice.detail}</small>
+              </span>
+              <div className="picker-fallback-actions">
+                {notice.retryable ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={onRetryNativePicker}
+                    disabled={nativePickerPending}
+                    aria-busy={nativePickerPending}
+                  >
+                    {nativePickerPending ? (
+                      <span className="inline-spinner" aria-hidden="true" />
+                    ) : null}
+                    {nativePickerPending ? "Opening system picker" : "Retry system picker"}
+                  </button>
+                ) : null}
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={interactionsLocked || locations.length === 0}
+                  onClick={() =>
+                    dialogRef.current
+                      ?.querySelector<HTMLButtonElement>(".location-button:not(:disabled)")
+                      ?.focus()
+                  }
+                >
+                  Browse locations
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {isLoading ? (
+            <div className="folder-loading-status" role="status">
+              <span className="inline-spinner" aria-hidden="true" />
+              {loadingLabel}
+            </div>
+          ) : null}
           {isLoading && !browser ? <FolderSkeleton /> : null}
           {error ? (
             <div className="browser-state error-state" role="alert" aria-atomic="true">
@@ -486,6 +599,7 @@ export function ProjectBrowser({
                       segments: browser.segments,
                       append: true,
                       cursor: browser.nextCursor ?? undefined,
+                      loadingMessage: "Loading more folders",
                     })
                   }
                 >

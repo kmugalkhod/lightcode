@@ -30,16 +30,16 @@ Depth comes from adjacent charcoal tones and one-pixel hairlines. Do not add flo
 
 ## Shape and spacing
 
-Use a 7/9/11/13px radius progression and a 7/12/16/28px spacing rhythm. Controls are compact but never below a comfortable touch target on mobile. The composer and folder browser may use the largest radius; core navigation remains tighter.
+Use a 7/9/11/13px radius progression and a 7/12/16/28px spacing rhythm. A control’s full painted surface is its interactive hit area; primary desktop controls are comfortably clickable and mobile controls are never below 44px. The composer and fallback folder browser may use the largest radius; core navigation remains tighter.
 
 ## Components
 
 - Workspace ribbon: amber top rule and warm dark field; always ties path, run state, mode, and permission together.
-- Session rail: saved CLI/browser conversations, project chooser, and a clearly disabled “Later” customization group.
+- Session rail: saved CLI/browser conversations and one clear project chooser; do not show disabled placeholders for terminal-only customization.
 - Messages: role-aligned rows with bounded code and tool disclosures; sources remain visible links.
 - Composer: one dark inset surface with Agent state and a single amber send action; streaming replaces send with Stop run.
-- Folder browser: explicit local-location gestures, disabled non-directory and symlink rows, and a second confirmation before granting any broad location-root access.
+- Project chooser: one prominent full-hit-target action opens the host folder chooser first. Keep the authenticated common-location browser available as a quieter secondary action and show it automatically if the system chooser is unavailable or cannot open—including Linux without Zenity or KDialog in a graphical session. Keep non-directory and symlink rows disabled and retain confirmation before granting a broad fallback location.
 
 ## Do and don’t
 
-Do preserve CLI terminology, show real run/permission state, render failures in context, and let users resume persisted sessions without choosing another folder. Don’t imitate an IDE chrome, invent unavailable customization, hide permissions, silently probe local folders, or turn the application into a dashboard.
+Do preserve CLI terminology, make the entire visible bounds of every control interactive, show real run/permission and picker-busy state, render failures in context, and let users resume persisted sessions without choosing another folder. Don’t imitate IDE chrome, show unavailable Agents/Skills/MCP customization as disabled navigation, hide permissions, silently probe local folders, accept browser-supplied paths, or turn the application into a dashboard.

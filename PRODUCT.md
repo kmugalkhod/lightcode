@@ -34,11 +34,16 @@ to a separate Lightcode cloud service.
 ## Operating Context
 
 Users install Lightcode from npm and launch it from a terminal. The browser
-surface opens on a loopback address and offers Home, Desktop, Documents,
-Downloads, and Projects as explicitly opened locations. The user can navigate
-nested folders and select a project directory, then create or resume chat
-sessions for that canonical workspace. Provider calls still use the provider
-configured by the user.
+surface opens on a loopback address and uses the host folder chooser first: the
+Windows and macOS system dialogs, then Zenity or KDialog on Linux when one is
+available in a graphical session. If the system chooser is unavailable or
+cannot open—including Linux without Zenity or KDialog—the authenticated in-app
+browser falls back to Home, Desktop, Documents, Downloads, and Projects as
+explicitly opened locations. This bounded fallback is also available as a
+secondary action. The local server alone receives and
+canonicalizes the selected path, rejects filesystem roots, and grants the
+chosen project; the browser never submits an arbitrary host path. Provider
+calls still use the provider configured by the user.
 
 ## Capabilities and Constraints
 
@@ -47,13 +52,18 @@ configured by the user.
   undo/redo, context, model, mode, and session APIs.
 - The first browser release covers project selection, session history, chat,
   tool activity and approvals, mode/permission controls, and provider readiness.
+- Project selection is native-first. Cancelling the host dialog leaves the
+  current workspace unchanged; an unavailable or failed chooser falls back to
+  the bounded common-location browser with retry when appropriate. Users can
+  also open that bounded browser directly as a secondary action.
 - Provider connection, model selection, and deeper diagnostics remain in the
   terminal for this release and can move into the browser incrementally.
 - Agents, Skills, MCP, Plugins, and deeper customization remain accessible from
   the terminal initially and can become browser surfaces incrementally.
-- Browser code never receives unrestricted arbitrary-path access. Local paths
-  are granted deliberately, canonicalized server-side, and contained across
-  symlinks.
+- Browser code never supplies unrestricted arbitrary-path input. Native chooser
+  results are received and canonicalized server-side; the common-location
+  fallback is capability-bounded, and filesystem roots and symlink escapes
+  remain rejected.
 - The server remains loopback-only by default. A browser UI requires strict
   Host/Origin validation and per-launch authorization; localhost alone is not
   treated as authentication.

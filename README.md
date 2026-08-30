@@ -23,10 +23,21 @@ command it installs is `lightcode`.
 
 The two interfaces share the same local sessions, history, provider settings,
 and agent engine. `lightcode web` opens a dedicated loopback-only server and
-launches your browser. Start from Home, Desktop, Documents, Downloads, or
-Projects, browse into any nested folder, then start or resume a project chat.
-The per-launch browser credential stays in the URL fragment and the current
-browser tab; it is never passed to agent subprocesses.
+launches your browser. Opening a project uses the host folder chooser first:
+the Windows or macOS system dialog, then Zenity or KDialog on Linux when
+available in a graphical session. If the system chooser is unavailable or
+cannot open—including Linux without Zenity or KDialog—Lightcode falls back to
+an authenticated in-app browser rooted at Home, Desktop, Documents, Downloads,
+and Projects. That bounded browser is also available as a secondary project
+action. The local server—not the browser page—receives and
+canonicalizes the selected path, rejects filesystem, drive, and UNC share
+roots, and grants only the chosen project; cancelling leaves the current
+workspace unchanged. The per-launch browser credential stays in the URL
+fragment and current tab and is never passed to agent subprocesses.
+
+The browser rail stays focused on projects and sessions. Agents, Skills, MCP,
+Plugins, and deeper customization remain managed through the terminal
+interface for now.
 
 The first browser release runs one Lightcode interface at a time: press Ctrl+C
 to stop the TUI or browser server before switching. Sessions remain available
@@ -84,7 +95,7 @@ variables. Notable keys:
 | `maxRetries` | Provider-call retries for transient errors (default 5) |
 | `autoContinue.stallTimeoutSeconds` | Abort+retry a byte-silent stream (default 300; raise for very slow reasoning models) |
 | `autoContinue.maxErrorRetries` | Auto-resends before surfacing a stream error (default 8) |
-| `LIGHTCODE_DESKTOP_PATH`, `LIGHTCODE_DOCUMENTS_PATH`, `LIGHTCODE_DOWNLOADS_PATH`, `LIGHTCODE_PROJECTS_PATH` | Optional absolute overrides for browser picker locations |
+| `LIGHTCODE_DESKTOP_PATH`, `LIGHTCODE_DOCUMENTS_PATH`, `LIGHTCODE_DOWNLOADS_PATH`, `LIGHTCODE_PROJECTS_PATH` | Optional absolute overrides for the secure common-location fallback; they do not change the host-native picker |
 
 The local companion server listens on `127.0.0.1:4983` (uncommon on purpose —
 port 3000 belongs to the apps you build). Override with `PORT` for the server

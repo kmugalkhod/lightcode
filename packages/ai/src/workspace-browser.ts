@@ -147,6 +147,28 @@ export const workspaceGrantSchema = z
   .strict();
 export type WorkspaceGrant = z.infer<typeof workspaceGrantSchema>;
 
+export const workspaceNativePickerRequestSchema = z.object({}).strict();
+
+export const workspaceNativePickerResponseSchema = z.discriminatedUnion(
+  "outcome",
+  [
+    z
+      .object({
+        outcome: z.literal("selected"),
+        workspace: workspaceGrantSchema,
+      })
+      .strict(),
+    z
+      .object({
+        outcome: z.literal("cancelled"),
+      })
+      .strict(),
+  ],
+);
+export type WorkspaceNativePickerResponse = z.infer<
+  typeof workspaceNativePickerResponseSchema
+>;
+
 export const workspaceBrowserSelectResponseSchema = z
   .object({
     workspace: workspaceGrantSchema,
@@ -190,6 +212,9 @@ export const workspaceApiErrorCodeSchema = z.enum([
   "workspace_grant_not_found",
   "invalid_cursor",
   "workspace_unavailable",
+  "native_picker_busy",
+  "native_picker_unavailable",
+  "native_picker_failed",
 ]);
 export type WorkspaceApiErrorCode = z.infer<
   typeof workspaceApiErrorCodeSchema

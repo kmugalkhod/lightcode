@@ -303,7 +303,7 @@ export interface BrowserPage {
 export const workspaceSchema = z
   .object({
     id: nonEmptyBoundedString,
-    name: z.string().min(1).max(240),
+    name: z.string().min(1).max(255),
     pathLabel: z.string().min(1).max(4096),
     createdAt: z.string().min(1),
   })
@@ -311,6 +311,18 @@ export const workspaceSchema = z
 export type Workspace = z.infer<typeof workspaceSchema>;
 
 const workspaceSelectSchema = z.object({ workspace: workspaceSchema });
+const workspaceNativePickerResponseSchema = z.discriminatedUnion("outcome", [
+  z
+    .object({
+      outcome: z.literal("selected"),
+      workspace: workspaceSchema,
+    })
+    .strict(),
+  z.object({ outcome: z.literal("cancelled") }).strict(),
+]);
+export type WorkspaceNativePickerResponse = z.infer<
+  typeof workspaceNativePickerResponseSchema
+>;
 const sessionReferenceSchema = z.object({ id: z.string().min(1) });
 export type SessionReference = z.infer<typeof sessionReferenceSchema>;
 
@@ -486,6 +498,15 @@ export function createLightcodeApi(fetcher: AuthenticatedFetch) {
 
   return {
     fetch: fetcher,
+
+    async openWorkspacePicker(): Promise<WorkspaceNativePickerResponse> {
+      return workspaceNativePickerResponseSchema.parse(
+        await request("/workspaces/picker/open", {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+      );
+    },
 
     async listLocations(): Promise<WorkspaceLocation[]> {
       const payload = await request("/workspaces/locations");

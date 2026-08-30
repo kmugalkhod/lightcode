@@ -8,6 +8,7 @@ interface SessionRailProps {
   activeSessionId: string | null;
   workspace: Workspace | null;
   isLoading: boolean;
+  isPickingProject: boolean;
   error: string | null;
   mobileOpen: boolean;
   backgroundInert: boolean;
@@ -17,19 +18,12 @@ interface SessionRailProps {
   onSelectSession: (session: Session) => void;
 }
 
-const laterItems = [
-  ["agent", "Agents"],
-  ["spark", "Skills"],
-  ["instructions", "Instructions"],
-  ["mcp", "MCP servers"],
-  ["tool", "Tools"],
-] as const;
-
 export function SessionRail({
   sessions,
   activeSessionId,
   workspace,
   isLoading,
+  isPickingProject,
   error,
   mobileOpen,
   backgroundInert,
@@ -77,9 +71,23 @@ export function SessionRail({
             New session
             <kbd>⌘N</kbd>
           </button>
-          <button className="project-button" type="button" onClick={onOpenProject}>
-            <Icon name="folder-open" size={16} />
-            <span>{workspace?.name ?? "Choose project"}</span>
+          <button
+            className="project-button"
+            type="button"
+            onClick={onOpenProject}
+            disabled={isPickingProject}
+            aria-busy={isPickingProject}
+          >
+            {isPickingProject ? (
+              <span className="inline-spinner" aria-hidden="true" />
+            ) : (
+              <Icon name="folder-open" size={16} />
+            )}
+            <span className="project-button-label">
+              {isPickingProject
+                ? "Opening folder picker"
+                : workspace?.name ?? "Choose project"}
+            </span>
             <Icon name="chevron-right" size={15} />
           </button>
         </div>
@@ -125,16 +133,6 @@ export function SessionRail({
             : null}
         </nav>
 
-        <footer className="rail-footer">
-          <div className="rail-section-heading"><span>Customize</span><span>Later</span></div>
-          {laterItems.map(([icon, label]) => (
-            <button className="later-item" type="button" key={label} disabled title={`${label} are coming to the browser later`}>
-              <Icon name={icon} size={16} />
-              <span>{label}</span>
-              <small>CLI</small>
-            </button>
-          ))}
-        </footer>
       </aside>
     </>
   );
