@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { generateText, stepCountIs, tool } from "ai";
+import { z } from "zod";
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
@@ -26,6 +28,35 @@ const baseConfig = {
 } as const;
 
 describe("provider registry", () => {
+  test("an unauthenticated compatible model completes a real SDK tool round trip", async () => {
+    const requests: Array<{ model: string; messages: Array<{ role: string; content?: unknown }> }> = [];
+    let executions = 0;
+    const resolved = resolveConfiguredProviderModel({
+      config: { ...baseConfig, provider: "openai-compatible", model: "custom-model", baseUrl: "http://127.0.0.1:11434/v1" },
+      env: {},
+      fetch: async (_input, init) => {
+        const request = z.object({ model: z.string(), messages: z.array(z.object({ role: z.string(), content: z.unknown().optional() })) }).parse(JSON.parse(String(init?.body)));
+        requests.push(request);
+        const first = requests.length === 1;
+        return Response.json({ id: `completion-${requests.length}`, created: 1, model: request.model, choices: [{ index: 0, finish_reason: first ? "tool_calls" : "stop", message: first ? { role: "assistant", content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "inspect", arguments: '{"path":"README.md"}' } }] } : { role: "assistant", content: "Reviewed README.md" } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
+      },
+    });
+    const result = await generateText({
+      model: resolved.model,
+      prompt: "Inspect README.md",
+      stopWhen: stepCountIs(3),
+      tools: { inspect: tool({ inputSchema: z.object({ path: z.string() }), execute: async ({ path }) => { executions++; return { path, text: "Project documentation" }; } }) },
+    });
+    expect(executions).toBe(1);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.messages.some((message) => message.role === "tool")).toBe(true);
+    expect(result.text).toBe("Reviewed README.md");
+  });
+  test("permits unauthenticated OpenAI-compatible servers and arbitrary model IDs", () => {
+    const resolved = resolveConfiguredProviderModel({ config: { ...baseConfig, provider: "openai-compatible", model: "local-custom-model", baseUrl: "http://127.0.0.1:11434/v1" }, env: {} });
+    expect(resolved.missingCredentialHints).toEqual([]);
+    expect(resolved.resolvedModelId).toBe("local-custom-model");
+  });
   test("resolves Anthropic model aliases", () => {
     expect(resolveModelAlias("anthropic", "haiku")).toBe("claude-haiku-4-5");
     expect(resolveModelAlias("anthropic", "sonnet")).toBe("claude-sonnet-4-6");

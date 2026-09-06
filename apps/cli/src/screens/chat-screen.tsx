@@ -15,6 +15,7 @@ import {
   sessionPathParamsSchema,
 } from "@lightcode/ai";
 import { useCodingSessionChat } from "@lightcode/ai/react";
+import { networkFetch } from "@lightcode/shared/network";
 import {
   createWorkspaceContext,
   loadSessionTodos,
@@ -438,6 +439,7 @@ export function ChatScreen() {
     status,
     todos,
   } = useCodingSessionChat({
+    fetch: networkFetch,
     chatApi,
     initialPrompt,
     isSessionIdValid,

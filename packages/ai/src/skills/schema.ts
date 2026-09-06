@@ -1,10 +1,11 @@
 import { z } from "zod";
 
 export const skillDescription =
-  "Load a local Lightcode skill by name and return its instructions and metadata.";
+  "Load an installed skill by name before following its instructions. Use resource to read a supporting file relative to that skill's directory.";
 
 export const skillInputSchema = z.object({
   name: z.string().min(1).max(160),
+  resource: z.string().min(1).max(1024).optional(),
 });
 
 export const skillProviderInputSchema = skillInputSchema;

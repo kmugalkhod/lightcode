@@ -173,7 +173,16 @@ const referencedWebAssets = new Set(
     .map((match) => match[1])
     .filter((name): name is string => Boolean(name)),
 );
-const expectedWebAssets = new Set(["index.html", ...referencedWebAssets]);
+const expectedWebAssets = new Set(["index.html", "geist-LICENSE.txt", ...referencedWebAssets]);
+// Self-hosted fonts are referenced by the stylesheet rather than index.html.
+for (const asset of referencedWebAssets) {
+  if (!asset.endsWith(".css") || path.basename(asset) !== asset) continue;
+  const css = readFileSync(path.join(webAssetsSource, asset), "utf8");
+  for (const match of css.matchAll(/url\(["']?(?:\.\/)?([^"'()?#]+)["']?\)/g)) {
+    const dependency = match[1]?.replace(/^\/app\//, "");
+    if (dependency && path.basename(dependency) === dependency) expectedWebAssets.add(dependency);
+  }
+}
 const actualWebAssets = readdirSync(webAssetsSource, { withFileTypes: true });
 const unexpectedWebAssets = actualWebAssets.filter(
   (entry) => !entry.isFile() || !expectedWebAssets.has(entry.name),
@@ -294,30 +303,30 @@ if (!bunPath) {
 // to Bun unless we forward the certs explicitly.
 // Strategy: use PowerShell only to export raw DER .cer files; do all PEM
 // formatting in Node.js where string/encoding handling is reliable.
-if (process.platform === "win32" && !process.env.NODE_EXTRA_CA_CERTS) {
+if (process.platform === "win32" && !process.env.NODE_EXTRA_CA_CERTS && !process.env.LIGHTCODE_CA_CERTS && !process.env.SSL_CERT_FILE) {
+  let exportDir;
   try {
-    const tmpDir = os.tmpdir();
-    const cerDir = path.join(tmpDir, "lightcode-certs");
-    const pemFile = path.join(tmpDir, "lightcode-win-ca.pem");
-    const ps1File = path.join(tmpDir, "lightcode-cert-export.ps1");
-
-    if (!fs.existsSync(cerDir)) fs.mkdirSync(cerDir, { recursive: true });
-
-    // Forward slashes work in PowerShell and avoid backslash escaping issues
-    const cerDirFwd = cerDir.replace(/\\\\/g, "/");
+    exportDir = fs.mkdtempSync(path.join(os.tmpdir(), "lightcode-certs-"));
+    const cerDir = exportDir;
+    const pemFile = path.join(exportDir, "ca.pem");
+    const ps1File = path.join(exportDir, "export.ps1");
     const psLines = [
       "$i = 0",
-      'foreach ($s in @("Root", "CA")) {',
+      'foreach ($s in @("LocalMachine", "CurrentUser")) {',
       '  try {',
-      '    foreach ($c in (Get-ChildItem "Cert:\\\\LocalMachine\\\\$s" -EA Stop)) {',
-      '      Export-Certificate -Cert $c -FilePath "' + cerDirFwd + '/$i.cer" -Type CERT | Out-Null',
+      '    foreach ($c in (Get-ChildItem "Cert:\\\\$s\\\\Root" -EA Stop)) {',
+      '      Export-Certificate -Cert $c -FilePath (Join-Path $env:LIGHTCODE_CERT_EXPORT_DIR "$i.cer") -Type CERT -ErrorAction Stop | Out-Null',
       '      $i++',
       '    }',
       '  } catch {}',
       '}',
     ];
     fs.writeFileSync(ps1File, psLines.join("\\n"), "utf8");
-    spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1File], { stdio: "pipe" });
+    const exported = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1File], {
+      stdio: "pipe", timeout: 10000, windowsHide: true,
+      env: { ...process.env, LIGHTCODE_CERT_EXPORT_DIR: cerDir },
+    });
+    if (exported.error || exported.status !== 0) throw new Error("Certificate export failed");
     try { fs.unlinkSync(ps1File); } catch {}
 
     // Convert DER .cer files to PEM entirely in Node.js
@@ -335,8 +344,13 @@ if (process.platform === "win32" && !process.env.NODE_EXTRA_CA_CERTS) {
 
     // Cleanup individual cert files
     cerFiles.forEach(function(f) { try { fs.unlinkSync(path.join(cerDir, f)); } catch {} });
-    try { fs.rmdirSync(cerDir); } catch {}
+    process.on("exit", () => {
+      try { fs.rmSync(exportDir, { recursive: true, force: true }); } catch {}
+    });
   } catch {
+    if (exportDir) {
+      try { fs.rmSync(exportDir, { recursive: true, force: true }); } catch {}
+    }
     // cert export failed — Bun uses its own bundled roots
   }
 }
@@ -358,7 +372,7 @@ try {
     stdio: "inherit",
     env: process.env,
   });
-  process.exit(result.status || 0);
+  process.exit(result.status ?? 1);
 } catch (error) {
   process.exit(error.status || 1);
 }

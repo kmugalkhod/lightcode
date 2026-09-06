@@ -1,5 +1,6 @@
 import type { CodingMode, PermissionMode, ProviderStatus, Session, Workspace } from "../lib/api";
 import { Icon } from "./icons";
+import { codingModeSchema, permissionModeSchema } from "../lib/api";
 
 interface WorkspaceRibbonProps {
   workspace: Workspace | null;
@@ -15,6 +16,7 @@ interface WorkspaceRibbonProps {
   onOpenProject: () => void;
   onModeChange: (mode: CodingMode) => void;
   onPermissionModeChange: (mode: PermissionMode) => void;
+  onOpenModels: () => void;
 }
 
 const permissionLabels: Record<PermissionMode, string> = {
@@ -37,6 +39,7 @@ export function WorkspaceRibbon({
   onOpenProject,
   onModeChange,
   onPermissionModeChange,
+  onOpenModels,
 }: WorkspaceRibbonProps) {
   const pathLabel = session?.pathLabel ?? session?.cwd ?? workspace?.pathLabel ?? "Choose a local project";
   const normalizedSessionPath = (session?.pathLabel ?? session?.cwd)?.replaceAll("\\", "/").replace(/\/$/, "");
@@ -98,10 +101,10 @@ export function WorkspaceRibbon({
       <div className="ribbon-spacer" />
 
       {providerStatus?.selectedModel || session?.model ? (
-        <span className="ribbon-model" title={providerStatus?.selectedModel ?? session?.model ?? undefined}>
+        <button type="button" className="ribbon-model" onClick={onOpenModels} disabled={isRunning || !providerStatus} aria-label="Choose model" title={providerStatus?.selectedModel ?? session?.model ?? undefined}>
           <Icon name="agent" size={15} />
-          {providerStatus?.selectedModel ?? session?.model}
-        </span>
+          <span>{providerStatus?.selectedModel ?? session?.model}</span><Icon name="chevron-down" size={13} />
+        </button>
       ) : null}
 
       <label className={modeDisabled ? "ribbon-select disabled" : "ribbon-select"}>
@@ -113,7 +116,7 @@ export function WorkspaceRibbon({
         <select
           aria-label="Agent mode"
           value={mode}
-          onChange={(event) => onModeChange(event.currentTarget.value as CodingMode)}
+          onChange={(event) => onModeChange(codingModeSchema.parse(event.currentTarget.value))}
           disabled={modeDisabled}
         >
           <option value="build">Build</option>
@@ -138,7 +141,7 @@ export function WorkspaceRibbon({
         <select
           aria-label="Permission mode"
           value={effectivePermissionMode}
-          onChange={(event) => onPermissionModeChange(event.currentTarget.value as PermissionMode)}
+          onChange={(event) => onPermissionModeChange(permissionModeSchema.parse(event.currentTarget.value))}
           disabled={permissionDisabled}
         >
           {Object.entries(permissionLabels).map(([value, label]) => (

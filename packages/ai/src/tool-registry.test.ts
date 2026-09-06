@@ -59,6 +59,7 @@ describe("codingToolRegistry consistency", () => {
       "read_file",
       "grep",
       "tool_search",
+      "skill",
       "todo_write",
       "write_file",
       "edit_file",
@@ -75,6 +76,7 @@ describe("codingToolRegistry consistency", () => {
       "read_file",
       "grep",
       "tool_search",
+      "skill",
       "request_user_input",
     ]);
 
@@ -83,7 +85,6 @@ describe("codingToolRegistry consistency", () => {
       "git_diff",
       "git_log",
       "git_show",
-      "skill",
       "list_mcp_resources",
       "read_mcp_resource",
       "call_mcp_tool",

@@ -56,8 +56,10 @@ calls still use the provider configured by the user.
   current workspace unchanged; an unavailable or failed chooser falls back to
   the bounded common-location browser with retry when appropriate. Users can
   also open that bounded browser directly as a secondary action.
-- Provider connection, model selection, and deeper diagnostics remain in the
-  terminal for this release and can move into the browser incrementally.
+- The browser supports searching the current provider's model catalog and
+  selecting a model, including exact model IDs. Provider connection remains
+  terminal-owned. Session search, recent sessions, and tab-local drafts support
+  everyday continuation without changing server-authoritative history.
 - Agents, Skills, MCP, Plugins, and deeper customization remain accessible from
   the terminal initially and can become browser surfaces incrementally.
 - Browser code never supplies unrestricted arbitrary-path input. Native chooser

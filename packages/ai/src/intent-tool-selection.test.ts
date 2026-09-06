@@ -33,7 +33,7 @@ describe("selectCodingAgentIntentTools", () => {
       expect(selected).toContain("bash");
       expect(selected).not.toContain("git_status");
       expect(selected).not.toContain("web_search");
-      expect(selected).not.toContain("skill");
+      expect(selected).toContain("skill");
     }
   });
 

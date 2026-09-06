@@ -1,5 +1,6 @@
-import { rmSync } from "node:fs";
+import { copyFileSync, rmSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const webRoot = path.resolve(import.meta.dir, "..");
 const outputDirectory = path.join(webRoot, "dist");
@@ -19,6 +20,8 @@ const result = Bun.spawnSync(
     "browser",
     "--production",
     "--minify",
+    "--external",
+    "/app/geist-latin.woff2",
   ],
   {
     cwd: webRoot,
@@ -30,3 +33,11 @@ const result = Bun.spawnSync(
 if (result.exitCode !== 0) {
   process.exit(result.exitCode);
 }
+copyFileSync(
+  fileURLToPath(import.meta.resolve("@fontsource-variable/geist/files/geist-latin-wght-normal.woff2")),
+  path.join(outputDirectory, "geist-latin.woff2"),
+);
+copyFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.resolve("@fontsource-variable/geist/package.json"))), "LICENSE"),
+  path.join(outputDirectory, "geist-LICENSE.txt"),
+);

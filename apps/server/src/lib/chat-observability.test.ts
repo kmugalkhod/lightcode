@@ -95,3 +95,10 @@ describe("classifyChatError", () => {
     expect(classified.retryable).toBe(false);
   });
 });
+test("certificate failures inside SDK errors are actionable and never auto-retried", () => {
+  const error = new APICallError({ message: "fetch failed", url: "https://provider.test", requestBodyValues: {}, isRetryable: true, cause: Object.assign(new Error("unable to get local issuer certificate"), { code: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" }) });
+  const result = classifyChatError(error);
+  expect(result.kind).toBe("network");
+  expect(result.retryable).toBe(false);
+  expect(result.message).toContain("NODE_EXTRA_CA_CERTS");
+});

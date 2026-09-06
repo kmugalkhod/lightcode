@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { Hono } from "hono";
+import { networkFetch } from "@lightcode/shared/network";
 import {
   ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET,
   codingToolDescriptions,
@@ -396,7 +397,7 @@ async function buildConnectivityPayload() {
     httpsProxy: Boolean(Bun.env.HTTPS_PROXY ?? Bun.env.https_proxy),
     httpProxy: Boolean(Bun.env.HTTP_PROXY ?? Bun.env.http_proxy),
     noProxy: Boolean(Bun.env.NO_PROXY ?? Bun.env.no_proxy),
-    extraCaCerts: Boolean(Bun.env.NODE_EXTRA_CA_CERTS),
+    extraCaCerts: Boolean(Bun.env.NODE_EXTRA_CA_CERTS || Bun.env.LIGHTCODE_CA_CERTS || Bun.env.SSL_CERT_FILE),
   };
 
   if (!baseUrl) {
@@ -416,7 +417,7 @@ async function buildConnectivityPayload() {
   const startedAt = performance.now();
 
   try {
-    const response = await fetch(target, {
+    const response = await networkFetch(target, {
       signal: AbortSignal.timeout(connectivityProbeTimeoutMs),
     });
 

@@ -38,7 +38,7 @@ describe("coding agent dynamic tool selection", () => {
     expect(tools).toContain("git_diff");
     expect(tools).toContain("write_file");
     expect(tools).not.toContain("web_search");
-    expect(tools).not.toContain("skill");
+    expect(tools).toContain("skill");
   });
 
   test("non-casual prompts always get tools (never an empty set)", () => {

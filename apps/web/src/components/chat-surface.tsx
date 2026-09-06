@@ -18,6 +18,7 @@ import {
 import { ChatMessage } from "./chat-message";
 import { CommandComposer } from "./command-composer";
 import { Icon } from "./icons";
+import { displaySessionTitle } from "../lib/api";
 
 interface ChatSurfaceProps {
   api: LightcodeApi;
@@ -83,6 +84,7 @@ export function ChatSurface({
   const previousStreamingRef = useRef(false);
   const [commandResult, setCommandResult] = useState<CommandResult | null>(null);
   const [commandBusy, setCommandBusy] = useState<string | null>(null);
+  const [following, setFollowing] = useState(true);
 
   useEffect(() => {
     onRunStateChange(chat.isStreaming);
@@ -117,6 +119,7 @@ export function ChatSurface({
     const element = scrollRef.current;
     if (!element) return;
     followOutputRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 140;
+    setFollowing(followOutputRef.current);
   }
 
   async function runCommand(
@@ -158,6 +161,7 @@ export function ChatSurface({
 
   return (
     <section className="chat-surface" aria-label="Project conversation">
+      <header className="conversation-heading"><div><h1>{displaySessionTitle(session)}</h1><span>{mode === "plan" ? "Planning" : "Building"} · {chat.messages.filter((message) => message.role === "user").length} messages from you</span></div><span className={chat.isStreaming ? "conversation-state running" : "conversation-state"}><span className="live-dot" />{chat.pendingApprovals.length || chat.pendingUserPrompts.length ? "Your input needed" : chat.isStreaming ? "Working" : "Ready for your next step"}</span></header>
       <div className="conversation-scroll" ref={scrollRef} onScroll={handleScroll}>
         <div className="conversation-column">
           {chat.isHistoryLoading ? <ConversationSkeleton /> : null}
@@ -182,6 +186,7 @@ export function ChatSurface({
 
       <div className="conversation-controls">
         <div className="conversation-column">
+          {!following ? <button className="jump-to-latest" type="button" onClick={() => { followOutputRef.current = true; setFollowing(true); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }}><Icon name="chevron-down" size={16} />Back to latest{chat.isStreaming ? " · Live" : ""}</button> : null}
           {chat.errorMessage ? (
             <div className="inline-error" role="alert">
               <Icon name="warning" size={17} />
@@ -201,6 +206,7 @@ export function ChatSurface({
           ))}
 
           <CommandComposer
+            draftKey={session.id}
             appearance="conversation"
             hasSession
             canSendMessage={!chat.isLoading && chat.pendingApprovals.length === 0 && chat.pendingUserPrompts.length === 0}
@@ -222,8 +228,8 @@ export function ChatSurface({
             })}
           />
           <div className="composer-hint">
-            <span>Enter to send · Shift+Enter for a new line · / for commands</span>
-            <span>History is shared with the CLI</span>
+            <span>Enter to send · Shift+Enter for a new line</span>
+            <span>{mode === "plan" ? "Plan mode · Read only" : permissionMode === "workspace-write" ? "Build mode · Project access" : permissionMode === "danger-full-access" ? "Build mode · Full access" : "Build mode · Read only"}</span>
           </div>
         </div>
       </div>
@@ -294,7 +300,7 @@ function PromptDock({
             onRespond({ toolCallId: prompt.toolCallId, answer: customAnswer.trim(), source: "custom" });
           }}
         >
-          <input value={customAnswer} onChange={(event) => setCustomAnswer(event.currentTarget.value)} placeholder={prompt.placeholder ?? "Type a response"} />
+          <input aria-label="Your answer" value={customAnswer} onChange={(event) => setCustomAnswer(event.currentTarget.value)} placeholder={prompt.placeholder ?? "Type a response"} />
           <button className="primary-button compact-primary" type="submit" disabled={!customAnswer.trim()}>Reply</button>
         </form>
       ) : null}

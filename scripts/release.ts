@@ -27,6 +27,7 @@ function run(command: string[], cwd = repoRoot) {
 
 console.log(`Releasing lightcode v${lightcodeVersion} (${publish ? "publish" : "dry run"})`);
 
+run(["bun", "audit"]);
 run(["bun", "run", "typecheck"]);
 run(["bun", "test"]);
 run(["bun", "scripts/build-dist.ts"]);

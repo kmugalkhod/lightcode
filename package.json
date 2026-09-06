@@ -35,13 +35,22 @@
   "engines": {
     "bun": ">=1.3.0"
   },
+  "overrides": {
+    "@hono/node-server": "1.19.17",
+    "deepmerge-ts": "8.0.2",
+    "fast-uri": "3.1.7",
+    "hono": "4.13.7",
+    "mysql2": "3.24.3",
+    "shell-quote": "1.10.0",
+    "valibot": "1.4.2"
+  },
   "files": [
     "dist"
   ],
   "devDependencies": {
     "@types/bun": "latest",
-    "@types/react": "^19.0.0",
-    "prisma": "^7.8.0",
+    "@types/react": "^19.2.18",
+    "prisma": "7.10.0",
     "typescript": "^5.9.3"
   }
 }

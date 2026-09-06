@@ -8,6 +8,7 @@ import {
 } from "./components/project-browser";
 import { SessionRail } from "./components/session-rail";
 import { WorkspaceRibbon } from "./components/workspace-ribbon";
+import { ModelPicker } from "./components/model-picker";
 import {
   createAuthenticatedFetch,
   createLightcodeApi,
@@ -15,6 +16,8 @@ import {
   loadStoredWorkspace,
   readLaunchToken,
   storeWorkspace,
+  displaySessionTitle,
+  formatRelativeTime,
   type CodingMode,
   type PermissionMode,
   type ProviderStatus,
@@ -138,6 +141,7 @@ export function App() {
   const [isPickingProject, setIsPickingProject] = useState(false);
   const [pickerNotice, setPickerNotice] = useState<ProjectBrowserNotice | null>(null);
   const [isRailOpen, setIsRailOpen] = useState(false);
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(Boolean(token));
@@ -196,7 +200,7 @@ export function App() {
 
   const createSession = useCallback(
     async (prompt?: string) => {
-      if (!api || !workspace || isCreating) return;
+      if (!api || !workspace || isCreating) return false;
       setIsCreating(true);
       setSessionError(null);
       try {
@@ -219,10 +223,12 @@ export function App() {
         };
         setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)]);
         setActiveSession(created);
-        safeSessionStorage().setItem(activeSessionStorageKey, created.id);
+        try { safeSessionStorage().setItem(activeSessionStorageKey, created.id); } catch { /* The session is already created; storage is optional. */ }
         if (prompt?.trim()) setInitialPrompt({ sessionId: created.id, text: prompt.trim() });
+        return true;
       } catch (cause) {
         setSessionError(cause instanceof Error ? cause.message : "Unable to create a session.");
+        return false;
       } finally {
         setIsCreating(false);
       }
@@ -263,6 +269,10 @@ export function App() {
   }
 
   function openRail() {
+    if (!window.matchMedia("(max-width: 760px)").matches) {
+      document.getElementById("session-search")?.focus();
+      return;
+    }
     railTriggerRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setIsRailOpen(true);
@@ -278,6 +288,7 @@ export function App() {
   }
 
   function beginNewSession() {
+    setIsRunning(false);
     if (!workspace) {
       void openNativeProjectPicker();
       return;
@@ -298,17 +309,31 @@ export function App() {
 
   useEffect(() => {
     function handleKeyDown(event: globalThis.KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+      if (isBrowserOpen || isModelPickerOpen) return;
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "n") {
         event.preventDefault();
         beginNewSession();
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (window.matchMedia("(max-width: 760px)").matches) openRail();
+        window.requestAnimationFrame(() => document.getElementById("session-search")?.focus());
       }
       if (event.key === "Escape" && isRailOpen) closeRail();
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [beginNewSession, isRailOpen]);
+  }, [beginNewSession, isRailOpen, isBrowserOpen, isModelPickerOpen]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 760px)");
+    const handleResize = () => { if (!media.matches) setIsRailOpen(false); };
+    media.addEventListener("change", handleResize);
+    return () => media.removeEventListener("change", handleResize);
+  }, []);
 
   function selectWorkspace(selected: Workspace) {
+    setIsRunning(false);
     setWorkspace(selected);
     setActiveSession(null);
     setInitialPrompt(null);
@@ -375,6 +400,7 @@ export function App() {
   }
 
   function selectSession(session: Session) {
+    setIsRunning(false);
     setActiveSession(session);
     setInitialPrompt(null);
     setMode(session.mode);
@@ -432,6 +458,7 @@ export function App() {
         onNewSession={beginNewSession}
         onOpenProject={() => void openNativeProjectPicker()}
         onSelectSession={selectSession}
+        onRetry={() => void loadSessions()}
       />
 
       <main className="workspace-main" inert={isRailOpen || isBrowserOpen ? true : undefined}>
@@ -449,6 +476,7 @@ export function App() {
           onOpenProject={() => void openNativeProjectPicker()}
           onModeChange={setMode}
           onPermissionModeChange={(nextMode) => void persistPermissionMode(nextMode)}
+          onOpenModels={() => setIsModelPickerOpen(true)}
         />
 
         {activeSession ? (
@@ -473,6 +501,7 @@ export function App() {
           />
         ) : (
           <NewSessionSurface
+            key={workspace?.id ?? "no-project"}
             api={api}
             workspace={workspace}
             sessions={sessions}
@@ -489,7 +518,7 @@ export function App() {
             onSelectSession={selectSession}
             onPermissionModeChange={applyPermissionModeLocally}
             onProviderStatusChange={setProviderStatus}
-            onStart={(prompt) => void createSession(prompt)}
+            onStart={createSession}
           />
         )}
       </main>
@@ -507,6 +536,7 @@ export function App() {
           onSelect={selectWorkspace}
         />
       ) : null}
+      {isModelPickerOpen && providerStatus ? <ModelPicker api={api} status={providerStatus} onClose={() => setIsModelPickerOpen(false)} onSelect={setProviderStatus} /> : null}
     </div>
   );
 }
@@ -558,10 +588,11 @@ function NewSessionSurface({
   onSelectSession: (session: Session) => void;
   onPermissionModeChange: (mode: PermissionMode) => void;
   onProviderStatusChange: (status: ProviderStatus) => void;
-  onStart: (prompt: string) => void;
+  onStart: (prompt: string) => Promise<boolean>;
 }) {
   const [commandResult, setCommandResult] = useState<CommandResult | null>(null);
   const [commandBusy, setCommandBusy] = useState<string | null>(null);
+  const [suggestedDraft, setSuggestedDraft] = useState<{ text: string; id: number } | null>(null);
 
   async function runCommand(
     command: SlashCommandDefinition,
@@ -602,7 +633,8 @@ function NewSessionSurface({
         <div className="new-session-title">
           <span className="new-session-mark"><Icon name="lightcode" size={25} /></span>
           <div>
-            <h1>{workspace ? `New session in ${workspace.name}` : "Choose a project to begin"}</h1>
+            <h1>{workspace ? "What would you like to build?" : "Your next idea starts here."}</h1>
+            <p className="starter-description">{workspace ? `Explore, plan, and make progress in ${workspace.name}.` : "Open a local project. Give Lightcode a task. Keep the work moving."}</p>
             <div className="new-session-project-controls">
               <button
                 className="new-session-project-button"
@@ -627,7 +659,7 @@ function NewSessionSurface({
                       ? "Complete the choice in the system dialog"
                       : workspace
                         ? "Choose another local project"
-                        : "Uses your system folder dialog"}
+                        : "Choose the code you want to work on"}
                   </small>
                 </span>
                 <Icon name="chevron-right" size={15} />
@@ -638,13 +670,16 @@ function NewSessionSurface({
                 onClick={onBrowseCommonLocations}
                 disabled={isPickingProject}
               >
-                Browse common locations instead
+                Browse folders
               </button>
             </div>
           </div>
         </div>
 
         <CommandComposer
+          key={workspace?.id ?? "no-project"}
+          draftKey={`new-${workspace?.id ?? "no-project"}`}
+          suggestedDraft={suggestedDraft}
           appearance="starter"
           hasSession={false}
           canSendMessage={Boolean(workspace) && !isCreating}
@@ -655,7 +690,7 @@ function NewSessionSurface({
           onDismissResult={() => setCommandResult(null)}
           onSubmit={(text) => {
             setCommandResult(null);
-            onStart(text);
+            return onStart(text);
           }}
           onCommand={(command, args, available) => void runCommand(command, args, available)}
           onUnknownCommand={(invokedAs) => setCommandResult({
@@ -666,12 +701,18 @@ function NewSessionSurface({
         />
         {error ? <div className="new-session-error" role="alert"><Icon name="warning" size={16} />{error}</div> : null}
         <div className="starter-suggestions" aria-label="Suggested prompts">
-          {["Explain this project", "Find the highest-risk issue", "Plan the next change"].map((suggestion) => (
-            <button key={suggestion} type="button" disabled={!workspace || isCreating} onClick={() => onStart(suggestion)}>
-              {suggestion}
+          {[{ icon: "search" as const, title: "Understand the code", text: "Explain this project's architecture and the main flows I should understand." }, { icon: "tool" as const, title: "Find an issue", text: "Review this project for its highest-risk bug. Explain what you find before making changes." }, { icon: "instructions" as const, title: "Plan a change", text: "Help me plan a change to this project. Start by understanding the code and asking what I want to build." }].map((suggestion) => (
+            <button key={suggestion.title} type="button" disabled={!workspace || isCreating} onClick={() => setSuggestedDraft({ text: suggestion.text, id: Date.now() })}>
+              <Icon name={suggestion.icon} size={16} />{suggestion.title}<Icon name="chevron-right" size={14} />
             </button>
           ))}
         </div>
+        {sessions.length > 0 ? <section className="recent-sessions" aria-label="Recent sessions">
+          <div className="recent-sessions-heading"><h2>Pick up where you left off</h2><button type="button" onClick={onOpenSessions}>All sessions<Icon name="chevron-right" size={14} /></button></div>
+          {sessions.slice(0, 3).map((session) => <button className="recent-session" type="button" key={session.id} onClick={() => onSelectSession(session)}>
+            <Icon name="message" size={17} /><span><strong>{displaySessionTitle(session)}</strong><small>{session.pathLabel ?? session.cwd ?? "Local project"}</small></span><time>{formatRelativeTime(session.updatedAt)}</time><Icon name="chevron-right" size={15} />
+          </button>)}
+        </section> : <p className="starter-footnote"><Icon name="shield" size={14} />Start in Plan mode to explore before making changes.</p>}
       </div>
     </section>
   );

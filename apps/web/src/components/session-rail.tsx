@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Session, Workspace } from "../lib/api";
 import { displaySessionTitle, formatRelativeTime } from "../lib/api";
 import { Icon } from "./icons";
@@ -16,6 +16,7 @@ interface SessionRailProps {
   onNewSession: () => void;
   onOpenProject: () => void;
   onSelectSession: (session: Session) => void;
+  onRetry: () => void;
 }
 
 export function SessionRail({
@@ -31,8 +32,11 @@ export function SessionRail({
   onNewSession,
   onOpenProject,
   onSelectSession,
+  onRetry,
 }: SessionRailProps) {
   const mobileCloseRef = useRef<HTMLButtonElement>(null);
+  const [query, setQuery] = useState("");
+  const filteredSessions = sessions.filter((session) => `${displaySessionTitle(session)} ${session.pathLabel ?? session.cwd ?? ""}`.toLowerCase().includes(query.toLowerCase().trim()));
 
   useEffect(() => {
     if (mobileOpen) {
@@ -53,7 +57,17 @@ export function SessionRail({
       <aside
         className={mobileOpen ? "session-rail open" : "session-rail"}
         aria-label="Lightcode sessions"
+        role={mobileOpen ? "dialog" : undefined}
+        aria-modal={mobileOpen ? true : undefined}
         inert={backgroundInert ? true : undefined}
+        onKeyDown={(event) => {
+          if (!mobileOpen || event.key !== "Tab") return;
+          const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [tabindex="0"]')).filter((item) => item.getClientRects().length);
+          const first = items[0];
+          const last = items.at(-1);
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        }}
       >
         <header className="rail-header">
           <div className="brand-lockup">
@@ -69,7 +83,7 @@ export function SessionRail({
           <button className="new-session-button" type="button" onClick={onNewSession} disabled={!workspace}>
             <Icon name="plus" size={16} />
             New session
-            <kbd>⌘N</kbd>
+            <kbd title="Control or Command + Shift + N">⇧ N</kbd>
           </button>
           <button
             className="project-button"
@@ -92,9 +106,15 @@ export function SessionRail({
           </button>
         </div>
 
+        <label className="session-search">
+          <Icon name="search" size={16} />
+          <input id="session-search" type="search" value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Find a session…" aria-label="Search sessions" />
+          <kbd>⌘ K</kbd>
+        </label>
+
         <div className="rail-section-heading">
           <span>Sessions</span>
-          <span>{sessions.length}</span>
+          <span>{query ? `${filteredSessions.length} / ` : ""}{sessions.length}</span>
         </div>
         <nav className="session-list" aria-label="Saved conversations">
           {isLoading ? <SessionSkeleton /> : null}
@@ -102,6 +122,7 @@ export function SessionRail({
             <div className="rail-state">
               <Icon name="warning" size={18} />
               <p>{error}</p>
+              <button type="button" onClick={onRetry}>Retry</button>
             </div>
           ) : null}
           {!isLoading && !error && sessions.length === 0 ? (
@@ -111,7 +132,7 @@ export function SessionRail({
             </div>
           ) : null}
           {!isLoading && !error
-            ? sessions.map((session) => (
+            ? filteredSessions.map((session) => (
                 <button
                   className={activeSessionId === session.id ? "session-item active" : "session-item"}
                   key={session.id}
@@ -123,7 +144,7 @@ export function SessionRail({
                   <span className="session-copy">
                     <strong>{displaySessionTitle(session)}</strong>
                     <small>
-                      {session.mode === "plan" ? "Plan" : "Build"}
+                      {(session.pathLabel ?? session.cwd)?.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? (session.mode === "plan" ? "Plan" : "Build")}
                       <span aria-hidden="true"> · </span>
                       {formatRelativeTime(session.updatedAt)}
                     </small>
@@ -131,8 +152,9 @@ export function SessionRail({
                 </button>
               ))
             : null}
+          {!isLoading && !error && query && filteredSessions.length === 0 ? <div className="rail-state"><p>No matching sessions. Try a title or project name.</p></div> : null}
         </nav>
-
+        <footer className="rail-footer"><Icon name="terminal" size={16} /><span>One workspace. Web & terminal.<small>Your conversations stay together.</small></span></footer>
       </aside>
     </>
   );

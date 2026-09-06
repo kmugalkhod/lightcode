@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { networkFetch } from "@lightcode/shared/network";
 import { truncateText } from "../common/output-utils";
 import { webFetchInputSchema, webFetchOutputSchema } from "./schema";
 
@@ -20,12 +21,12 @@ function decodeHtmlEntities(value: string) {
 
     if (normalized.startsWith("#x")) {
       const codePoint = Number.parseInt(normalized.slice(2), 16);
-      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : match;
+      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
     }
 
     if (normalized.startsWith("#")) {
       const codePoint = Number.parseInt(normalized.slice(1), 10);
-      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : match;
+      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
     }
 
     return htmlEntityMap[normalized as keyof typeof htmlEntityMap] ?? match;
@@ -63,6 +64,33 @@ function normalizeContentToText(content: string, contentType: string | null) {
   }
 
   return content.replace(/\r\n/g, "\n").trim();
+}
+
+// Bound decompressed bytes while reading, before allocating/normalizing a page.
+const maxDownloadBytes = 2 * 1024 * 1024;
+async function readBoundedBody(response: Response) {
+  if (!response.body) return { text: "", truncated: false };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = "";
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const available = maxDownloadBytes - bytes;
+      text += decoder.decode(value.subarray(0, available), { stream: true });
+      bytes += value.byteLength;
+      if (bytes >= maxDownloadBytes) {
+        truncated = true;
+        await reader.cancel();
+        break;
+      }
+    }
+    text += decoder.decode();
+    return { text, truncated };
+  } finally { reader.releaseLock(); }
 }
 
 function errorOutput({
@@ -103,7 +131,7 @@ export async function executeWebFetch(
     : timeoutSignal;
 
   try {
-    const response = await (options.fetch ?? globalThis.fetch)(parsedInput.url, {
+    const response = await (options.fetch ?? networkFetch)(parsedInput.url, {
       redirect: "follow",
       signal,
       headers: {
@@ -112,7 +140,8 @@ export async function executeWebFetch(
       },
     });
     const contentType = response.headers.get("content-type");
-    const rawText = await response.text();
+    const downloaded = await readBoundedBody(response);
+    const rawText = downloaded.text;
     const normalizedText = normalizeContentToText(rawText, contentType);
     const truncated = truncateText(normalizedText, parsedInput.maxChars);
 
@@ -127,7 +156,7 @@ export async function executeWebFetch(
         ? extractTitle(rawText)
         : null,
       text: truncated.text,
-      truncated: truncated.truncated,
+      truncated: truncated.truncated || downloaded.truncated,
       fetchedAt: new Date().toISOString(),
       error: response.ok
         ? null

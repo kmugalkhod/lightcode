@@ -105,6 +105,39 @@ TUI lists every OpenRouter model and persists the choice to
 probes the provider endpoint, and daily JSONL logs live under the Lightcode
 data directory (`logs/`).
 
+## Office networks and certificates
+
+Lightcode uses the same standard enterprise configuration described in
+[OpenCode's network documentation](https://opencode.ai/docs/network/):
+`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, and `NODE_EXTRA_CA_CERTS`.
+Local CLI/server connections bypass the proxy automatically.
+The npm launcher on Windows also imports trusted roots from both LocalMachine
+and CurrentUser stores when no explicit CA file is configured. Its export is
+isolated per launch and limited to ten seconds.
+
+If your office inspects HTTPS traffic, use the company CA bundle supplied by
+your IT team (PEM format):
+
+```bash
+export NODE_EXTRA_CA_CERTS=/absolute/path/company-ca.pem
+lightcode
+```
+
+`LIGHTCODE_CA_CERTS` and `SSL_CERT_FILE` are also supported for Lightcode's
+provider, model catalog, connectivity probe, and web-tool requests. Explicit
+bundles extend the public trust roots using
+[Bun's TLS fetch options](https://bun.sh/docs/runtime/networking/fetch).
+Certificate verification remains enabled. Untrusted, expired, and mismatched
+certificates report an actionable error instead of triggering repeated chat
+retries. Restart Lightcode after changing network configuration. Subprocesses
+and external MCP programs use their own runtime's certificate settings; use
+`NODE_EXTRA_CA_CERTS` when those runtimes support it.
+
+OpenAI-compatible endpoints can run without an API key, including local model
+servers. Supply their `/v1` base URL and exact model ID. Model compatibility
+still depends on the endpoint implementing the supported API and the model
+being capable of tool use; an arbitrary model name alone cannot guarantee that.
+
 ## Context optimization
 
 Long sessions stay healthy through three tiers: real-usage-calibrated token
@@ -129,18 +162,30 @@ description: Write a clear PR title and description from the diff.
 # Instructions the agent follows when this skill is loaded…
 ```
 
-Lightcode discovers skills from three locations, first match wins (project
-overrides user):
+Lightcode discovers installed skills automatically, first match wins (project
+overrides user), in this order:
 
 1. `.lightcode/skills/<name>/SKILL.md` — project-local
 2. `.agents/skills/<name>/SKILL.md` — project-local (fallback)
-3. `~/.lightcode/skills/<name>/SKILL.md` — available in every project
+3. Project `.claude/skills`, `.codex/skills`, and `.opencode/skills`
+4. User `~/.lightcode/skills`, `~/.agents/skills`, and `~/.claude/skills`
+5. `$CODEX_HOME/skills` (defaults to `~/.codex/skills`, including `.system`)
+6. `$XDG_CONFIG_HOME/opencode/skills` (defaults to `~/.config/opencode/skills`)
+7. Additional roots in `LIGHTCODE_SKILL_PATHS` (colon-separated on Unix,
+   semicolon-separated on Windows). Use this for other installations or
+   plugin skill directories you want to make available.
 
 Each turn the agent is told which skills are available (name + description), so
 just ask it to "use the pr-description skill" (or mention the skill by name) and
 it loads the instructions via the `skill` tool and follows them. Run `/skills`
-in the TUI to list what's installed. Only simple `key: value` frontmatter lines
-are parsed (`name`, `description`); the rest of the file is the instruction body.
+in the TUI to list what's installed. The agent can select relevant skills for
+ordinary tasks without you naming one. YAML frontmatter supports quoted and
+multiline `name`/`description` fields. Supporting files can be loaded through
+the `skill` tool's `resource` argument, relative to the skill directory.
+Discovery follows installation symlinks, skips broken/unreadable/malformed
+entries, and refreshes within 30 seconds. Scans are bounded to eight directory
+levels and 2,000 directories per root; individual files are limited to 1 MiB.
+Discovery does not execute skill scripts or override tool permissions.
 
 ## Workspaces
 

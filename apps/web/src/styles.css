@@ -1,6 +1,14 @@
+@font-face {
+  font-family: "Geist Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/app/geist-latin.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   --base: #0d1117;
   --panel: #121820;
@@ -101,7 +109,7 @@ input:disabled {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
   width: 100%;
   height: 100dvh;
   background: var(--panel);
@@ -611,7 +619,7 @@ input:disabled {
 
 .message-text {
   color: var(--text);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.72;
 }
 
@@ -1344,8 +1352,8 @@ input:disabled {
 }
 
 .new-session-inner {
-  width: min(100%, 800px);
-  transform: translateY(-5vh);
+  width: min(100%, 780px);
+  padding-block: 32px;
 }
 
 .new-session-title {
@@ -1369,9 +1377,11 @@ input:disabled {
 }
 
 .new-session-title h1 {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: clamp(27px, 3vw, 38px);
+  font-weight: 550;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
 }
 
 .new-session-project-controls {
@@ -1417,21 +1427,21 @@ input:disabled {
 
 .new-session-project-button strong {
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
 }
 
 .new-session-project-button small {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .browse-common-locations-button {
-  min-height: 32px;
+  min-height: 36px;
   background: transparent;
   padding: 3px 2px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .browse-common-locations-button:hover:not(:disabled) {
@@ -1479,19 +1489,118 @@ input:disabled {
 }
 
 .starter-suggestions button {
-  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
   border: 1px solid var(--border-soft);
   border-radius: 8px;
   background: transparent;
   padding: 6px 10px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .starter-suggestions button:hover:not(:disabled) {
   border-color: var(--border);
   background: var(--inset);
   color: var(--text-secondary);
+}
+
+.starter-description {
+  margin: 12px 0 22px;
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.new-session-title { align-items: flex-start; gap: 18px; }
+.new-session-mark { margin-top: 3px; flex-shrink: 0; }
+.session-search, .model-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--text-muted);
+  background: var(--inset);
+}
+.session-search { margin: 2px 14px 18px; }
+.session-search:focus-within, .model-search:focus-within { border-color: var(--accent); }
+.session-search input, .model-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  padding: 10px 0;
+  font-size: 13px;
+}
+.session-search kbd { flex-shrink: 0; font: 10px var(--mono); }
+.rail-footer { display: flex; align-items: center; gap: 10px; padding: 20px 16px; border-top: 1px solid var(--border-soft); color: var(--text-secondary); font-size: 11px; }
+.rail-footer small { display: block; margin-top: 3px; color: var(--text-muted); font-size: 10px; }
+.rail-state button { min-height: 36px; padding: 6px 14px; border-radius: 6px; background: var(--elevated); }
+.composer-command-trigger { display: inline-flex; min-height: 36px; align-items: center; gap: 7px; border-radius: 6px; padding: 5px 8px; background: transparent; color: var(--text-secondary); font-size: 12px; }
+.composer-command-trigger:hover { background: var(--elevated); color: var(--text); }
+.composer-command-trigger kbd { margin-left: 4px; color: var(--text-muted); font: 11px var(--mono); }
+.composer-toolbar .draft-status, .starter-toolbar .draft-status { flex: 1; justify-content: flex-end; font-size: 11px; }
+.starter-footnote { display: flex; align-items: center; gap: 8px; margin-top: 22px; color: var(--text-muted); font-size: 12px; }
+.recent-sessions { margin-top: 38px; }
+.recent-sessions-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.recent-sessions-heading h2 { margin: 0; color: var(--text-secondary); font-size: 13px; font-weight: 550; }
+.recent-sessions-heading button { display: flex; align-items: center; min-height: 36px; gap: 5px; background: transparent; color: var(--text-muted); font-size: 12px; }
+.recent-session { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 68px; border-top: 1px solid var(--border-soft); background: transparent; padding: 12px 4px; text-align: left; color: var(--text-muted); }
+.recent-session:hover { background: var(--inset); color: var(--text); }
+.recent-session > span { flex: 1; min-width: 0; }
+.recent-session strong, .recent-session small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-session strong { color: var(--text); font-size: 14px; font-weight: 500; }
+.recent-session small { margin-top: 4px; font: 11px var(--mono); }
+.recent-session time { font-size: 11px; white-space: nowrap; }
+.ribbon-model { cursor: pointer; border-radius: 6px; padding: 7px 9px; background: transparent; }
+.ribbon-model:hover:not(:disabled) { background: var(--elevated); color: var(--text); }
+.ribbon-model > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ribbon-model > svg { flex-shrink: 0; }
+.conversation-heading { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 28px; border-bottom: 1px solid var(--border-soft); }
+.conversation-heading > div { min-width: 0; }
+.conversation-heading h1 { margin: 0 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; font-weight: 550; letter-spacing: -.025em; }
+.conversation-heading > div > span { color: var(--text-muted); font-size: 12px; }
+.conversation-state { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.conversation-state.running { color: var(--accent-text); }
+.jump-to-latest { display: flex; align-items: center; gap: 7px; min-height: 36px; margin: 0 auto 12px; padding: 6px 14px; border: 1px solid var(--border); border-radius: 20px; background: var(--elevated); color: var(--text-secondary); font-size: 12px; }
+.model-picker { width: min(560px, calc(100% - 32px)); max-height: calc(100dvh - 48px); overflow: hidden; border: 1px solid var(--border); border-radius: 14px; padding: 0; background: var(--panel); color: var(--text); }
+.model-picker::backdrop { background: rgb(0 0 0 / 65%); }
+.model-picker-content { display: flex; max-height: calc(100dvh - 50px); flex-direction: column; padding: 24px; }
+.model-picker header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.model-picker h2 { margin: 0; font-size: 23px; font-weight: 550; letter-spacing: -.035em; }
+.model-picker header p { margin: 6px 0 0; font-size: 12px; color: var(--text-muted); }
+.model-search { flex-shrink: 0; }
+.model-list { overflow-y: auto; min-height: 100px; margin: 16px -8px; }
+.model-option { display: flex; width: 100%; min-height: 64px; align-items: center; gap: 16px; padding: 12px; border-radius: 8px; background: transparent; text-align: left; }
+.model-option:hover:not(:disabled) { background: var(--elevated); }
+.model-option.selected { background: var(--accent-soft); color: var(--accent-text); }
+.model-option > span:first-child { flex: 1; min-width: 0; }
+.model-option strong, .model-option small { display: block; overflow-wrap: anywhere; }
+.model-option strong { font-size: 14px; font-weight: 550; }
+.model-option small { margin-top: 4px; font: 11px var(--mono); color: var(--text-muted); }
+.model-option.selected small { color: var(--accent-text); }
+.model-capability { font-size: 11px; white-space: nowrap; }
+.model-picker footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-shrink: 0; border-top: 1px solid var(--border); padding-top: 16px; font-size: 11px; color: var(--text-muted); }
+.model-list-empty, .model-picker-error { font-size: 13px; padding: 12px; color: var(--text-secondary); }
+.model-picker-error { color: var(--error); }
+
+@media (max-width: 760px) {
+  .conversation-heading { padding: 16px; }
+  .conversation-state { display: none; }
+  .new-session-title { gap: 12px; }
+  .new-session-mark { display: none; }
+  .new-session-inner { padding-block: 8px; }
+  .starter-description { font-size: 14px; }
+  .recent-session { gap: 10px; }
+  .recent-session time { max-width: 80px; white-space: normal; text-align: right; }
+  .model-picker-content { padding: 18px; }
+  .model-capability { max-width: 76px; white-space: normal; text-align: right; }
 }
 
 .authorization-gate {
@@ -1897,7 +2006,7 @@ button.folder-row:hover:not(:disabled) {
 
 @media (max-width: 980px) {
   .ribbon-model {
-    display: none;
+    max-width: 150px;
   }
 
   .workspace-path {
@@ -1950,6 +2059,8 @@ button.folder-row:hover:not(:disabled) {
   }
 
   .workspace-ribbon {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) auto auto;
     gap: 5px;
     padding-inline: 8px;
   }
@@ -1984,6 +2095,17 @@ button.folder-row:hover:not(:disabled) {
     min-height: 44px;
     flex: 1;
   }
+
+  .workspace-ribbon > .ribbon-menu { grid-area: 1 / 1; }
+  .workspace-ribbon > .workspace-path { grid-area: 1 / 2 / 2 / -1; }
+  .workspace-ribbon > .ribbon-model { grid-area: 2 / 1 / 3 / 3; max-width: none; min-width: 0; min-height: 44px; }
+  .workspace-ribbon > .ribbon-select { grid-area: 2 / 3; min-width: 72px; }
+  .workspace-ribbon > .permission-select { grid-area: 2 / 4; min-width: 64px; }
+  .composer-command-trigger,
+  .recent-sessions-heading button,
+  .jump-to-latest,
+  .model-picker .icon-button { min-height: 44px; }
+  .model-picker .icon-button { min-width: 44px; }
 
   .approval-actions button,
   .prompt-options button,
@@ -2063,7 +2185,7 @@ button.folder-row:hover:not(:disabled) {
   }
 
   .new-session-title h1 {
-    font-size: 20px;
+    font-size: 28px;
   }
 
   .new-session-title {

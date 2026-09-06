@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { networkFetch } from "@lightcode/shared/network";
 import {
   loadLightcodeConfig,
   type LightcodeResolvedConfig,
@@ -336,7 +337,7 @@ export async function executeWebSearch(
       }
       return await searchBrave(parsedInput, {
         apiKey: keys.brave,
-        fetch: options.fetch ?? globalThis.fetch,
+        fetch: options.fetch ?? networkFetch,
         signal,
         maxCharactersPerResult: config.maxCharactersPerResult,
       });
@@ -353,7 +354,7 @@ export async function executeWebSearch(
       }
       return await searchTavily(parsedInput, {
         apiKey: keys.tavily,
-        fetch: options.fetch ?? globalThis.fetch,
+        fetch: options.fetch ?? networkFetch,
         signal,
         maxCharactersPerResult: config.maxCharactersPerResult,
       });

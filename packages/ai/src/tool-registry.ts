@@ -302,7 +302,7 @@ export const codingToolRegistry = {
     permissionMode: "read-only",
     execution: "server",
     availability: "skills",
-    activation: "specialized",
+    activation: "core",
     outputPolicy: "artifact-if-large",
   },
   list_mcp_resources: {

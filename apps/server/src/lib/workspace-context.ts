@@ -37,7 +37,6 @@ const logger = createLogger("workspace-context");
 const projectInstructionNames = ["AGENTS.md", "CLAUDE.md"] as const;
 
 const maxListedEntries = 40;
-const maxListedSkills = 20;
 const maxInstructionChars = 6_000;
 const maxNestedInstructionChars = 6_000;
 const maxNestedInstructionFileChars = 1_600;
@@ -380,16 +379,12 @@ export function formatAvailableSkills(skills: readonly SkillSummary[]): string {
     return "";
   }
 
-  const shown = skills.slice(0, maxListedSkills);
+  const shown = skills;
   const lines = shown.map(
     (skill) =>
-      `- ${skill.name}${skill.description ? `: ${skill.description}` : ""}`,
+      `- ${skill.name}${skill.description ? `: ${skill.description.replace(/\s+/g, " ").slice(0, 300)}` : ""}`,
   );
-  const more =
-    skills.length > shown.length
-      ? `\n… and ${skills.length - shown.length} more`
-      : "";
-  return `Available skills (load by name with the skill tool):\n${lines.join("\n")}${more}`;
+  return `Available skills (load by name with the skill tool):\n${lines.join("\n")}`;
 }
 
 function buildAvailableSkills(cwd: string): string {

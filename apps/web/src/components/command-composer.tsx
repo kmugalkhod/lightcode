@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { readComposerDraft, saveComposerDraft } from "../lib/composer-draft";
 import {
   getSlashCommandSuggestions,
   parseSlashCommand,
@@ -27,6 +28,8 @@ export function CommandComposer({
   onSubmit,
   onCommand,
   onUnknownCommand,
+  draftKey,
+  suggestedDraft,
 }: {
   appearance: "conversation" | "starter";
   hasSession: boolean;
@@ -38,11 +41,18 @@ export function CommandComposer({
   commandBusy: string | null;
   onDismissResult: () => void;
   onAbort?: () => void;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string) => void | boolean | Promise<void | boolean>;
+  draftKey?: string;
+  suggestedDraft?: { text: string; id: number } | null;
   onCommand: (command: SlashCommandDefinition, args: string, available: boolean) => void;
   onUnknownCommand: (invokedAs: string) => void;
 }) {
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(() => draftKey ? readComposerDraft(draftKey) : "");
+  const [submitting, setSubmitting] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const submitLock = useRef(false);
+  const draftBeforeCommands = useRef<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
   const menuId = `slash-menu-${useId().replaceAll(":", "")}`;
@@ -57,14 +67,30 @@ export function CommandComposer({
   const safeSelectedIndex = Math.min(selectedIndex, Math.max(0, suggestions.length - 1));
   const selectedCommand = suggestions[safeSelectedIndex];
   const parsed = parseSlashCommand(value, { hasSession });
-  const canRunValue = value.trim().length > 0 && (slashInput || canSendMessage) && !commandBusy;
+  const canRunValue = value.trim().length > 0 && (slashInput || canSendMessage) && !commandBusy && !submitting;
+
+  useEffect(() => {
+    if (draftKey) saveComposerDraft(draftKey, draftBeforeCommands.current ?? value);
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
+    }
+  }, [value, draftKey]);
+
+  useEffect(() => {
+    if (!suggestedDraft) return;
+    setValue(suggestedDraft.text);
+    textareaRef.current?.focus();
+  }, [suggestedDraft]);
 
   useEffect(() => {
     if (selectedIndex !== safeSelectedIndex) setSelectedIndex(safeSelectedIndex);
   }, [safeSelectedIndex, selectedIndex]);
 
   function clearAfterCommand() {
-    setValue("");
+    setValue(draftBeforeCommands.current ?? "");
+    draftBeforeCommands.current = null;
     setSelectedIndex(0);
     setMenuDismissed(false);
   }
@@ -74,9 +100,9 @@ export function CommandComposer({
     clearAfterCommand();
   }
 
-  function send() {
+  async function send() {
     const message = value.trim();
-    if (!message || commandBusy) return;
+    if (!message || commandBusy || submitLock.current) return;
     if (parsed.kind === "command") {
       runCommand(parsed.command, parsed.args, parsed.available);
       return;
@@ -91,14 +117,28 @@ export function CommandComposer({
       return;
     }
     if (!canSendMessage) return;
-    onSubmit(message);
-    setValue("");
+    submitLock.current = true;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const result = await onSubmit(message);
+      if (result !== false) {
+        if (draftKey && readComposerDraft(draftKey).trim() === message) saveComposerDraft(draftKey, "");
+        setValue((current) => current.trim() === message ? "" : current);
+      }
+    } catch (cause) {
+      setSubmitError(cause instanceof Error ? cause.message : "Message could not be sent. Your draft is still here.");
+    } finally {
+      submitLock.current = false;
+      setSubmitting(false);
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (menuOpen && event.key === "Escape") {
       event.preventDefault();
       setMenuDismissed(true);
+      if (draftBeforeCommands.current !== null) clearAfterCommand();
       return;
     }
     if (menuOpen && suggestions.length > 0) {
@@ -117,13 +157,14 @@ export function CommandComposer({
     }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      send();
+      void send();
     }
   }
 
   return (
     <div className={`command-composer-shell appearance-${appearance}`}>
       <CommandResultPanel result={commandResult} busy={commandBusy} onDismiss={onDismissResult} />
+      {submitError ? <p className="new-session-error" role="alert">{submitError}</p> : null}
       {menuOpen ? (
         <SlashCommandMenu
           id={menuId}
@@ -138,6 +179,7 @@ export function CommandComposer({
       ) : null}
       <div className={appearance === "starter" ? "starter-composer" : canSendMessage || slashInput ? "composer" : "composer disabled"}>
         <textarea
+          ref={textareaRef}
           value={value}
           rows={appearance === "starter" ? 3 : 1}
           autoFocus={autoFocus}
@@ -156,14 +198,17 @@ export function CommandComposer({
           onKeyDown={handleKeyDown}
         />
         <div className={appearance === "starter" ? "starter-toolbar" : "composer-toolbar"}>
-          <span><Icon name="agent" size={16} />Agent <small>type / for commands</small></span>
+          <button className="composer-command-trigger" type="button" onClick={() => { if (!slashInput) draftBeforeCommands.current = value; setValue("/"); setMenuDismissed(false); textareaRef.current?.focus(); }} title="Browse slash commands">
+            <Icon name="terminal" size={16} />Commands <kbd>/</kbd>
+          </button>
+          <span className="draft-status">{submitting ? "Sending…" : value && !slashInput ? "Enter to send" : ""}</span>
           {isStreaming && onAbort ? (
             <button className="abort-button" type="button" onClick={onAbort}>
               <Icon name="abort" size={14} />Stop run
             </button>
           ) : (
-            <button className="send-button" type="button" onClick={send} disabled={!canRunValue} aria-label={slashInput ? "Run command" : "Send message"}>
-              {commandBusy ? <span className="button-loading" /> : <Icon name={slashInput ? "terminal" : "arrow-up"} size={17} />}
+            <button className="send-button" type="button" onClick={() => void send()} disabled={!canRunValue} aria-label={slashInput ? "Run command" : "Send message"}>
+              {commandBusy || submitting ? <span className="button-loading" /> : <Icon name={slashInput ? "terminal" : "arrow-up"} size={17} />}
             </button>
           )}
         </div>

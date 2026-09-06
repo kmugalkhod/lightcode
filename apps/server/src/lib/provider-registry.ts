@@ -1,4 +1,5 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { networkFetch } from "@lightcode/shared/network";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
   createOpenRouter,
@@ -35,7 +36,7 @@ import {
 // Providers keep legitimate silence alive with SSE comments/pings, so only
 // dead connections trip this. Override/disable via
 // LIGHTCODE_HTTP_IDLE_TIMEOUT_MS / LIGHTCODE_HTTP_HEADERS_TIMEOUT_MS.
-const providerFetch = createIdleTimeoutFetch(resolveIdleTimeoutsFromEnv());
+const providerFetch = createIdleTimeoutFetch({ ...resolveIdleTimeoutsFromEnv(), fetchImpl: networkFetch });
 
 type ProviderFetch = (
   input: string | URL | Request,
@@ -494,9 +495,7 @@ function resolveOpenAITransportModel({
         ? ["Set OPENCODE_API_KEY to call OpenCode Zen models."]
         : isOpenRouter
           ? ["Set OPENROUTER_API_KEY to call OpenRouter models."]
-        : [
-            "Set LIGHTCODE_OPENAI_COMPATIBLE_API_KEY or OPENAI_API_KEY if your OpenAI-compatible endpoint requires authentication.",
-          ],
+        : [], // Local/custom endpoints may intentionally require no API key.
     maxCompletionTokens: capabilities?.maxCompletionTokens ?? null,
     supportsPromptCaching:
       isOpenRouter && isOpenRouterAnthropicFamilyModel(configuredModel),

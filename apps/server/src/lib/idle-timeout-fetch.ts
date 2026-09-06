@@ -77,7 +77,7 @@ export function createIdleTimeoutFetch({
     init?: Parameters<typeof fetch>[1],
   ): Promise<Response> => {
     const controller = new AbortController();
-    const callerSignal = init?.signal ?? undefined;
+    const callerSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
 
     // Caller aborts (user stop, client disconnect) pass through with their
     // original reason so they still classify as "aborted", not as a timeout.
@@ -111,6 +111,9 @@ export function createIdleTimeoutFetch({
     let response: Response;
     try {
       response = await fetchImpl(input, { ...init, signal: controller.signal });
+    } catch (error) {
+      callerSignal?.removeEventListener("abort", forwardCallerAbort);
+      throw controller.signal.aborted ? controller.signal.reason : error;
     } finally {
       if (headersTimer) {
         clearTimeout(headersTimer);
@@ -118,7 +121,7 @@ export function createIdleTimeoutFetch({
     }
 
     const body = response.body;
-    if (idleTimeoutMs <= 0 || !body) {
+    if (!body) {
       if (callerSignal) {
         callerSignal.removeEventListener("abort", forwardCallerAbort);
       }
@@ -139,20 +142,28 @@ export function createIdleTimeoutFetch({
       }
     };
 
+    const reader = body.getReader();
     let rearm: () => void = () => {};
-    const transform = new TransformStream<Uint8Array, Uint8Array>({
+    let onAbort: () => void = () => {};
+    const cleanup = () => {
+      stopIdleTimer();
+      controller.signal.removeEventListener("abort", onAbort);
+    };
+    const stream = new ReadableStream<Uint8Array>({
       start(streamController) {
+        onAbort = () => {
+          cleanup();
+          streamController.error(controller.signal.reason);
+          void reader.cancel(controller.signal.reason).catch(() => {});
+        };
+        controller.signal.addEventListener("abort", onAbort, { once: true });
+        if (controller.signal.aborted) { onAbort(); return; }
         const arm = () => {
+          if (idleTimeoutMs <= 0) return;
           idleTimer = setTimeout(() => {
             const error = new HttpIdleTimeoutError(
               `Provider stream timed out: no bytes received for ${idleTimeoutMs}ms`,
             );
-            stopIdleTimer();
-            try {
-              streamController.error(error);
-            } catch {
-              // Consumer already detached; aborting below is sufficient.
-            }
             abortWithTimeout(error);
           }, idleTimeoutMs);
         };
@@ -164,19 +175,30 @@ export function createIdleTimeoutFetch({
           arm();
         };
       },
-      transform(chunk, streamController) {
-        rearm();
-        streamController.enqueue(chunk);
+      async pull(streamController) {
+        try {
+          const result = await reader.read();
+          if (controller.signal.aborted) return;
+          if (result.done) {
+            cleanup();
+            streamController.close();
+          } else {
+            rearm();
+            streamController.enqueue(result.value);
+          }
+        } catch (error) {
+          cleanup();
+          streamController.error(error);
+        }
       },
-      flush() {
-        stopIdleTimer();
+      async cancel(reason) {
+        cleanup();
+        controller.abort(reason);
+        await reader.cancel(reason);
       },
-      // No cancel hook in Bun's Transformer type (see sse-heartbeat.ts); a
-      // cancelled reader is handled by the timer firing once into a detached
-      // controller and aborting the already-cancelled fetch — both no-ops.
     });
 
-    return new Response(body.pipeThrough(transform), {
+    return new Response(stream, {
       status: response.status,
       statusText: response.statusText,
       headers: response.headers,

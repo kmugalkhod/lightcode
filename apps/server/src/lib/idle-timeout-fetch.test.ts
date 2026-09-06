@@ -120,11 +120,31 @@ describe("createIdleTimeoutFetch", () => {
 
     const callerController = new AbortController();
     const reason = new Error("user stopped the run");
-    await wrapped("https://example.test", { signal: callerController.signal });
+    const response = await wrapped("https://example.test", { signal: callerController.signal });
     callerController.abort(reason);
 
     expect(upstream.getSignal()?.aborted).toBe(true);
     expect(upstream.getSignal()?.reason).toBe(reason);
+    await expect(response.text()).rejects.toBe(reason);
+  });
+
+  test("preserves Request signals when only the headers timeout is enabled", async () => {
+    const upstream = createStreamingFetch();
+    const caller = new AbortController();
+    const wrapped = createIdleTimeoutFetch({ headersTimeoutMs: 1000, idleTimeoutMs: 0, fetchImpl: upstream.fetchImpl });
+    const response = await wrapped(new Request("https://example.test", { signal: caller.signal }));
+    caller.abort(new Error("stop"));
+    expect(upstream.getSignal()?.aborted).toBe(true);
+    await expect(response.text()).rejects.toThrow("stop");
+  });
+
+  test("reader cancellation releases the upstream connection immediately", async () => {
+    const upstream = createStreamingFetch();
+    const wrapped = createIdleTimeoutFetch({ headersTimeoutMs: 1000, idleTimeoutMs: 1000, fetchImpl: upstream.fetchImpl });
+    const response = await wrapped("https://example.test");
+    await response.body!.cancel("done");
+    expect(upstream.getSignal()?.aborted).toBe(true);
+    expect(upstream.getSignal()?.reason).toBe("done");
   });
 
   test("returns the raw fetch when both timeouts are disabled", () => {

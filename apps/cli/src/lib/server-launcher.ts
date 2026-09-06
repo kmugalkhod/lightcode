@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { networkFetch } from "@lightcode/shared/network";
 import {
   existsSync,
   mkdirSync,
@@ -94,7 +95,7 @@ export function existingLightcodeInterfaceError(
  */
 async function checkServer(url: string): Promise<ServerHealth> {
   try {
-    const response = await fetch(new URL("/config/status", url), {
+    const response = await networkFetch(new URL("/config/status", url), {
       signal: AbortSignal.timeout(healthCheckTimeoutMs),
     });
 
@@ -118,7 +119,7 @@ async function checkServer(url: string): Promise<ServerHealth> {
 
 async function checkWebPort(url: string): Promise<ServerHealth> {
   try {
-    const response = await fetch(new URL("/healthz", url), {
+    const response = await networkFetch(new URL("/healthz", url), {
       signal: AbortSignal.timeout(healthCheckTimeoutMs),
     });
     if (!response.ok) {
@@ -142,7 +143,7 @@ async function checkAuthenticatedWebServer(
   token: string,
 ): Promise<boolean> {
   try {
-    const response = await fetch(new URL("/config/status", url), {
+    const response = await networkFetch(new URL("/config/status", url), {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(healthCheckTimeoutMs),
     });

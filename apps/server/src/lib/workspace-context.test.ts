@@ -234,7 +234,7 @@ describe("formatAvailableSkills", () => {
     expect(rendered).not.toContain("beta:");
   });
 
-  test("caps the list and reports the remainder", () => {
+  test("keeps skills after the twentieth discoverable", () => {
     const many = Array.from({ length: 25 }, (_, index) => ({
       name: `skill-${index}`,
       description: null,
@@ -243,6 +243,7 @@ describe("formatAvailableSkills", () => {
     }));
 
     const rendered = formatAvailableSkills(many);
-    expect(rendered).toContain("… and 5 more");
+    expect(rendered).toContain("skill-24");
+    expect(rendered).not.toContain("more");
   });
 });

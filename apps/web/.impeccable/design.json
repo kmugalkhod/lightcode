@@ -1,0 +1,357 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-06T14:27:03.059Z",
+  "title": "Design System: Lightcode Web",
+  "extensions": {
+    "colorMeta": {
+      "base": {
+        "role": "neutral",
+        "displayName": "base",
+        "tonalRamp": [
+          "oklch(15% 0.0140 258.36)",
+          "oklch(26% 0.0140 258.36)",
+          "oklch(38% 0.0140 258.36)",
+          "oklch(49% 0.0140 258.36)",
+          "oklch(61% 0.0140 258.36)",
+          "oklch(72% 0.0140 258.36)",
+          "oklch(84% 0.0140 258.36)",
+          "oklch(95% 0.0140 258.36)"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "panel",
+        "tonalRamp": [
+          "oklch(15% 0.0184 255.73)",
+          "oklch(26% 0.0184 255.73)",
+          "oklch(38% 0.0184 255.73)",
+          "oklch(49% 0.0184 255.73)",
+          "oklch(61% 0.0184 255.73)",
+          "oklch(72% 0.0184 255.73)",
+          "oklch(84% 0.0184 255.73)",
+          "oklch(95% 0.0184 255.73)"
+        ]
+      },
+      "elevated": {
+        "role": "neutral",
+        "displayName": "elevated",
+        "tonalRamp": [
+          "oklch(15% 0.0232 251.43)",
+          "oklch(26% 0.0232 251.43)",
+          "oklch(38% 0.0232 251.43)",
+          "oklch(49% 0.0232 251.43)",
+          "oklch(61% 0.0232 251.43)",
+          "oklch(72% 0.0232 251.43)",
+          "oklch(84% 0.0232 251.43)",
+          "oklch(95% 0.0232 251.43)"
+        ]
+      },
+      "inset": {
+        "role": "neutral",
+        "displayName": "inset",
+        "tonalRamp": [
+          "oklch(15% 0.0162 256.83)",
+          "oklch(26% 0.0162 256.83)",
+          "oklch(38% 0.0162 256.83)",
+          "oklch(49% 0.0162 256.83)",
+          "oklch(61% 0.0162 256.83)",
+          "oklch(72% 0.0162 256.83)",
+          "oklch(84% 0.0162 256.83)",
+          "oklch(95% 0.0162 256.83)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "border",
+        "tonalRamp": [
+          "oklch(15% 0.0310 256.26)",
+          "oklch(26% 0.0310 256.26)",
+          "oklch(38% 0.0310 256.26)",
+          "oklch(49% 0.0310 256.26)",
+          "oklch(61% 0.0310 256.26)",
+          "oklch(72% 0.0310 256.26)",
+          "oklch(84% 0.0310 256.26)",
+          "oklch(95% 0.0310 256.26)"
+        ]
+      },
+      "border-soft": {
+        "role": "neutral",
+        "displayName": "border soft",
+        "tonalRamp": [
+          "oklch(15% 0.0263 253.28)",
+          "oklch(26% 0.0263 253.28)",
+          "oklch(38% 0.0263 253.28)",
+          "oklch(49% 0.0263 253.28)",
+          "oklch(61% 0.0263 253.28)",
+          "oklch(72% 0.0263 253.28)",
+          "oklch(84% 0.0263 253.28)",
+          "oklch(95% 0.0263 253.28)"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "accent",
+        "tonalRamp": [
+          "oklch(15% 0.1287 63.94)",
+          "oklch(26% 0.1287 63.94)",
+          "oklch(38% 0.1287 63.94)",
+          "oklch(49% 0.1287 63.94)",
+          "oklch(61% 0.1287 63.94)",
+          "oklch(72% 0.1287 63.94)",
+          "oklch(84% 0.1287 63.94)",
+          "oklch(95% 0.1287 63.94)"
+        ]
+      },
+      "accent-soft": {
+        "role": "primary",
+        "displayName": "accent soft",
+        "tonalRamp": [
+          "oklch(15% 0.0412 79.99)",
+          "oklch(26% 0.0412 79.99)",
+          "oklch(38% 0.0412 79.99)",
+          "oklch(49% 0.0412 79.99)",
+          "oklch(61% 0.0412 79.99)",
+          "oklch(72% 0.0412 79.99)",
+          "oklch(84% 0.0412 79.99)",
+          "oklch(95% 0.0412 79.99)"
+        ]
+      },
+      "accent-text": {
+        "role": "primary",
+        "displayName": "accent text",
+        "tonalRamp": [
+          "oklch(15% 0.0798 67.67)",
+          "oklch(26% 0.0798 67.67)",
+          "oklch(38% 0.0798 67.67)",
+          "oklch(49% 0.0798 67.67)",
+          "oklch(61% 0.0798 67.67)",
+          "oklch(72% 0.0798 67.67)",
+          "oklch(84% 0.0798 67.67)",
+          "oklch(95% 0.0798 67.67)"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "text",
+        "tonalRamp": [
+          "oklch(15% 0.0086 247.91)",
+          "oklch(26% 0.0086 247.91)",
+          "oklch(38% 0.0086 247.91)",
+          "oklch(49% 0.0086 247.91)",
+          "oklch(61% 0.0086 247.91)",
+          "oklch(72% 0.0086 247.91)",
+          "oklch(84% 0.0086 247.91)",
+          "oklch(95% 0.0086 247.91)"
+        ]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "text secondary",
+        "tonalRamp": [
+          "oklch(15% 0.0226 250.26)",
+          "oklch(26% 0.0226 250.26)",
+          "oklch(38% 0.0226 250.26)",
+          "oklch(49% 0.0226 250.26)",
+          "oklch(61% 0.0226 250.26)",
+          "oklch(72% 0.0226 250.26)",
+          "oklch(84% 0.0226 250.26)",
+          "oklch(95% 0.0226 250.26)"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "text muted",
+        "tonalRamp": [
+          "oklch(15% 0.0290 251.79)",
+          "oklch(26% 0.0290 251.79)",
+          "oklch(38% 0.0290 251.79)",
+          "oklch(49% 0.0290 251.79)",
+          "oklch(61% 0.0290 251.79)",
+          "oklch(72% 0.0290 251.79)",
+          "oklch(84% 0.0290 251.79)",
+          "oklch(95% 0.0290 251.79)"
+        ]
+      },
+      "success": {
+        "role": "neutral",
+        "displayName": "success",
+        "tonalRamp": [
+          "oklch(15% 0.1077 150.77)",
+          "oklch(26% 0.1077 150.77)",
+          "oklch(38% 0.1077 150.77)",
+          "oklch(49% 0.1077 150.77)",
+          "oklch(61% 0.1077 150.77)",
+          "oklch(72% 0.1077 150.77)",
+          "oklch(84% 0.1077 150.77)",
+          "oklch(95% 0.1077 150.77)"
+        ]
+      },
+      "warning": {
+        "role": "neutral",
+        "displayName": "warning",
+        "tonalRamp": [
+          "oklch(15% 0.0970 82.26)",
+          "oklch(26% 0.0970 82.26)",
+          "oklch(38% 0.0970 82.26)",
+          "oklch(49% 0.0970 82.26)",
+          "oklch(61% 0.0970 82.26)",
+          "oklch(72% 0.0970 82.26)",
+          "oklch(84% 0.0970 82.26)",
+          "oklch(95% 0.0970 82.26)"
+        ]
+      },
+      "error": {
+        "role": "neutral",
+        "displayName": "error",
+        "tonalRamp": [
+          "oklch(15% 0.1269 25.83)",
+          "oklch(26% 0.1269 25.83)",
+          "oklch(38% 0.1269 25.83)",
+          "oklch(49% 0.1269 25.83)",
+          "oklch(61% 0.1269 25.83)",
+          "oklch(72% 0.1269 25.83)",
+          "oklch(84% 0.1269 25.83)",
+          "oklch(95% 0.1269 25.83)"
+        ]
+      },
+      "info": {
+        "role": "neutral",
+        "displayName": "info",
+        "tonalRamp": [
+          "oklch(15% 0.0983 263.23)",
+          "oklch(26% 0.0983 263.23)",
+          "oklch(38% 0.0983 263.23)",
+          "oklch(49% 0.0983 263.23)",
+          "oklch(61% 0.0983 263.23)",
+          "oklch(72% 0.0983 263.23)",
+          "oklch(84% 0.0983 263.23)",
+          "oklch(95% 0.0983 263.23)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Welcome",
+        "purpose": "Welcome heading; 28px on mobile."
+      },
+      "message": {
+        "displayName": "Conversation",
+        "purpose": "Readable long-form agent and user messages."
+      }
+    },
+    "shadows": [
+      {
+        "name": "command-popover",
+        "value": "0 16px 38px rgba(0, 0, 0, 0.42)",
+        "purpose": "Separate the overlapping command menu."
+      },
+      {
+        "name": "folder-dialog",
+        "value": "0 2px 8px rgba(0, 0, 0, 0.24)",
+        "purpose": "Subtle separation for the fallback folder browser."
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-state",
+        "value": "160ms ease-out",
+        "purpose": "Color, border, and disclosure state changes."
+      },
+      {
+        "name": "session-drawer",
+        "value": "190ms cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Mobile session drawer; reduced-motion preference suppresses transition duration."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-ribbon",
+        "value": "980px"
+      },
+      {
+        "name": "mobile",
+        "value": "760px"
+      },
+      {
+        "name": "narrow-mobile",
+        "value": "460px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Commit a primary action.",
+      "html": "<button class=\"ds-control ds-primary\">Choose project</button>",
+      "css": ".ds-primary{font-family:\"Geist Variable\",sans-serif;min-height:36px;border:0;border-radius:8px;padding:7px 12px;background:var(--accent);color:#23170c;font-size:12px;font-weight:650;cursor:pointer}.ds-primary:hover{background:#ffc077}.ds-control:focus-visible{outline:2px solid var(--accent);outline-offset:2px}@media(max-width:760px){.ds-primary{min-height:44px}}"
+    },
+    {
+      "name": "Secondary button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A quieter alternative beside the primary action.",
+      "html": "<button class=\"ds-control ds-secondary\">Use this model ID</button>",
+      "css": ".ds-secondary{font-family:\"Geist Variable\",sans-serif;min-height:36px;border:1px solid var(--border);border-radius:8px;padding:7px 12px;background:var(--elevated);color:var(--text-secondary);font-size:12px;font-weight:650;cursor:pointer}.ds-secondary:hover{border-color:#3e4b5d;color:var(--text)}.ds-control:focus-visible{outline:2px solid var(--accent);outline-offset:2px}@media(max-width:760px){.ds-secondary{min-height:44px}}"
+    },
+    {
+      "name": "Search",
+      "kind": "input",
+      "refersTo": "search",
+      "description": "Shared session and model search treatment.",
+      "html": "<label class=\"ds-search\"><input aria-label=\"Search sessions\" placeholder=\"Find a session…\"></label>",
+      "css": ".ds-search{display:flex;min-height:44px;align-items:center;border:1px solid var(--border);border-radius:8px;padding:0 10px;background:var(--inset);color:var(--text-muted)}.ds-search:focus-within{border-color:var(--accent)}.ds-search input{font-family:\"Geist Variable\",sans-serif;width:100%;min-width:0;border:0;outline:none;background:transparent;color:var(--text);padding:10px 0;font-size:13px}.ds-search input::placeholder{color:var(--text-muted)}"
+    },
+    {
+      "name": "Saved session",
+      "kind": "nav",
+      "refersTo": "session-active",
+      "description": "Quiet rows support direct continuation.",
+      "html": "<nav aria-label=\"Saved conversations\"><button class=\"ds-control ds-session\" aria-current=\"page\">Improve the project browser</button></nav>",
+      "css": ".ds-session{font-family:\"Geist Variable\",sans-serif;width:100%;min-height:58px;border:0;border-radius:8px;padding:8px 9px;text-align:left;background:var(--elevated);color:var(--text);font-size:13px;cursor:pointer;transition:background-color 160ms ease-out,color 160ms ease-out}.ds-session:hover{background:var(--panel)}.ds-control:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+    },
+    {
+      "name": "Selected model",
+      "kind": "custom",
+      "refersTo": "model-selected",
+      "description": "Model name and exact ID retain a clear selected state.",
+      "html": "<button class=\"ds-control ds-model\"><strong>Current model</strong><small>provider/model-id</small></button>",
+      "css": ".ds-model{font-family:\"Geist Variable\",sans-serif;width:100%;min-height:64px;border:0;border-radius:8px;padding:12px;text-align:left;background:var(--accent-soft);color:var(--accent-text);cursor:pointer}.ds-model strong{display:block;font-size:14px;font-weight:550}.ds-model small{display:block;margin-top:4px;font:11px var(--mono)}.ds-model:hover{background:var(--elevated)}.ds-control:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Workspace Ribbon",
+    "overview": "Lightcode Web is one local coding workspace shared with the CLI. Keep the project conversation central and avoid dashboard cards, decorative metrics, or browser-only concepts that compete with the work.\n\nThe interface is a precise, quiet coding instrument: adjacent charcoal fields carry the work and amber keeps project context legible. Extend this established world without simulated physical materials or a new visual identity.",
+    "keyCharacteristics": [
+      "Persistent project context.",
+      "Charcoal tonal depth and amber state.",
+      "Readable conversation with compact controls."
+    ],
+    "rules": [
+      {
+        "name": "The Context Accent Rule",
+        "body": "Use amber to locate the project, current selection, focus, and next action.",
+        "section": "colors"
+      },
+      {
+        "name": "The Reading Rhythm Rule",
+        "body": "Give conversation prose more line-height than compact navigation and controls.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Workspace Rule",
+        "body": "Separate persistent regions with tone and hairlines; reserve soft elevation for overlapping dialogs and menus.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do preserve CLI terminology, full control hit areas, visible run and permission state, contextual errors, and direct session continuation.",
+      "Do keep project selection explicit, native-first, and backed by the authenticated common-location fallback."
+    ],
+    "donts": [
+      "Don't imitate IDE chrome, show terminal-only customization as disabled navigation, hide permissions, or turn the application into a dashboard.",
+      "Don't silently probe local folders or accept browser-supplied arbitrary paths."
+    ]
+  }
+}

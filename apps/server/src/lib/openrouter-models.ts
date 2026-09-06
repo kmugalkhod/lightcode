@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createLogger, getErrorMessage, getLightcodeDataDir } from "@lightcode/shared";
 import { z } from "zod";
+import { networkFetch } from "@lightcode/shared/network";
 import type { ProviderModelCapabilities } from "./provider-registry";
 
 const logger = createLogger("openrouter-models");
@@ -122,15 +123,15 @@ function summarizeRawModel(raw: unknown): OpenRouterModelSummary | null {
 }
 
 async function fetchModelsFromApi(): Promise<OpenRouterModelSummary[]> {
-  const response = await fetch(openRouterModelsUrl, {
+  const response = await networkFetch(openRouterModelsUrl, {
     signal: AbortSignal.timeout(fetchTimeoutMs),
   });
   if (!response.ok) {
     throw new Error(`OpenRouter models API returned HTTP ${response.status}.`);
   }
 
-  const payload = (await response.json()) as { data?: unknown[] };
-  const models = (payload.data ?? [])
+  const payload = z.object({ data: z.array(z.unknown()) }).parse(await response.json());
+  const models = payload.data
     .map(summarizeRawModel)
     .filter((model): model is OpenRouterModelSummary => model !== null);
 

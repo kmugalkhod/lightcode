@@ -1,8 +1,23 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  mkdirSync,
+  writeFileSync,
+  symlinkSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listSkills, loadSkill } from "./runtime";
+import {
+  listSkills as discoverSkills,
+  loadSkill as readSkill,
+  clearSkillsCache,
+} from "./runtime";
+
+const listSkills = ({ cwd }: { cwd: string }) =>
+  discoverSkills({ cwd, home: path.join(cwd, "home"), env: {} });
+const loadSkill = (input: unknown, { cwd }: { cwd: string }) =>
+  readSkill(input, { cwd, home: path.join(cwd, "home"), env: {} });
 
 const tempRoots: string[] = [];
 
@@ -13,12 +28,98 @@ function createTempWorkspace() {
 }
 
 afterEach(() => {
+  clearSkillsCache();
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 describe("skills resolver", () => {
+  test("discovers shared agent installations, preserves precedence, and reads YAML descriptions", () => {
+    const cwd = createTempWorkspace();
+    for (const dir of [
+      ".lightcode/skills/demo",
+      "home/.agents/skills/demo",
+      "home/.claude/skills/claude",
+      "home/.codex/skills/.system/codex",
+      "home/.config/opencode/skills/opencode",
+    ]) {
+      mkdirSync(path.join(cwd, dir), { recursive: true });
+      writeFileSync(
+        path.join(cwd, dir, "SKILL.md"),
+        `---\nname: ${path.basename(dir)}\ndescription: >-\n  First line\n  second line\n---\nInstructions`,
+      );
+    }
+    const skills = listSkills({ cwd });
+    expect(skills.map((s) => s.name)).toEqual([
+      "claude",
+      "codex",
+      "demo",
+      "opencode",
+    ]);
+    expect(skills.find((s) => s.name === "demo")?.source).toBe("project");
+    expect(skills[0]?.description).toBe("First line second line");
+  });
+
+  test("ignores broken links, loops and malformed skills without losing valid symlinked skills", () => {
+    const cwd = createTempWorkspace();
+    const root = path.join(cwd, ".agents/skills");
+    const installed = path.join(cwd, "installed/demo");
+    mkdirSync(root, { recursive: true });
+    mkdirSync(installed, { recursive: true });
+    writeFileSync(
+      path.join(installed, "SKILL.md"),
+      "---\nname: linked\n---\nBody",
+    );
+    symlinkSync(installed, path.join(root, "linked"));
+    symlinkSync(root, path.join(root, "loop"));
+    symlinkSync(path.join(cwd, "missing"), path.join(root, "broken"));
+    mkdirSync(path.join(root, "bad"));
+    writeFileSync(
+      path.join(root, "bad/SKILL.md"),
+      "---\nname: [broken\n---\nBody",
+    );
+    expect(listSkills({ cwd }).map((s) => s.name)).toEqual(["linked"]);
+  });
+
+  test("supports custom roots and includes their configuration in the cache key", () => {
+    const cwd = createTempWorkspace();
+    const root = path.join(cwd, "external");
+    mkdirSync(root);
+    writeFileSync(path.join(root, "SKILL.md"), "---\nname: custom\n---\nBody");
+    expect(listSkills({ cwd })).toEqual([]);
+    expect(
+      discoverSkills({
+        cwd,
+        home: path.join(cwd, "home"),
+        env: { LIGHTCODE_SKILL_PATHS: root },
+      }).map((s) => s.name),
+    ).toEqual(["custom"]);
+  });
+
+  test("loads supporting resources while rejecting traversal and escaping symlinks", () => {
+    const cwd = createTempWorkspace();
+    const root = path.join(cwd, ".lightcode/skills/demo");
+    mkdirSync(path.join(root, "references"), { recursive: true });
+    writeFileSync(path.join(root, "SKILL.md"), "---\nname: demo\n---\nBody");
+    writeFileSync(
+      path.join(root, "references/guide.md"),
+      "Supporting instructions",
+    );
+    const outside = path.join(cwd, "private.txt");
+    writeFileSync(outside, "Private");
+    symlinkSync(outside, path.join(root, "escape"));
+    expect(
+      loadSkill({ name: "demo", resource: "references/guide.md" }, { cwd })
+        .content,
+    ).toBe("Supporting instructions");
+    expect(() =>
+      loadSkill({ name: "demo", resource: "../../../private.txt" }, { cwd }),
+    ).toThrow(/inside/);
+    expect(() =>
+      loadSkill({ name: "demo", resource: "escape" }, { cwd }),
+    ).toThrow(/inside/);
+  });
   test("lists and loads project-local skills from SKILL.md frontmatter", () => {
     const cwd = createTempWorkspace();
     const skillDir = path.join(cwd, ".lightcode", "skills", "demo-skill");

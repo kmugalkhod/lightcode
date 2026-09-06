@@ -4,6 +4,7 @@ import {
 } from "@lightcode/ai";
 import { createLogger, getErrorMessage } from "@lightcode/shared";
 import { APICallError, RetryError } from "ai";
+import { certificateErrorHint, isCertificateError } from "@lightcode/shared/network";
 
 export type ChatFailureClass =
   | "provider_schema_rejection"
@@ -171,6 +172,10 @@ export function classifyChatError(error: unknown): ChatStreamErrorInfo {
   // RetryError wraps the per-attempt errors after the SDK's own retries.
   if (RetryError.isInstance(error) && error.lastError) {
     return classifyChatError(error.lastError);
+  }
+
+  if (!(APICallError.isInstance(error) && typeof error.statusCode === "number") && isCertificateError(error)) {
+    return { kind: "network", retryable: false, message: certificateErrorHint };
   }
 
   if (APICallError.isInstance(error)) {
