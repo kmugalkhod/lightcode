@@ -104,7 +104,7 @@ Canvas, panel, raised surface, and inset form adjacent charcoal layers. Hairline
 
 Use self-hosted Geist Variable for interface copy, with native system fallbacks for other scripts. Bundle the normal Latin variable WOFF2 as a same-origin asset with font-display swap; never depend on an external font service or relax CSP to load it. Use native monospace only for paths, code, tool data, shortcuts, and model identifiers. Geist is an intentional fit for this developer instrument, not a default identity prescription for unrelated products.
 
-The welcome heading uses the display token and becomes 28px on mobile. Conversation headings are compact (17px, weight 550), interface copy uses the body token, and messages use the more open message token. Supporting labels remain subordinate to prose.
+The welcome heading uses the display token and becomes 28px on mobile. Interface copy uses the body token, and messages use the more open message token. Session metadata is subordinate to prose and lives in the composer, not a second persistent header.
 
 **The Reading Rhythm Rule.** Give conversation prose more line-height than compact navigation and controls.
 
@@ -131,7 +131,7 @@ Use the established tight-to-container radius progression, with the recurring 8p
 - Composer: one dark inset surface with a discoverable Commands button and a single amber send action; streaming replaces send with Stop run. Drafts persist per session/project in tab-scoped storage. Suggestions fill the composer without submitting. Browsing commands must preserve the prior draft.
 - Session search: filter titles and project paths; show counts and an explicit no-results state. Recent sessions offer direct continuation from the welcome surface.
 - Model picker: searchable current-provider catalog in a native modal dialog, selected model visible, exact-ID fallback, loading/error states, and serialized selection. Provider connection remains terminal-owned.
-- Conversation heading: session title and live status above messages; offer Back to latest when the reader scrolls away from the bottom.
+- Session context: compact Session disclosure and live status alongside Commands in the existing composer toolbar. Opening Session reveals the full title, mode, access, and message count without consuming permanent conversation height. Keep the title as a screen-reader heading and in the session rail. Offer Back to latest when the reader scrolls away from the bottom.
 - Project chooser: one prominent full-hit-target action opens the host folder chooser first. Keep the authenticated common-location browser available as a quieter secondary action and show it automatically if the system chooser is unavailable or cannot open—including Linux without Zenity or KDialog in a graphical session. Keep non-directory and symlink rows disabled and retain confirmation before granting a broad fallback location.
 
 ## Do's and Don'ts

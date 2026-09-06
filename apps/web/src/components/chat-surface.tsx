@@ -187,7 +187,7 @@ export function ChatSurface({
 
   return (
     <section className="chat-surface" aria-label="Project conversation">
-      <header className="conversation-heading"><div><h1>{displaySessionTitle(session)}</h1><span>{mode === "plan" ? "Planning" : "Building"} · {chat.messages.filter((message) => message.role === "user").length} messages from you</span></div><span className={chat.isStreaming ? "conversation-state running" : "conversation-state"}><span className="live-dot" />{chat.pendingApprovals.length || chat.pendingUserPrompts.length ? "Your input needed" : chat.isStreaming ? "Working" : "Ready for your next step"}</span></header>
+      <h1 className="sr-only">{displaySessionTitle(session)}</h1>
       <div className="conversation-scroll" ref={scrollRef} onScroll={handleScroll}>
         <div className="conversation-column">
           {chat.isHistoryLoading ? <ConversationSkeleton /> : null}
@@ -232,6 +232,13 @@ export function ChatSurface({
           ))}
 
           <CommandComposer
+            sessionInfo={{
+              title: displaySessionTitle(session),
+              mode: mode === "plan" ? "Plan mode" : "Build mode",
+              permission: mode === "plan" || permissionMode === "read-only" ? "Read only" : permissionMode === "workspace-write" ? "Project access" : "Full access",
+              messageCount: chat.messages.filter((message) => message.role === "user").length,
+              status: chat.pendingApprovals.length || chat.pendingUserPrompts.length ? "Input needed" : chat.errorMessage ? "Error" : chat.isHistoryLoading ? "Loading" : chat.isStreaming ? "Working" : "Ready",
+            }}
             draftKey={session.id}
             appearance="conversation"
             hasSession

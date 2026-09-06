@@ -1582,12 +1582,19 @@ input:disabled {
 .ribbon-model:hover:not(:disabled) { background: var(--elevated); color: var(--text); }
 .ribbon-model > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ribbon-model > svg { flex-shrink: 0; }
-.conversation-heading { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 28px; border-bottom: 1px solid var(--border-soft); }
-.conversation-heading > div { min-width: 0; }
-.conversation-heading h1 { margin: 0 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; font-weight: 550; letter-spacing: -.025em; }
-.conversation-heading > div > span { color: var(--text-muted); font-size: 12px; }
-.conversation-state { display: inline-flex; align-items: center; gap: 7px; color: var(--text-muted); font-size: 11px; white-space: nowrap; }
-.conversation-state.running { color: var(--accent-text); }
+.composer-session-context { display: flex; min-width: 0; flex: 1; align-items: center; gap: 12px; margin-left: 8px; }
+.composer-session-trigger { display: inline-flex; min-height: 36px; align-items: center; gap: 6px; border-radius: 6px; padding: 5px 8px; background: transparent; color: var(--text-secondary); font-size: 12px; }
+.composer-session-trigger:hover, .composer-session-trigger[aria-expanded="true"] { background: var(--elevated); color: var(--text); }
+.composer-session-status { min-width: min-content; color: var(--text-muted); font-size: 11px; }
+.composer-session-status:is(.status-working, .status-input-needed) { color: var(--accent-text); }
+.composer-session-status.status-error { color: var(--error); }
+.composer-session-panel { position: absolute; z-index: 44; bottom: calc(100% + 8px); left: 0; right: 0; max-height: min(240px, 45dvh); overflow: auto; padding: 16px 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text-secondary); }
+.composer-session-panel h2 { margin: 0 0 8px; color: var(--text); font-size: 15px; font-weight: 550; overflow-wrap: anywhere; }
+.composer-session-panel p { margin: 4px 0 0; font-size: 12px; }
+@media (max-width: 400px) {
+  .composer-command-trigger { padding-inline: 4px; }
+  .composer-command-trigger > svg, .composer-command-trigger > kbd { display: none; }
+}
 .jump-to-latest { display: flex; align-items: center; gap: 7px; min-height: 36px; margin: 0 auto 12px; padding: 6px 14px; border: 1px solid var(--border); border-radius: 20px; background: var(--elevated); color: var(--text-secondary); font-size: 12px; }
 .model-picker { width: min(560px, calc(100% - 32px)); max-height: calc(100dvh - 48px); overflow: hidden; border: 1px solid var(--border); border-radius: 14px; padding: 0; background: var(--panel); color: var(--text); }
 .model-picker::backdrop { background: rgb(0 0 0 / 65%); }
@@ -1611,8 +1618,10 @@ input:disabled {
 .model-picker-error { color: var(--error); }
 
 @media (max-width: 760px) {
-  .conversation-heading { padding: 16px; }
-  .conversation-state { display: none; }
+  .composer-session-context { margin-left: 0; gap: 6px; }
+  .composer-session-trigger { min-height: 44px; padding-inline: 6px; }
+  .composer-session-trigger > svg:first-child { display: none; }
+  .composer-session-panel { padding: 16px; }
   .new-session-title { gap: 12px; }
   .new-session-mark { display: none; }
   .new-session-inner { padding-block: 8px; }

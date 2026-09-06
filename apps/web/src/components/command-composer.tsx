@@ -14,6 +14,14 @@ import {
 } from "./slash-command-menu";
 import { Icon } from "./icons";
 
+export interface ComposerSessionInfo {
+  title: string;
+  mode: string;
+  permission: string;
+  messageCount: number;
+  status: "Ready" | "Working" | "Input needed" | "Loading" | "Error";
+}
+
 export function CommandComposer({
   appearance,
   hasSession,
@@ -30,6 +38,7 @@ export function CommandComposer({
   onUnknownCommand,
   draftKey,
   suggestedDraft,
+  sessionInfo,
 }: {
   appearance: "conversation" | "starter";
   hasSession: boolean;
@@ -44,11 +53,16 @@ export function CommandComposer({
   onSubmit: (text: string) => void | boolean | Promise<void | boolean>;
   draftKey?: string;
   suggestedDraft?: { text: string; id: number } | null;
+  sessionInfo?: ComposerSessionInfo;
   onCommand: (command: SlashCommandDefinition, args: string, available: boolean) => void;
   onUnknownCommand: (invokedAs: string) => void;
 }) {
   const [value, setValue] = useState(() => draftKey ? readComposerDraft(draftKey) : "");
   const [submitting, setSubmitting] = useState(false);
+  const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const sessionButtonRef = useRef<HTMLButtonElement>(null);
+  const sessionPanelId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const submitLock = useRef(false);
   const draftBeforeCommands = useRef<string | null>(null);
@@ -68,6 +82,15 @@ export function CommandComposer({
   const selectedCommand = suggestions[safeSelectedIndex];
   const parsed = parseSlashCommand(value, { hasSession });
   const canRunValue = value.trim().length > 0 && (slashInput || canSendMessage) && !commandBusy && !submitting;
+
+  useEffect(() => {
+    if (!sessionInfoOpen) return;
+    function dismiss(event: PointerEvent) {
+      if (event.target instanceof Node && !shellRef.current?.contains(event.target)) setSessionInfoOpen(false);
+    }
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [sessionInfoOpen]);
 
   useEffect(() => {
     if (draftKey) saveComposerDraft(draftKey, draftBeforeCommands.current ?? value);
@@ -162,7 +185,21 @@ export function CommandComposer({
   }
 
   return (
-    <div className={`command-composer-shell appearance-${appearance}`}>
+    <div ref={shellRef} className={`command-composer-shell appearance-${appearance}`}
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSessionInfoOpen(false); }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && sessionInfoOpen) {
+          event.preventDefault();
+          event.stopPropagation();
+          setSessionInfoOpen(false);
+          sessionButtonRef.current?.focus();
+        }
+      }}>
+      {sessionInfo && sessionInfoOpen ? <section className="composer-session-panel" id={sessionPanelId} aria-label="Session details">
+        <h2>{sessionInfo.title}</h2>
+        <p>{sessionInfo.mode} · {sessionInfo.permission}</p>
+        <p>{sessionInfo.messageCount} {sessionInfo.messageCount === 1 ? "message" : "messages"} from you · {sessionInfo.status}</p>
+      </section> : null}
       <CommandResultPanel result={commandResult} busy={commandBusy} onDismiss={onDismissResult} />
       {submitError ? <p className="new-session-error" role="alert">{submitError}</p> : null}
       {menuOpen ? (
@@ -198,10 +235,18 @@ export function CommandComposer({
           onKeyDown={handleKeyDown}
         />
         <div className={appearance === "starter" ? "starter-toolbar" : "composer-toolbar"}>
-          <button className="composer-command-trigger" type="button" onClick={() => { if (!slashInput) draftBeforeCommands.current = value; setValue("/"); setMenuDismissed(false); textareaRef.current?.focus(); }} title="Browse slash commands">
+          <button className="composer-command-trigger" type="button" onClick={() => { setSessionInfoOpen(false); if (!slashInput) draftBeforeCommands.current = value; setValue("/"); setMenuDismissed(false); textareaRef.current?.focus(); }} title="Browse slash commands">
             <Icon name="terminal" size={16} />Commands <kbd>/</kbd>
           </button>
-          <span className="draft-status">{submitting ? "Sending…" : value && !slashInput ? "Enter to send" : ""}</span>
+          {sessionInfo ? <div className="composer-session-context">
+            <button ref={sessionButtonRef} className="composer-session-trigger" type="button"
+              aria-label={`Session details: ${sessionInfo.title}`} aria-expanded={sessionInfoOpen}
+              aria-controls={sessionInfoOpen ? sessionPanelId : undefined}
+              title={sessionInfo.title} onClick={() => { setMenuDismissed(true); setSessionInfoOpen((open) => !open); }}>
+              <Icon name="message" size={15} /><span>Session</span><Icon name="chevron-down" size={12} />
+            </button>
+            <span className={`composer-session-status status-${sessionInfo.status.toLowerCase().replaceAll(" ", "-")}`} role="status">{sessionInfo.status}</span>
+          </div> : <span className="draft-status">{submitting ? "Sending…" : value && !slashInput ? "Enter to send" : ""}</span>}
           {isStreaming && onAbort ? (
             <button className="abort-button" type="button" onClick={onAbort}>
               <Icon name="abort" size={14} />Stop run
