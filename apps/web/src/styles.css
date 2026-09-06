@@ -2366,6 +2366,40 @@ button.folder-row:hover:not(:disabled) {
   }
 }
 
+/* Workspace context belongs to the composer, never a persistent chat banner. */
+.workspace-controls { display: flex; min-width: 0; align-items: center; gap: 4px; color: var(--text-secondary); }
+.workspace-controls-agent { flex: 0 1 auto; margin-right: 8px; }
+.workspace-controls .ribbon-model { min-width: 0; max-width: 200px; min-height: 36px; color: var(--text-secondary); font-family: inherit; }
+.workspace-controls .ribbon-select { height: 36px; border: 0; background: transparent; color: var(--text-secondary); font-size: 12px; }
+.workspace-controls .ribbon-select:hover:not(.disabled) { background: var(--elevated); }
+.workspace-controls .permission-select { color: var(--accent-text); }
+.workspace-controls .workspace-path { min-width: 0; max-width: 240px; min-height: 28px; padding: 2px 4px; gap: 6px; color: var(--text-secondary); }
+.workspace-controls .workspace-path strong { font-size: 11px; font-weight: 500; color: inherit; }
+.workspace-controls .workspace-path:hover { background: var(--elevated); }
+.workspace-controls .workspace-icon { color: inherit; }
+.workspace-controls .ribbon-status { color: var(--text-muted); font-size: 11px; }
+.composer-hint { align-items: center; }
+.starter-project-context { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+@media (max-width: 1100px) {
+  .composer-toolbar, .starter-toolbar { flex-wrap: wrap; }
+  .workspace-controls-agent { flex: 1 0 100%; margin: 0; }
+  .workspace-controls-agent .ribbon-model { max-width: 140px; }
+  .workspace-controls-agent .ribbon-select > svg:first-of-type { display: none; }
+}
+@media (max-width: 760px) {
+  .composer-toolbar, .starter-toolbar { flex-wrap: wrap; }
+  .workspace-controls-agent { flex: 1 0 100%; margin: 0; }
+  .workspace-controls-agent .ribbon-model { flex: 1; max-width: none; min-height: 44px; }
+  .workspace-controls-agent .ribbon-select { min-width: 44px; min-height: 44px; }
+  .workspace-controls-project { flex: 1; }
+  .workspace-controls-project .workspace-path { min-height: 44px; max-width: 220px; }
+  .workspace-controls-project .ribbon-status { display: flex; margin-left: auto; }
+  .workspace-controls-project .ribbon-menu { color: var(--text-secondary); }
+  .composer-hint { display: flex; padding-top: 0; }
+  .composer-hint > span { display: none; }
+  .starter-project-context { flex-wrap: wrap; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

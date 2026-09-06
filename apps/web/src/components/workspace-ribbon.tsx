@@ -3,6 +3,7 @@ import { Icon } from "./icons";
 import { codingModeSchema, permissionModeSchema } from "../lib/api";
 
 interface WorkspaceRibbonProps {
+  placement: "project" | "agent";
   workspace: Workspace | null;
   session: Session | null;
   mode: CodingMode;
@@ -26,6 +27,7 @@ const permissionLabels: Record<PermissionMode, string> = {
 };
 
 export function WorkspaceRibbon({
+  placement,
   workspace,
   session,
   mode,
@@ -44,7 +46,7 @@ export function WorkspaceRibbon({
   const pathLabel = session?.pathLabel ?? session?.cwd ?? workspace?.pathLabel ?? "Choose a local project";
   const normalizedSessionPath = (session?.pathLabel ?? session?.cwd)?.replaceAll("\\", "/").replace(/\/$/, "");
   const sessionProjectName = normalizedSessionPath?.split("/").at(-1);
-  const projectName = session ? sessionProjectName || session.title || "Project" : workspace?.name ?? "Project";
+  const projectName = session ? sessionProjectName || session.title || "Project" : workspace?.name ?? "Open folder";
   const needsProviderSetup = Boolean(providerStatus?.missingCredentialHints.length);
   const statusLabel = isRunning
     ? "Live run"
@@ -67,7 +69,8 @@ export function WorkspaceRibbon({
   const permissionDisabled = isRunning || mode === "plan";
 
   return (
-    <header className="workspace-ribbon">
+    <div className={`workspace-controls workspace-controls-${placement}`} role="group" aria-label={placement === "project" ? "Project controls" : "Agent controls"}>
+      {placement === "project" ? <>
       <button className="icon-button mobile-only ribbon-menu" type="button" onClick={onOpenMenu} aria-label="Open sessions">
         <Icon name="menu" />
       </button>
@@ -76,6 +79,7 @@ export function WorkspaceRibbon({
         type="button"
         onClick={onOpenProject}
         title={pathLabel}
+        aria-label={`Open project folder: ${projectName}`}
         disabled={isPickingProject}
         aria-busy={isPickingProject}
       >
@@ -88,18 +92,16 @@ export function WorkspaceRibbon({
         </span>
         <span className="workspace-path-copy">
           <strong>{isPickingProject ? "Opening folder picker" : projectName}</strong>
-          <small>{isPickingProject ? "Choose a project in the system dialog" : pathLabel}</small>
         </span>
         <Icon name="chevron-down" size={15} />
       </button>
 
-      <div className="ribbon-status" role="status" title={statusDetail}>
+      {!session || providerStatusError || needsProviderSetup || !providerStatus ? <div className="ribbon-status" role="status" title={statusDetail}>
         <span className={isRunning ? "live-dot active" : "live-dot"} />
         {statusLabel}
-      </div>
+      </div> : null}
 
-      <div className="ribbon-spacer" />
-
+      </> : <>
       {providerStatus?.selectedModel || session?.model ? (
         <button type="button" className="ribbon-model" onClick={onOpenModels} disabled={isRunning || !providerStatus} aria-label="Choose model" title={providerStatus?.selectedModel ?? session?.model ?? undefined}>
           <Icon name="agent" size={15} />
@@ -150,6 +152,7 @@ export function WorkspaceRibbon({
         </select>
         {permissionDisabled ? null : <Icon name="chevron-down" size={13} />}
       </label>
-    </header>
+      </>}
+    </div>
   );
 }

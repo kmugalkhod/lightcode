@@ -76,7 +76,7 @@ components:
 
 ## Overview
 
-**Creative North Star: "Workspace Ribbon"**
+**Creative North Star: "Conversation First"**
 
 Lightcode Web is one local coding workspace shared with the CLI. Keep the project conversation central and avoid dashboard cards, decorative metrics, or browser-only concepts that compete with the work.
 
@@ -92,7 +92,7 @@ The interface is a precise, quiet coding instrument: adjacent charcoal fields ca
 
 ### Primary
 
-Amber is the single signature accent for the workspace ribbon, focus, primary actions, and selected models. Warm inset and pale amber text support selection without filling the conversation with color.
+Amber is the single signature accent for focus, access controls, primary actions, and selected models. Keep persistent workspace chrome neutral; do not restore the full-width amber banner.
 
 ### Neutral
 
@@ -110,7 +110,7 @@ The welcome heading uses the display token and becomes 28px on mobile. Interface
 
 ## Layout
 
-Desktop uses a fixed 280px session rail, a full-width workspace ribbon, and a centered 1040px conversation column. Role labels sit above messages so prose, tables, and code share the available width; prose remains bounded to 72ch. The composer belongs to the conversation, not a separate panel. Below 760px, the rail becomes an inert-backed, focus-contained drawer and the ribbon uses two rows to keep project, model, mode, and permission visible.
+Desktop uses a fixed 280px session rail and a centered 1040px conversation column with no persistent header above the chat. Role labels sit above messages so prose, tables, and code share the available width; prose remains bounded to 72ch. Model, mode, and access controls sit directly in the composer's action row. A compact folder-name button below the composer retains the full path as a tooltip. Below 1100px the agent controls wrap as one grouped row; below 760px all controls have touch-sized targets and the session drawer opens from the compact folder-context row.
 
 ## Elevation & Depth
 
@@ -125,7 +125,7 @@ Use the established tight-to-container radius progression, with the recurring 8p
 ## Components
 
 - Buttons and fields: amber primary actions and quiet raised secondary actions, with an amber two-pixel keyboard focus outline offset by two pixels. Search fields use an inset background and amber border on focus. Disabled controls visibly dim. Color transitions are brief (160ms ease-out); drawer movement is 190ms and respects reduced motion.
-- Workspace ribbon: amber top rule and warm dark field; always ties path, run state, mode, and permission together.
+- Workspace controls: no top banner or colored strip. Compact model, mode, and access selectors live in the composer. Folder selection stays native-first through a small folder-name control; full paths are available on hover, not as a permanent subtitle. Provider errors and setup states remain visible beside the folder; avoid duplicating normal session status.
 - Session rail: saved CLI/browser conversations and one clear project chooser; do not show disabled placeholders for terminal-only customization.
 - Messages: the same safe GitHub-flavored Markdown renderer during streaming and after completion; real tables, nested lists, and unfinished code fences retain their structure. Consecutive successful tool calls collapse into a single expandable row; errors and approval requests stay individually visible. Sources remain visible links; remote Markdown images never load automatically.
 - Composer: one dark inset surface with a discoverable Commands button and a single amber send action; streaming replaces send with Stop run. Drafts persist per session/project in tab-scoped storage. Suggestions fill the composer without submitting. Browsing commands must preserve the prior draft.

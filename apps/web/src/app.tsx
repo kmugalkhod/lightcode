@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChatSurface } from "./components/chat-surface";
 import { CommandComposer } from "./components/command-composer";
 import { Icon } from "./components/icons";
@@ -443,6 +443,16 @@ export function App() {
 
   if (!api) return null;
 
+  const controls = (placement: "project" | "agent") => <WorkspaceRibbon
+    placement={placement}
+    workspace={workspace} session={activeSession} mode={mode} permissionMode={permissionMode}
+    providerStatus={providerStatus} providerStatusError={providerStatusError}
+    isRunning={isRunning} isCreating={isCreating} isPickingProject={isPickingProject}
+    onOpenMenu={openRail} onOpenProject={() => void openNativeProjectPicker()}
+    onModeChange={setMode} onPermissionModeChange={(nextMode) => void persistPermissionMode(nextMode)}
+    onOpenModels={() => setIsModelPickerOpen(true)}
+  />;
+
   return (
     <div className="app-shell">
       <SessionRail
@@ -462,25 +472,10 @@ export function App() {
       />
 
       <main className="workspace-main" inert={isRailOpen || isBrowserOpen ? true : undefined}>
-        <WorkspaceRibbon
-          workspace={workspace}
-          session={activeSession}
-          mode={mode}
-          permissionMode={permissionMode}
-          providerStatus={providerStatus}
-          providerStatusError={providerStatusError}
-          isRunning={isRunning}
-          isCreating={isCreating}
-          isPickingProject={isPickingProject}
-          onOpenMenu={openRail}
-          onOpenProject={() => void openNativeProjectPicker()}
-          onModeChange={setMode}
-          onPermissionModeChange={(nextMode) => void persistPermissionMode(nextMode)}
-          onOpenModels={() => setIsModelPickerOpen(true)}
-        />
-
         {activeSession ? (
           <ChatSurface
+            workspaceControls={controls("agent")}
+            projectControls={controls("project")}
             key={activeSession.id}
             api={api}
             token={token}
@@ -501,6 +496,8 @@ export function App() {
           />
         ) : (
           <NewSessionSurface
+            workspaceControls={controls("agent")}
+            projectControls={controls("project")}
             key={workspace?.id ?? "no-project"}
             api={api}
             workspace={workspace}
@@ -511,7 +508,6 @@ export function App() {
             isCreating={isCreating}
             isPickingProject={isPickingProject}
             error={sessionError}
-            onChooseProject={() => void openNativeProjectPicker()}
             onBrowseCommonLocations={openProjectBrowserFallback}
             onNewSession={beginNewSession}
             onOpenSessions={openRail}
@@ -554,6 +550,8 @@ function AuthorizationGate({ detail }: { detail?: string | null }) {
 }
 
 function NewSessionSurface({
+  workspaceControls,
+  projectControls,
   api,
   workspace,
   sessions,
@@ -563,7 +561,6 @@ function NewSessionSurface({
   isCreating,
   isPickingProject,
   error,
-  onChooseProject,
   onBrowseCommonLocations,
   onNewSession,
   onOpenSessions,
@@ -572,6 +569,8 @@ function NewSessionSurface({
   onProviderStatusChange,
   onStart,
 }: {
+  workspaceControls: ReactNode;
+  projectControls: ReactNode;
   api: ReturnType<typeof createLightcodeApi>;
   workspace: Workspace | null;
   sessions: Session[];
@@ -581,7 +580,6 @@ function NewSessionSurface({
   isCreating: boolean;
   isPickingProject: boolean;
   error: string | null;
-  onChooseProject: () => void;
   onBrowseCommonLocations: () => void;
   onNewSession: () => void;
   onOpenSessions: () => void;
@@ -635,48 +633,11 @@ function NewSessionSurface({
           <div>
             <h1>{workspace ? "What would you like to build?" : "Your next idea starts here."}</h1>
             <p className="starter-description">{workspace ? `Explore, plan, and make progress in ${workspace.name}.` : "Open a local project. Give Lightcode a task. Keep the work moving."}</p>
-            <div className="new-session-project-controls">
-              <button
-                className="new-session-project-button"
-                type="button"
-                onClick={onChooseProject}
-                disabled={isPickingProject}
-                aria-busy={isPickingProject}
-              >
-                {isPickingProject ? (
-                  <span className="inline-spinner" aria-hidden="true" />
-                ) : (
-                  <Icon name="folder-open" size={17} />
-                )}
-                <span>
-                  <strong>
-                    {isPickingProject
-                      ? "Opening system folder picker"
-                      : workspace?.pathLabel ?? "Open a project folder"}
-                  </strong>
-                  <small>
-                    {isPickingProject
-                      ? "Complete the choice in the system dialog"
-                      : workspace
-                        ? "Choose another local project"
-                        : "Choose the code you want to work on"}
-                  </small>
-                </span>
-                <Icon name="chevron-right" size={15} />
-              </button>
-              <button
-                className="browse-common-locations-button"
-                type="button"
-                onClick={onBrowseCommonLocations}
-                disabled={isPickingProject}
-              >
-                Browse folders
-              </button>
-            </div>
           </div>
         </div>
 
         <CommandComposer
+          workspaceControls={workspaceControls}
           key={workspace?.id ?? "no-project"}
           draftKey={`new-${workspace?.id ?? "no-project"}`}
           suggestedDraft={suggestedDraft}
@@ -699,6 +660,7 @@ function NewSessionSurface({
             tone: "error",
           })}
         />
+        <div className="starter-project-context">{projectControls}<button className="browse-common-locations-button" type="button" onClick={onBrowseCommonLocations} disabled={isPickingProject}>Browse folders</button></div>
         {error ? <div className="new-session-error" role="alert"><Icon name="warning" size={16} />{error}</div> : null}
         <div className="starter-suggestions" aria-label="Suggested prompts">
           {[{ icon: "search" as const, title: "Understand the code", text: "Explain this project's architecture and the main flows I should understand." }, { icon: "tool" as const, title: "Find an issue", text: "Review this project for its highest-risk bug. Explain what you find before making changes." }, { icon: "instructions" as const, title: "Plan a change", text: "Help me plan a change to this project. Start by understanding the code and asking what I want to build." }].map((suggestion) => (

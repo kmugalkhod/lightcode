@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { readComposerDraft, saveComposerDraft } from "../lib/composer-draft";
 import {
   getSlashCommandSuggestions,
@@ -39,6 +39,7 @@ export function CommandComposer({
   draftKey,
   suggestedDraft,
   sessionInfo,
+  workspaceControls,
 }: {
   appearance: "conversation" | "starter";
   hasSession: boolean;
@@ -54,6 +55,7 @@ export function CommandComposer({
   draftKey?: string;
   suggestedDraft?: { text: string; id: number } | null;
   sessionInfo?: ComposerSessionInfo;
+  workspaceControls?: ReactNode;
   onCommand: (command: SlashCommandDefinition, args: string, available: boolean) => void;
   onUnknownCommand: (invokedAs: string) => void;
 }) {
@@ -235,6 +237,7 @@ export function CommandComposer({
           onKeyDown={handleKeyDown}
         />
         <div className={appearance === "starter" ? "starter-toolbar" : "composer-toolbar"}>
+          {workspaceControls}
           <button className="composer-command-trigger" type="button" onClick={() => { setSessionInfoOpen(false); if (!slashInput) draftBeforeCommands.current = value; setValue("/"); setMenuDismissed(false); textareaRef.current?.focus(); }} title="Browse slash commands">
             <Icon name="terminal" size={16} />Commands <kbd>/</kbd>
           </button>

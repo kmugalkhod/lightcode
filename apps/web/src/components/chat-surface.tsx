@@ -1,6 +1,6 @@
 import type { PendingToolApproval, PendingUserPrompt } from "@lightcode/ai/react";
 import { useCodingSessionChat } from "@lightcode/ai/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { UIMessage } from "ai";
 import type {
   CodingMode,
@@ -21,6 +21,8 @@ import { Icon } from "./icons";
 import { displaySessionTitle } from "../lib/api";
 
 interface ChatSurfaceProps {
+  workspaceControls: ReactNode;
+  projectControls: ReactNode;
   api: LightcodeApi;
   token: string;
   session: Session;
@@ -42,6 +44,8 @@ interface ChatSurfaceProps {
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function ChatSurface({
+  workspaceControls,
+  projectControls,
   api,
   token,
   session,
@@ -232,6 +236,7 @@ export function ChatSurface({
           ))}
 
           <CommandComposer
+            workspaceControls={workspaceControls}
             sessionInfo={{
               title: displaySessionTitle(session),
               mode: mode === "plan" ? "Plan mode" : "Build mode",
@@ -262,7 +267,7 @@ export function ChatSurface({
           />
           <div className="composer-hint">
             <span>Enter to send · Shift+Enter for a new line</span>
-            <span>{mode === "plan" ? "Plan mode · Read only" : permissionMode === "workspace-write" ? "Build mode · Project access" : permissionMode === "danger-full-access" ? "Build mode · Full access" : "Build mode · Read only"}</span>
+            {projectControls}
           </div>
         </div>
       </div>
