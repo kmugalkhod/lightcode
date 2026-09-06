@@ -81,6 +81,7 @@ export function ChatSurface({
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const followOutputRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
   const previousStreamingRef = useRef(false);
   const [commandResult, setCommandResult] = useState<CommandResult | null>(null);
   const [commandBusy, setCommandBusy] = useState<string | null>(null);
@@ -107,6 +108,22 @@ export function ChatSurface({
   }, [chat.isStreaming, chat.messages]);
 
   useEffect(() => {
+    const element = scrollRef.current;
+    const content = element?.firstElementChild;
+    if (!element || !content) return;
+    const observer = new ResizeObserver(() => {
+      if (!followOutputRef.current || scrollFrameRef.current !== null) return;
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = null;
+        if (followOutputRef.current) element.scrollTop = element.scrollHeight;
+      });
+    });
+    observer.observe(content);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     return () => {
       if (scrollFrameRef.current !== null) {
         window.cancelAnimationFrame(scrollFrameRef.current);
@@ -118,7 +135,16 @@ export function ChatSurface({
   function handleScroll() {
     const element = scrollRef.current;
     if (!element) return;
-    followOutputRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 140;
+    const movedUp = element.scrollTop < lastScrollTopRef.current - 1;
+    const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
+    lastScrollTopRef.current = element.scrollTop;
+    if (movedUp && remaining > 2) {
+      followOutputRef.current = false;
+      setFollowing(false);
+      return;
+    }
+    if (scrollFrameRef.current !== null && followOutputRef.current) return;
+    followOutputRef.current = remaining < 140;
     setFollowing(followOutputRef.current);
   }
 

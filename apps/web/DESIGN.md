@@ -110,7 +110,7 @@ The welcome heading uses the display token and becomes 28px on mobile. Conversat
 
 ## Layout
 
-Desktop uses a fixed 280px session rail, a full-width workspace ribbon, and a centered 900px conversation column. The composer belongs to the conversation, not a separate panel. Below 760px, the rail becomes an inert-backed, focus-contained drawer and the ribbon uses two rows to keep project, model, mode, and permission visible.
+Desktop uses a fixed 280px session rail, a full-width workspace ribbon, and a centered 1040px conversation column. Role labels sit above messages so prose, tables, and code share the available width; prose remains bounded to 72ch. The composer belongs to the conversation, not a separate panel. Below 760px, the rail becomes an inert-backed, focus-contained drawer and the ribbon uses two rows to keep project, model, mode, and permission visible.
 
 ## Elevation & Depth
 
@@ -127,7 +127,7 @@ Use the established tight-to-container radius progression, with the recurring 8p
 - Buttons and fields: amber primary actions and quiet raised secondary actions, with an amber two-pixel keyboard focus outline offset by two pixels. Search fields use an inset background and amber border on focus. Disabled controls visibly dim. Color transitions are brief (160ms ease-out); drawer movement is 190ms and respects reduced motion.
 - Workspace ribbon: amber top rule and warm dark field; always ties path, run state, mode, and permission together.
 - Session rail: saved CLI/browser conversations and one clear project chooser; do not show disabled placeholders for terminal-only customization.
-- Messages: role-aligned rows with bounded code and tool disclosures; sources remain visible links.
+- Messages: the same safe GitHub-flavored Markdown renderer during streaming and after completion; real tables, nested lists, and unfinished code fences retain their structure. Consecutive successful tool calls collapse into a single expandable row; errors and approval requests stay individually visible. Sources remain visible links; remote Markdown images never load automatically.
 - Composer: one dark inset surface with a discoverable Commands button and a single amber send action; streaming replaces send with Stop run. Drafts persist per session/project in tab-scoped storage. Suggestions fill the composer without submitting. Browsing commands must preserve the prior draft.
 - Session search: filter titles and project paths; show counts and an explicit no-results state. Recent sessions offer direct continuation from the welcome surface.
 - Model picker: searchable current-provider catalog in a native modal dialog, selected model visible, exact-ID fallback, loading/error states, and serialized selection. Provider connection remains terminal-owned.
