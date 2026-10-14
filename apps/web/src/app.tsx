@@ -23,10 +23,12 @@ import {
   type CodingMode,
   type LaunchFolder,
   type PermissionMode,
+  type RecentProject,
   type ProviderStatus,
   type Session,
   type Workspace,
 } from "./lib/api";
+import { isWindowsClient } from "./lib/client-platform";
 import type { SlashCommandDefinition } from "./lib/slash-command-registry";
 import {
   executeWebCommand,
@@ -44,13 +46,6 @@ function isWebAuthorizationFailure(cause: unknown): cause is LightcodeApiError {
       ? Reflect.get(cause.payload, "code")
       : null;
   return cause.status === 401 || (typeof code === "string" && code.startsWith("web_auth_"));
-}
-
-function isWindowsClient(): boolean {
-  const nav = navigator as Navigator & {
-    userAgentData?: { platform?: string };
-  };
-  return /^win/i.test(nav.userAgentData?.platform || nav.platform || "");
 }
 
 function nativePickerFallbackNotice(
@@ -185,7 +180,8 @@ export function App() {
   const railTriggerRef = useRef<HTMLElement | null>(null);
   const [launchFolder, setLaunchFolder] = useState<LaunchFolder | null>(null);
   const [isOpeningLaunchFolder, setIsOpeningLaunchFolder] = useState(false);
-  const [isWindows] = useState(isWindowsClient);
+  const [isWindows] = useState(() => isWindowsClient());
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const browserOpenRef = useRef(isBrowserOpen);
   browserOpenRef.current = isBrowserOpen;
 
@@ -237,6 +233,15 @@ export function App() {
       .then(setLaunchFolder)
       .catch(() => setLaunchFolder(null));
   }, [api]);
+
+  // Recent projects follow the session list: a new session can add one.
+  useEffect(() => {
+    if (!api) return;
+    void api
+      .listRecentProjects()
+      .then(setRecentProjects)
+      .catch(() => setRecentProjects([]));
+  }, [api, sessions.length]);
 
   const createSession = useCallback(
     async (prompt?: string) => {
@@ -365,9 +370,16 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [beginNewSession, isRailOpen, isBrowserOpen, isModelPickerOpen]);
 
+  const [isNarrowViewport, setIsNarrowViewport] = useState(
+    () => window.matchMedia("(max-width: 760px)").matches,
+  );
+
   useEffect(() => {
     const media = window.matchMedia("(max-width: 760px)");
-    const handleResize = () => { if (!media.matches) setIsRailOpen(false); };
+    const handleResize = () => {
+      setIsNarrowViewport(media.matches);
+      if (!media.matches) setIsRailOpen(false);
+    };
     media.addEventListener("change", handleResize);
     return () => media.removeEventListener("change", handleResize);
   }, []);
@@ -459,24 +471,28 @@ export function App() {
     pickerAbortRef.current?.abort();
   }
 
-  async function openLaunchFolder() {
+  /** Opens a folder the server already knows (launch folder, recent project). */
+  async function openServerKnownFolder(
+    grant: () => Promise<Workspace>,
+    failureTitle: string,
+  ) {
     if (!api || isOpeningLaunchFolder) return;
     setIsOpeningLaunchFolder(true);
     setSessionError(null);
     try {
-      selectWorkspace(await api.grantLaunchFolder());
+      selectWorkspace(await grant());
     } catch (cause) {
       if (isWebAuthorizationFailure(cause)) {
         setAuthorizationError(cause.message);
         return;
       }
       const message =
-        cause instanceof Error ? cause.message : "Unable to open the launch folder.";
+        cause instanceof Error ? cause.message : `${failureTitle}.`;
       // Read through a ref: the notice action can outlive the render it closed over.
       if (browserOpenRef.current) {
         setPickerNotice({
           tone: "error",
-          title: "The launch folder could not be opened",
+          title: failureTitle,
           detail: `${message} Choose another folder below.`,
           retryable: false,
         });
@@ -486,6 +502,22 @@ export function App() {
     } finally {
       setIsOpeningLaunchFolder(false);
     }
+  }
+
+  function openLaunchFolder() {
+    if (!api) return;
+    return openServerKnownFolder(
+      () => api.grantLaunchFolder(),
+      "The launch folder could not be opened",
+    );
+  }
+
+  function openRecentProject(project: RecentProject) {
+    if (!api) return;
+    return openServerKnownFolder(
+      () => api.grantRecentProject(project.key),
+      `${project.name} could not be opened`,
+    );
   }
 
   function selectSession(session: Session) {
@@ -552,7 +584,7 @@ export function App() {
         isPickingProject={isPickingProject}
         error={sessionError}
         mobileOpen={isRailOpen}
-        backgroundInert={isBrowserOpen}
+        backgroundInert={isBrowserOpen && isNarrowViewport}
         onCloseMobile={closeRail}
         onNewSession={beginNewSession}
         onOpenProject={() => void openNativeProjectPicker()}
@@ -560,7 +592,10 @@ export function App() {
         onRetry={() => void loadSessions()}
       />
 
-      <main className="workspace-main" inert={isRailOpen || isBrowserOpen ? true : undefined}>
+      <main
+        className="workspace-main"
+        inert={isRailOpen || (isBrowserOpen && isNarrowViewport) ? true : undefined}
+      >
         {activeSession ? (
           <ChatSurface
             workspaceControls={controls("agent")}
@@ -601,6 +636,8 @@ export function App() {
             launchFolder={launchFolder}
             isOpeningLaunchFolder={isOpeningLaunchFolder}
             onOpenLaunchFolder={() => void openLaunchFolder()}
+            recentProjects={recentProjects}
+            onOpenRecent={(project) => void openRecentProject(project)}
             onNewSession={beginNewSession}
             onOpenSessions={openRail}
             onSelectSession={selectSession}
@@ -622,6 +659,9 @@ export function App() {
             void openNativeProjectPicker({ retryFromFallback: true })
           }
           onSelect={selectWorkspace}
+          recentProjects={recentProjects}
+          onOpenRecent={(project) => void openRecentProject(project)}
+          modal={isNarrowViewport}
         />
       ) : null}
       {isPickingProject ? (
@@ -663,6 +703,8 @@ function NewSessionSurface({
   launchFolder,
   isOpeningLaunchFolder,
   onOpenLaunchFolder,
+  recentProjects,
+  onOpenRecent,
   onNewSession,
   onOpenSessions,
   onSelectSession,
@@ -685,6 +727,8 @@ function NewSessionSurface({
   launchFolder: LaunchFolder | null;
   isOpeningLaunchFolder: boolean;
   onOpenLaunchFolder: () => void;
+  recentProjects: RecentProject[];
+  onOpenRecent: (project: RecentProject) => void;
   onNewSession: () => void;
   onOpenSessions: () => void;
   onSelectSession: (session: Session) => void;
@@ -692,6 +736,13 @@ function NewSessionSurface({
   onProviderStatusChange: (status: ProviderStatus) => void;
   onStart: (prompt: string) => Promise<boolean>;
 }) {
+  const starterRecentProjects = recentProjects
+    .filter(
+      (project) =>
+        project.available &&
+        !(launchFolder?.available && project.pathLabel === launchFolder.pathLabel),
+    )
+    .slice(0, 4);
   const [commandResult, setCommandResult] = useState<CommandResult | null>(null);
   const [commandBusy, setCommandBusy] = useState<string | null>(null);
   const [suggestedDraft, setSuggestedDraft] = useState<{ text: string; id: number } | null>(null);
@@ -785,6 +836,23 @@ function NewSessionSurface({
               {isOpeningLaunchFolder ? <span className="inline-spinner" aria-hidden="true" /> : <Icon name="folder-open" size={15} />}
               {launchFolder.broad ? `Open ${launchFolder.name} (broad access)` : `Open ${launchFolder.name}`}
             </button>
+          </div>
+        ) : null}
+        {!workspace && starterRecentProjects.length > 0 ? (
+          <div className="starter-recent-projects" aria-label="Recent projects">
+            <small>Recent</small>
+            {starterRecentProjects.map((project) => (
+              <button
+                key={project.key}
+                type="button"
+                title={project.pathLabel}
+                onClick={() => onOpenRecent(project)}
+                disabled={isOpeningLaunchFolder || isPickingProject}
+              >
+                <Icon name="folder" size={14} />
+                {project.name}
+              </button>
+            ))}
           </div>
         ) : null}
         <div className="starter-project-context">{projectControls}<button className="browse-common-locations-button" type="button" onClick={onBrowseCommonLocations} disabled={isPickingProject}>Browse folders</button></div>

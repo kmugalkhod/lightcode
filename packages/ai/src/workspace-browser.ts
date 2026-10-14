@@ -8,6 +8,8 @@ export const workspaceLocationIdSchema = z.enum([
   "documents",
   "downloads",
   "projects",
+  /** Windows only: drive roots are browsable but never selectable. */
+  "drives",
 ]);
 export type WorkspaceLocationId = z.infer<typeof workspaceLocationIdSchema>;
 
@@ -20,7 +22,7 @@ export const workspaceLocationSchema = z
   .object({
     id: workspaceLocationIdSchema,
     name: z.string().min(1).max(120),
-    kind: z.literal("known-folder"),
+    kind: z.enum(["known-folder", "drives"]),
     state: workspaceLocationStateSchema,
     pathLabel: z.string().min(1).max(4_096),
   })
@@ -87,6 +89,8 @@ export const workspaceBrowserEntriesRequestSchema = z
     cursor: workspaceBrowserCursorSchema.optional(),
     limit: z.number().int().min(1).max(200).default(80),
     includeHidden: z.boolean().default(false),
+    /** Omit plain files; only folders can become a workspace. */
+    directoriesOnly: z.boolean().default(false),
   })
   .strict();
 
@@ -142,10 +146,44 @@ export const workspaceGrantSchema = z
     id: workspaceGrantIdSchema,
     name: z.string().min(1).max(255),
     pathLabel: z.string().min(1).max(4_096),
+    /** Canonical host path; sent only to the authenticated web client. */
+    hostPath: z.string().min(1).max(4_096).optional(),
     createdAt: z.string().min(1),
   })
   .strict();
 export type WorkspaceGrant = z.infer<typeof workspaceGrantSchema>;
+
+/** Opaque, server-minted handle for a previously used project folder. */
+export const workspaceRecentKeySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{22}$/);
+
+export const workspaceRecentProjectSchema = z
+  .object({
+    key: workspaceRecentKeySchema,
+    name: z.string().min(1).max(255),
+    pathLabel: z.string().min(1).max(4_096),
+    lastUsedAt: z.string().min(1),
+    available: z.boolean(),
+  })
+  .strict();
+export type WorkspaceRecentProject = z.infer<
+  typeof workspaceRecentProjectSchema
+>;
+
+export const workspaceRecentProjectsResponseSchema = z
+  .object({
+    projects: z.array(workspaceRecentProjectSchema),
+  })
+  .strict();
+
+export const workspaceRecentPathParamsSchema = z
+  .object({
+    key: workspaceRecentKeySchema,
+  })
+  .strict();
+
+export const workspaceRecentGrantRequestSchema = z.object({}).strict();
 
 export const workspaceNativePickerRequestSchema = z.object({}).strict();
 
@@ -226,6 +264,8 @@ export const workspaceBrowserPathParamsSchema = z
 export const workspaceApiErrorCodeSchema = z.enum([
   "invalid_request",
   "location_not_found",
+  "location_missing",
+  "drive_root_not_selectable",
   "os_permission_denied",
   "workspace_missing",
   "workspace_replaced",

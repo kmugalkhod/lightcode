@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   BrowserEntry,
   LightcodeApi,
+  RecentProject,
   Workspace,
   WorkspaceLocation,
 } from "../lib/api";
 import { LightcodeApiError, requiresBroadWorkspaceConfirmation } from "../lib/api";
 import {
   broadWorkspaceRootWarning,
+  isDrivesLocation,
+  isSelectableBrowserPath,
   workspaceLocationName,
   workspaceLocationPath,
 } from "../lib/workspace-location";
@@ -25,6 +28,13 @@ interface ProjectBrowserProps {
   onClose: () => void;
   onRetryNativePicker: () => void;
   onSelect: (workspace: Workspace) => void;
+  recentProjects: RecentProject[];
+  onOpenRecent: (project: RecentProject) => void;
+  /**
+   * Narrow screens show a full-screen modal; wider ones a side sheet that
+   * leaves the conversation usable, so focus is not trapped.
+   */
+  modal: boolean;
 }
 
 export interface ProjectBrowserNotice {
@@ -60,6 +70,21 @@ type BrowserRetry =
     }
   | { kind: "select" };
 
+/**
+ * Locations the server reported as absent stay muted for the rest of the page
+ * session instead of offering a Retry that cannot succeed.
+ */
+const missingLocations = new Map<string, string>();
+
+function apiErrorCode(cause: unknown): string | null {
+  if (!(cause instanceof LightcodeApiError)) return null;
+  const code =
+    cause.payload && typeof cause.payload === "object"
+      ? Reflect.get(cause.payload, "code")
+      : null;
+  return typeof code === "string" ? code : null;
+}
+
 function classifyBrowserError(cause: unknown): BrowserErrorKind {
   if (!(cause instanceof LightcodeApiError)) return "other";
   const code =
@@ -81,10 +106,15 @@ export function ProjectBrowser({
   onClose,
   onRetryNativePicker,
   onSelect,
+  recentProjects,
+  onOpenRecent,
+  modal,
 }: ProjectBrowserProps) {
   const [locations, setLocations] = useState<WorkspaceLocation[]>([]);
   const [browser, setBrowser] = useState<BrowserState | null>(null);
   const [includeHidden, setIncludeHidden] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
+  const [, setMissingRevision] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [loadingLabel, setLoadingLabel] = useState("Loading common locations");
   const [isSelecting, setIsSelecting] = useState(false);
@@ -121,6 +151,7 @@ export function ProjectBrowser({
       append = false,
       cursor,
       includeHiddenValue,
+      showFilesValue,
       loadingMessage,
       requestId,
     }: {
@@ -130,6 +161,7 @@ export function ProjectBrowser({
       append?: boolean;
       cursor?: string;
       includeHiddenValue?: boolean;
+      showFilesValue?: boolean;
       loadingMessage?: string;
       requestId?: number;
     }) => {
@@ -153,6 +185,7 @@ export function ProjectBrowser({
           segments,
           cursor,
           includeHidden: includeHiddenValue ?? includeHidden,
+          directoriesOnly: !(showFilesValue ?? showFiles),
         });
         if (!requestGate.isCurrent(activeRequestId)) return;
         setBrowser((current) => ({
@@ -183,7 +216,7 @@ export function ProjectBrowser({
         }
       }
     },
-    [api, includeHidden, requestGate],
+    [api, includeHidden, showFiles, requestGate],
   );
 
   const openLocation = useCallback(
@@ -200,6 +233,7 @@ export function ProjectBrowser({
       try {
         const opened = await api.openLocation(location.id);
         if (!requestGate.isCurrent(requestId)) return;
+        missingLocations.delete(location.id);
         await loadDirectory({
           browserId: opened.browserId,
           location: opened.location ?? location,
@@ -209,8 +243,17 @@ export function ProjectBrowser({
       } catch (cause) {
         if (!requestGate.isCurrent(requestId)) return;
         setErrorKind(classifyBrowserError(cause));
-        setError(cause instanceof Error ? cause.message : "Unable to open this location.");
-        setRetry({ kind: "open", location });
+        const message =
+          cause instanceof Error ? cause.message : "Unable to open this location.";
+        setError(message);
+        if (apiErrorCode(cause) === "location_missing") {
+          // Retrying cannot create the folder; mute the location instead.
+          missingLocations.set(location.id, message);
+          setMissingRevision((revision) => revision + 1);
+          setBrowser(null);
+        } else {
+          setRetry({ kind: "open", location });
+        }
       } finally {
         if (requestGate.finish(requestId) && mountedRef.current) {
           setIsLoading(false);
@@ -274,6 +317,7 @@ export function ProjectBrowser({
 
   async function chooseCurrentFolder() {
     if (!browser || requestGate.isBusy()) return;
+    if (!isSelectableBrowserPath(browser.location, browser.segments)) return;
     if (requiresBroadWorkspaceConfirmation(browser.segments) && !confirmBroadRoot) {
       setConfirmBroadRoot(true);
       return;
@@ -338,6 +382,20 @@ export function ProjectBrowser({
     });
   }
 
+  function setFileVisibility(nextShowFiles: boolean) {
+    if (requestGate.isBusy()) return;
+    setShowFiles(nextShowFiles);
+    if (!browser) return;
+
+    void loadDirectory({
+      browserId: browser.browserId,
+      location: browser.location,
+      segments: browser.segments,
+      showFilesValue: nextShowFiles,
+      loadingMessage: "Updating folders",
+    });
+  }
+
   function retryBrowserOperation() {
     if (!retry || requestGate.isBusy()) return;
     if (retry.kind === "locations") {
@@ -364,6 +422,9 @@ export function ProjectBrowser({
   const currentLocationName = browser
     ? workspaceLocationName(browser.location)
     : "this location";
+  const canSelectCurrent = browser
+    ? isSelectableBrowserPath(browser.location, browser.segments)
+    : false;
   const errorHeading =
     errorKind === "os-permission"
       ? "Your system blocked folder access"
@@ -376,12 +437,15 @@ export function ProjectBrowser({
             : "This folder could not be opened";
 
   return (
-    <div className="project-browser-backdrop" role="presentation">
+    <div
+      className={modal ? "project-browser-backdrop" : "project-browser-backdrop sheet"}
+      role="presentation"
+    >
       <section
         ref={dialogRef}
         className="project-browser"
         role="dialog"
-        aria-modal="true"
+        aria-modal={modal}
         aria-labelledby="project-browser-title"
         tabIndex={-1}
         onKeyDown={(event) => {
@@ -390,7 +454,7 @@ export function ProjectBrowser({
             onClose();
             return;
           }
-          if (event.key !== "Tab") return;
+          if (event.key !== "Tab" || !modal) return;
           const dialog = dialogRef.current;
           if (!dialog) return;
           const focusable = Array.from(
@@ -434,21 +498,32 @@ export function ProjectBrowser({
         </header>
 
         <nav className="location-strip" aria-label="Local folder locations">
-          {locations.map((location) => (
-            <button
-              key={location.id}
-              className={activeLocationId === location.id ? "location-button active" : "location-button"}
-              type="button"
-              aria-current={activeLocationId === location.id ? "location" : undefined}
-              aria-label={`Open ${workspaceLocationName(location)}`}
-              title={location.pathLabel}
-              disabled={interactionsLocked}
-              onClick={() => void openLocation(location)}
-            >
-              <Icon name="folder" size={16} />
-              <span>{workspaceLocationName(location)}</span>
-            </button>
-          ))}
+          {locations.map((location) => {
+            const missing = missingLocations.get(location.id);
+            return (
+              <button
+                key={location.id}
+                className={[
+                  "location-button",
+                  activeLocationId === location.id ? "active" : "",
+                  missing ? "missing" : "",
+                ].filter(Boolean).join(" ")}
+                type="button"
+                aria-current={activeLocationId === location.id ? "location" : undefined}
+                aria-label={
+                  missing
+                    ? `${workspaceLocationName(location)} (not found)`
+                    : `Open ${workspaceLocationName(location)}`
+                }
+                title={missing ?? location.pathLabel}
+                disabled={interactionsLocked}
+                onClick={() => void openLocation(location)}
+              >
+                <Icon name={isDrivesLocation(location) ? "code" : "folder"} size={16} />
+                <span>{workspaceLocationName(location)}</span>
+              </button>
+            );
+          })}
         </nav>
 
         <nav className="folder-breadcrumbs" aria-label="Current folder">
@@ -557,12 +632,12 @@ export function ProjectBrowser({
                     ? `${error} Run lightcode web again and use the new tab.`
                     : error}
               </p>
-              {errorKind !== "auth" ? (
+              {errorKind !== "auth" && retry ? (
                 <button
                   className="secondary-button"
                   type="button"
                   onClick={retryBrowserOperation}
-                  disabled={interactionsLocked || !retry}
+                  disabled={interactionsLocked}
                 >
                   Retry
                 </button>
@@ -595,8 +670,18 @@ export function ProjectBrowser({
               {browser.entries.length === 0 ? (
                 <div className="browser-state empty-state">
                   <Icon name="folder-open" size={24} />
-                  <h2>This folder is empty</h2>
-                  <p>You can still use it as a Lightcode project.</p>
+                  <h2>
+                    {showFiles || !canSelectCurrent
+                      ? "This folder is empty"
+                      : "No folders here"}
+                  </h2>
+                  <p>
+                    {!canSelectCurrent
+                      ? "Open a folder inside a drive to use it as a project."
+                      : showFiles
+                        ? "You can still use it as a Lightcode project."
+                        : "Turn on Show files to see what it contains. You can still use it as a Lightcode project."}
+                  </p>
                 </div>
               ) : null}
               {browser.nextCursor ? (
@@ -619,6 +704,31 @@ export function ProjectBrowser({
                 </button>
               ) : null}
             </div>
+          ) : null}
+          {!error && !browser && recentProjects.length > 0 ? (
+            <section className="recent-projects" aria-label="Recent projects">
+              <h2>Recent projects</h2>
+              {recentProjects.map((project) => (
+                <button
+                  key={project.key}
+                  className="folder-row"
+                  type="button"
+                  title={project.pathLabel}
+                  disabled={interactionsLocked || !project.available}
+                  onClick={() => onOpenRecent(project)}
+                >
+                  <Icon name="folder-open" size={18} />
+                  <span>
+                    {project.name}
+                    <small>{project.pathLabel}</small>
+                  </span>
+                  <span className="entry-note">
+                    {project.available ? null : "unavailable"}
+                  </span>
+                  <Icon name="chevron-right" size={15} />
+                </button>
+              ))}
+            </section>
           ) : null}
           {!isLoading && !error && !browser && defaultLocation ? (
             <div className="browser-state browser-consent-state">
@@ -652,15 +762,26 @@ export function ProjectBrowser({
               </button>
             </div>
           ) : (
-            <label className="checkbox-control">
-              <input
-                type="checkbox"
-                checked={includeHidden}
-                disabled={interactionsLocked}
-                onChange={(event) => setHiddenFolders(event.currentTarget.checked)}
-              />
-              Show hidden folders
-            </label>
+            <div className="browser-view-options">
+              <label className="checkbox-control">
+                <input
+                  type="checkbox"
+                  checked={includeHidden}
+                  disabled={interactionsLocked}
+                  onChange={(event) => setHiddenFolders(event.currentTarget.checked)}
+                />
+                Show hidden items
+              </label>
+              <label className="checkbox-control">
+                <input
+                  type="checkbox"
+                  checked={showFiles}
+                  disabled={interactionsLocked}
+                  onChange={(event) => setFileVisibility(event.currentTarget.checked)}
+                />
+                Show files
+              </label>
+            </div>
           )}
           <div className="project-browser-actions">
             <span className="selected-path" title={browser?.pathLabel}>
@@ -670,13 +791,20 @@ export function ProjectBrowser({
               className="primary-button"
               type="button"
               onClick={() => void chooseCurrentFolder()}
-              disabled={!browser || interactionsLocked || Boolean(error)}
+              disabled={!browser || !canSelectCurrent || interactionsLocked || Boolean(error)}
+              title={
+                browser && !canSelectCurrent
+                  ? "Open a folder inside a drive to use it as a project."
+                  : undefined
+              }
             >
               {isSelecting
                 ? "Opening project"
                 : confirmBroadRoot
                   ? `Confirm ${currentLocationName} access`
-                  : "Use this folder"}
+                  : browser && !canSelectCurrent
+                    ? "Open a folder first"
+                    : "Use this folder"}
               <Icon name="chevron-right" size={16} />
             </button>
           </div>

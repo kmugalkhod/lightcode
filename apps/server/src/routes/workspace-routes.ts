@@ -14,6 +14,9 @@ import {
   workspaceLocationsResponseSchema,
   workspaceNativePickerRequestSchema,
   workspaceNativePickerResponseSchema,
+  workspaceRecentGrantRequestSchema,
+  workspaceRecentPathParamsSchema,
+  workspaceRecentProjectsResponseSchema,
   workspaceSessionCreateRequestSchema,
   workspaceSessionPathParamsSchema,
   type WorkspaceApiErrorCode,
@@ -36,7 +39,9 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import {
   createChatSession,
+  listRecentWorkspaces as listRecentSessionWorkspaces,
   SessionWorkspaceIdentityError,
+  type RecentWorkspace,
 } from "../lib/chat-store";
 import {
   chatModelId,
@@ -48,6 +53,20 @@ import {
   type NativeDirectoryPicker,
 } from "../lib/native-directory-picker";
 import { isAuthenticatedWebRequest } from "../lib/web-auth";
+import {
+  resolveWindowsKnownFolder,
+  resolveWindowsKnownFolders,
+} from "../lib/windows-known-folders";
+import {
+  isHiddenBrowserEntry,
+  isOmittedFromFolderListing,
+} from "../lib/workspace-entry-filter";
+import {
+  listWindowsDrives,
+  windowsDriveRoot,
+  windowsDriveTokenPattern,
+  type WindowsDrive,
+} from "../lib/workspace-drives";
 
 const logger = createLogger("workspace-routes");
 const defaultBrowserCapabilityTtlMs = 10 * 60 * 1_000;
@@ -63,11 +82,22 @@ interface RootIdentity {
 
 interface BrowserCapability {
   id: string;
+  /** "drives" capabilities have no single root; each drive is its own root. */
+  kind: "folder" | "drives";
   root: string;
   identity: RootIdentity;
   location: WorkspaceLocation;
   rootName: string;
   expiresAtMs: number;
+  /** Drive tokens this capability listed; only these may be opened. */
+  driveTokens?: Set<string>;
+}
+
+/** The root, remaining segments, and display name a browser request resolves to. */
+interface BrowseScope {
+  root: string;
+  segments: readonly string[];
+  rootName: string;
 }
 
 interface StoredWorkspaceGrant extends WorkspaceGrant {
@@ -107,6 +137,19 @@ export interface WorkspaceRoutesOptions {
   authorizeNativePickerRequest?: (request: Request) => boolean;
   /** Folder `lightcode web` started from. Defaults to LIGHTCODE_WEB_LAUNCH_CWD. */
   launchFolderPath?: string | null;
+  /** Offers the Windows Drives location. Defaults to true on win32. */
+  enableDrives?: boolean;
+  /** Test seams for drive enumeration and each drive's root folder. */
+  listDrives?: () => Promise<WindowsDrive[]>;
+  driveRoot?: (token: string) => string;
+  /**
+   * Starts known-folder discovery when the chooser lists locations, so the
+   * first open does not wait on PowerShell. Defaults to the Windows resolver
+   * when no location paths are overridden.
+   */
+  prewarmKnownFolders?: () => void;
+  /** Test seam for the session store's recent folders. */
+  listRecentWorkspaces?: (limit: number) => Promise<RecentWorkspace[]>;
 }
 
 const launchFolderEnvironmentSchema = z
@@ -240,86 +283,6 @@ async function readSmallUserDirsConfiguration(
     return null;
   } finally {
     await handle?.close().catch(() => undefined);
-  }
-}
-
-async function resolveWindowsKnownFolder(
-  environment: Record<string, string | undefined>,
-  folder: "desktop" | UserDirectoryKind,
-): Promise<string | null> {
-  try {
-    const systemRootCandidate =
-      environment.SystemRoot?.trim() ||
-      environment.WINDIR?.trim() ||
-      "C:\\Windows";
-    const windowsRoot = normalizeKnownFolderCandidate(
-      systemRootCandidate,
-      "win32",
-    );
-    if (!windowsRoot) {
-      return null;
-    }
-    const systemDirectory = path.win32.join(windowsRoot, "System32");
-    const executable = path.win32.join(
-      systemDirectory,
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    );
-    const folderExpression =
-      folder === "desktop"
-        ? "[Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)"
-        : folder === "documents"
-          ? "[Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)"
-          : "[Environment]::ExpandEnvironmentVariables([string](Get-ItemProperty -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders' -Name '{374DE290-123F-4565-9164-39C4925E467B}' -ErrorAction Stop).'{374DE290-123F-4565-9164-39C4925E467B}')";
-    const child = Bun.spawn(
-      [
-        executable,
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);[Console]::Write(${folderExpression})`,
-      ],
-      {
-        cwd: systemDirectory,
-        env: {
-          SystemRoot: windowsRoot,
-          WINDIR: windowsRoot,
-          ...Object.fromEntries(
-            [
-              "USERPROFILE",
-              "APPDATA",
-              "LOCALAPPDATA",
-              "TEMP",
-              "TMP",
-            ].flatMap((name) =>
-              environment[name] ? [[name, environment[name] as string]] : [],
-            ),
-          ),
-        },
-        stdout: "pipe",
-        stderr: "ignore",
-        stdin: "ignore",
-      },
-    );
-    const timeout = setTimeout(() => child.kill(), 2_000);
-    timeout.unref();
-    try {
-      const [output, exitCode] = await Promise.all([
-        new Response(child.stdout).text(),
-        child.exited,
-      ]);
-      if (exitCode !== 0 || Buffer.byteLength(output) > 4_096) {
-        return null;
-      }
-      const candidate = output.trim();
-      return candidate && !/[\r\n]/.test(candidate) ? candidate : null;
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch {
-    return null;
   }
 }
 
@@ -772,6 +735,16 @@ function identitiesMatch(left: RootIdentity, right: RootIdentity): boolean {
   return left.device === right.device && left.inode === right.inode;
 }
 
+/**
+ * Bun's async realpath returns a drive root as a bare "D:", which Windows reads
+ * as the current folder on that drive. Restore the separator so a drive root
+ * stays the root.
+ */
+async function realpathPreservingDriveRoot(candidate: string): Promise<string> {
+  const resolved = await fs.realpath(candidate);
+  return /^[A-Za-z]:$/.test(resolved) ? `${resolved}${path.win32.sep}` : resolved;
+}
+
 function isContainedPath(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return (
@@ -787,7 +760,7 @@ async function resolveKnownDirectory(directory: string): Promise<{
   identity: RootIdentity;
 }> {
   try {
-    const root = await fs.realpath(path.resolve(directory));
+    const root = await realpathPreservingDriveRoot(path.resolve(directory));
     if (isFilesystemRootPath(root)) {
       throw new WorkspaceRouteError(
         "workspace_unavailable",
@@ -822,7 +795,7 @@ async function assertRootIdentity({
   identity: RootIdentity;
 }): Promise<void> {
   try {
-    const canonical = await fs.realpath(root);
+    const canonical = await realpathPreservingDriveRoot(root);
     const stats = await fs.stat(canonical, { bigint: true });
     if (
       canonical !== root ||
@@ -850,7 +823,7 @@ async function symlinkFailure(
   locationName: string,
 ): Promise<WorkspaceRouteError> {
   try {
-    const target = await fs.realpath(candidate);
+    const target = await realpathPreservingDriveRoot(candidate);
     if (!isContainedPath(root, target)) {
       return new WorkspaceRouteError(
         "workspace_symlink_escape",
@@ -915,7 +888,7 @@ async function resolveDirectoryFromSegments(
     current = candidate;
   }
 
-  const canonical = await fs.realpath(current).catch((error) => {
+  const canonical = await realpathPreservingDriveRoot(current).catch((error) => {
     throw mapFilesystemError(error);
   });
   if (!isContainedPath(root, canonical)) {
@@ -952,7 +925,7 @@ async function assertDirectoryIdentity(
         true,
       );
     }
-    const canonical = await fs.realpath(directory.path);
+    const canonical = await realpathPreservingDriveRoot(directory.path);
     const currentIdentity = rootIdentity(lexical);
     if (
       canonical !== directory.path ||
@@ -979,8 +952,14 @@ interface CursorBinding {
   browserId: string;
   segments: readonly string[];
   includeHidden: boolean;
+  directoriesOnly: boolean;
   directory: { identity: RootIdentity };
   mtimeNs: string;
+}
+
+/** A cursor is valid only for the same hidden/folder-only view it paged. */
+function cursorViewFlags(binding: CursorBinding): number {
+  return (binding.includeHidden ? 1 : 0) | (binding.directoriesOnly ? 2 : 0);
 }
 
 function cursorPathDigest(segments: readonly string[]): string {
@@ -999,7 +978,7 @@ function encodeCursor(
     1,
     binding.browserId,
     cursorPathDigest(binding.segments),
-    binding.includeHidden ? 1 : 0,
+    cursorViewFlags(binding),
     offset,
     binding.directory.identity.device,
     binding.directory.identity.inode,
@@ -1045,7 +1024,7 @@ function decodeCursor(
       version !== 1 ||
       browserId !== binding.browserId ||
       pathDigest !== cursorPathDigest(binding.segments) ||
-      hidden !== (binding.includeHidden ? 1 : 0) ||
+      hidden !== cursorViewFlags(binding) ||
       !Number.isSafeInteger(offset) ||
       (offset as number) < 0 ||
       device !== binding.directory.identity.device ||
@@ -1089,7 +1068,7 @@ async function describeEntry(
     const stats = await fs.lstat(candidate);
     if (stats.isSymbolicLink()) {
       try {
-        const target = await fs.realpath(candidate);
+        const target = await realpathPreservingDriveRoot(candidate);
         return {
           name,
           kind: "symlink",
@@ -1149,6 +1128,7 @@ function trimOldestEntries<T>(map: Map<string, T>, maximum: number): void {
 
 interface KnownLocationDefinition {
   id: WorkspaceLocationId;
+  kind: WorkspaceLocation["kind"];
   name: string;
   rootName: string;
   pathLabel: string;
@@ -1178,7 +1158,7 @@ function knownLocation(
   return {
     id: definition.id,
     name: definition.name,
-    kind: "known-folder",
+    kind: definition.kind,
     state,
     pathLabel: definition.pathLabel,
   };
@@ -1216,6 +1196,7 @@ export function createWorkspaceRoutes(
   const definitions: KnownLocationDefinition[] = [
     {
       id: "desktop",
+      kind: "known-folder",
       name: "Desktop",
       rootName: "Desktop",
       pathLabel:
@@ -1228,6 +1209,7 @@ export function createWorkspaceRoutes(
     },
     {
       id: "home",
+      kind: "known-folder",
       name: "Home (broad access)",
       rootName: "Home",
       pathLabel: options.locationPathLabels?.home ?? "Home",
@@ -1239,6 +1221,7 @@ export function createWorkspaceRoutes(
     },
     {
       id: "documents",
+      kind: "known-folder",
       name: "Documents",
       rootName: "Documents",
       pathLabel: options.locationPathLabels?.documents ?? "Documents",
@@ -1250,6 +1233,7 @@ export function createWorkspaceRoutes(
     },
     {
       id: "downloads",
+      kind: "known-folder",
       name: "Downloads",
       rootName: "Downloads",
       pathLabel: options.locationPathLabels?.downloads ?? "Downloads",
@@ -1261,6 +1245,7 @@ export function createWorkspaceRoutes(
     },
     {
       id: "projects",
+      kind: "known-folder",
       name: "Projects",
       rootName: "Projects",
       pathLabel: options.locationPathLabels?.projects ?? "Projects",
@@ -1271,6 +1256,38 @@ export function createWorkspaceRoutes(
       ),
     },
   ];
+  if (options.enableDrives ?? process.platform === "win32") {
+    definitions.push({
+      id: "drives",
+      kind: "drives",
+      name: "This PC",
+      rootName: "This PC",
+      pathLabel: "This PC",
+      resolvePath: async () => {
+        throw new Error("The Drives location has no single root.");
+      },
+    });
+  }
+  const listDrives = options.listDrives ?? (() => listWindowsDrives());
+  const driveRoot = options.driveRoot ?? windowsDriveRoot;
+  const usesDefaultKnownFolders =
+    !options.locationPaths &&
+    !options.resolveLocationPaths &&
+    !options.resolveDesktopPath &&
+    !options.desktopPath;
+  const prewarmKnownFolders =
+    options.prewarmKnownFolders ??
+    (process.platform === "win32" && usesDefaultKnownFolders
+      ? () => void resolveWindowsKnownFolders(Bun.env)
+      : () => undefined);
+  const listRecentWorkspaces =
+    options.listRecentWorkspaces ?? listRecentSessionWorkspaces;
+  const recentKeySecret = randomBytes(32);
+  const recentWorkspaceKey = (cwd: string) =>
+    createHmac("sha256", recentKeySecret)
+      .update(process.platform === "win32" ? cwd.toLowerCase() : cwd)
+      .digest("base64url")
+      .slice(0, 22);
   const definitionsById = new Map(
     definitions.map((definition) => [definition.id, definition]),
   );
@@ -1333,11 +1350,14 @@ export function createWorkspaceRoutes(
     identity,
     name,
     pathLabel,
+    request,
   }: {
     root: string;
     identity: RootIdentity;
     name: string;
     pathLabel: string;
+    /** The host path is echoed only to the authenticated web client. */
+    request: Request;
   }): Promise<WorkspaceGrant> => {
     await fs.access(root, fsConstants.R_OK | fsConstants.X_OK);
     const createdAt = new Date(now()).toISOString();
@@ -1358,7 +1378,45 @@ export function createWorkspaceRoutes(
       workspaceGrants.delete(id);
       throw error;
     }
-    return workspaceGrantSchema.parse({ id, name, pathLabel, createdAt });
+    return workspaceGrantSchema.parse({
+      id,
+      name,
+      pathLabel,
+      ...(authorizeNativePickerRequest(request) ? { hostPath: root } : {}),
+      createdAt,
+    });
+  };
+
+  /**
+   * Maps a browser request to the root it may touch. Folder capabilities are
+   * bound to one canonical root; a Drives capability treats the first
+   * segment as a drive token it listed earlier, and that drive as the root.
+   */
+  const resolveBrowseScope = async (
+    capability: BrowserCapability,
+    segments: readonly string[],
+  ): Promise<BrowseScope> => {
+    if (capability.kind === "folder") {
+      await assertRootIdentity(capability);
+      return { root: capability.root, segments, rootName: capability.rootName };
+    }
+    const [token, ...rest] = segments;
+    if (
+      !token ||
+      !windowsDriveTokenPattern.test(token) ||
+      !capability.driveTokens?.has(token)
+    ) {
+      throw new WorkspaceRouteError(
+        "location_not_found",
+        "That drive is not available. Open This PC again.",
+        404,
+        true,
+      );
+    }
+    const root = await realpathPreservingDriveRoot(driveRoot(token)).catch((error) => {
+      throw mapFilesystemError(error);
+    });
+    return { root, segments: rest, rootName: token };
   };
 
   return new Hono()
@@ -1406,6 +1464,7 @@ export function createWorkspaceRoutes(
 
           const directory = await resolveKnownDirectory(picked.directory);
           const workspace = await storeWorkspaceGrant({
+            request: c.req.raw,
             ...directory,
             name: path.basename(directory.root),
             pathLabel: directory.root,
@@ -1425,7 +1484,7 @@ export function createWorkspaceRoutes(
     .get("/launch-folder", async (c) => {
       try {
         const { root } = await resolveLaunchFolder();
-        const home = await fs.realpath(homedir()).catch(() => homedir());
+        const home = await realpathPreservingDriveRoot(homedir()).catch(() => homedir());
         return c.json(
           workspaceLaunchFolderResponseSchema.parse({
             available: true,
@@ -1465,6 +1524,7 @@ export function createWorkspaceRoutes(
         try {
           const directory = await resolveLaunchFolder();
           const workspace = await storeWorkspaceGrant({
+            request: c.req.raw,
             ...directory,
             name: path.basename(directory.root),
             pathLabel: directory.root,
@@ -1478,14 +1538,105 @@ export function createWorkspaceRoutes(
         }
       },
     )
-    .get("/locations", (c) =>
-      c.json(
+    .get("/locations", (c) => {
+      prewarmKnownFolders();
+      return c.json(
         workspaceLocationsResponseSchema.parse({
           locations: definitions.map((definition) =>
             knownLocation(definition, "unprobed"),
           ),
         }),
-      ),
+      );
+    })
+    .get("/recent", async (c) => {
+      try {
+        // Sessions may have run at a drive root; those can never be granted.
+        const recent = (await listRecentWorkspaces(12))
+          .filter((workspace) => !isFilesystemRootPath(workspace.cwd))
+          .slice(0, 8);
+        const projects = await Promise.all(
+          recent.map(async (workspace) => ({
+            key: recentWorkspaceKey(workspace.cwd),
+            name: path.basename(workspace.cwd) || workspace.cwd,
+            pathLabel: workspace.cwd,
+            lastUsedAt: workspace.lastUsedAt.toISOString(),
+            available: await fs
+              .stat(workspace.cwd)
+              .then((stats) => stats.isDirectory())
+              .catch(() => false),
+          })),
+        );
+        return c.json(workspaceRecentProjectsResponseSchema.parse({ projects }));
+      } catch (error) {
+        return workspaceErrorResponse(c, error);
+      }
+    })
+    .post(
+      "/recent/:key/grant",
+      zValidator("param", workspaceRecentPathParamsSchema, (result, c) => {
+        if (!result.success) {
+          return invalidRequestResponse(c);
+        }
+      }),
+      zValidator("json", workspaceRecentGrantRequestSchema, (result, c) => {
+        if (!result.success) {
+          return invalidRequestResponse(c);
+        }
+      }),
+      async (c) => {
+        if (!authorizeNativePickerRequest(c.req.raw)) {
+          return c.json(
+            {
+              error:
+                "Recent projects can be opened only from an authenticated Lightcode web session.",
+              code: "web_browser_required",
+            },
+            403,
+          );
+        }
+        try {
+          const { key } = c.req.valid("param");
+          const recent = (await listRecentWorkspaces(50)).find(
+            (workspace) => recentWorkspaceKey(workspace.cwd) === key,
+          );
+          if (!recent) {
+            throw new WorkspaceRouteError(
+              "location_not_found",
+              "That recent project is no longer listed. Refresh and try again.",
+              404,
+              false,
+            );
+          }
+          const directory = await resolveKnownDirectory(recent.cwd);
+          // A folder replaced at the same path since last use must not be
+          // granted silently.
+          if (
+            recent.identity &&
+            recent.identity.inode !== "unsupported" &&
+            directory.identity.inode !== "unsupported" &&
+            !identitiesMatch(recent.identity, directory.identity)
+          ) {
+            throw new WorkspaceRouteError(
+              "workspace_replaced",
+              "This folder was replaced since it was last used. Choose it again with the folder picker.",
+              409,
+              false,
+            );
+          }
+          const workspace = await storeWorkspaceGrant({
+            request: c.req.raw,
+            ...directory,
+            name: path.basename(directory.root),
+            pathLabel: directory.root,
+          });
+          return c.json(
+            workspaceBrowserSelectResponseSchema.parse({ workspace }),
+            201,
+          );
+        } catch (error) {
+          return workspaceErrorResponse(c, error);
+        }
+      },
     )
     .post(
       "/browser/open",
@@ -1506,6 +1657,29 @@ export function createWorkspaceRoutes(
               false,
             );
           }
+          if (definition.kind === "drives") {
+            const browserId = crypto.randomUUID();
+            const expiresAtMs = now() + capabilityTtlMs;
+            const location = knownLocation(definition, "available");
+            browserCapabilities.set(browserId, {
+              id: browserId,
+              kind: "drives",
+              root: "",
+              identity: { device: "drives", inode: "drives" },
+              location,
+              rootName: definition.rootName,
+              expiresAtMs,
+            });
+            trimOldestEntries(browserCapabilities, maximumBrowserCapabilities);
+            return c.json(
+              workspaceBrowserOpenResponseSchema.parse({
+                browserId,
+                location,
+                expiresAt: new Date(expiresAtMs).toISOString(),
+              }),
+              201,
+            );
+          }
           const discoveredPath = await definition.resolvePath();
           const safePath = normalizeKnownFolderCandidate(
             discoveredPath,
@@ -1519,12 +1693,30 @@ export function createWorkspaceRoutes(
               false,
             );
           }
-          const resolved = await resolveKnownDirectory(safePath);
+          const resolved = await resolveKnownDirectory(safePath).catch(
+            (error: unknown) => {
+              if (
+                error instanceof WorkspaceRouteError &&
+                error.code === "workspace_missing"
+              ) {
+                throw new WorkspaceRouteError(
+                  "location_missing",
+                  definition.id === "projects"
+                    ? `No Projects folder at ${safePath}. Create it, or set LIGHTCODE_PROJECTS_PATH to the folder that holds your projects.`
+                    : `No ${definition.rootName} folder at ${safePath}.`,
+                  404,
+                  false,
+                );
+              }
+              throw error;
+            },
+          );
           const browserId = crypto.randomUUID();
           const expiresAtMs = now() + capabilityTtlMs;
           const location = knownLocation(definition, "available");
           browserCapabilities.set(browserId, {
             id: browserId,
+            kind: "folder",
             ...resolved,
             location,
             rootName: definition.rootName,
@@ -1561,20 +1753,42 @@ export function createWorkspaceRoutes(
           const { browserId } = c.req.valid("param");
           const input = c.req.valid("json");
           const capability = getBrowserCapability(browserId);
-          await assertRootIdentity(capability);
+          if (capability.kind === "drives" && input.segments.length === 0) {
+            const drives = await listDrives();
+            capability.driveTokens = new Set(
+              drives.map((drive) => drive.token),
+            );
+            return c.json(
+              workspaceBrowserEntriesResponseSchema.parse({
+                browserId,
+                segments: [],
+                entries: drives.map((drive) => ({
+                  name: drive.token,
+                  kind: "directory",
+                  size: null,
+                  readable: drive.readable,
+                  symlinkState: null,
+                })),
+                nextCursor: null,
+                truncated: false,
+              }),
+            );
+          }
+          const scope = await resolveBrowseScope(capability, input.segments);
           const directory = await resolveDirectoryFromSegments(
-            capability.root,
-            input.segments,
-            capability.rootName,
+            scope.root,
+            scope.segments,
+            scope.rootName,
           );
           const beforeRead = await assertDirectoryIdentity(
-            capability.root,
+            scope.root,
             directory,
           );
           const cursorBinding: CursorBinding = {
             browserId,
             segments: input.segments,
             includeHidden: input.includeHidden,
+            directoriesOnly: input.directoriesOnly,
             directory,
             mtimeNs: beforeRead.mtimeNs,
           };
@@ -1597,7 +1811,10 @@ export function createWorkspaceRoutes(
               if (!entry) {
                 break;
               }
-              if (!input.includeHidden && entry.name.startsWith(".")) {
+              if (!input.includeHidden && isHiddenBrowserEntry(entry)) {
+                continue;
+              }
+              if (input.directoriesOnly && isOmittedFromFolderListing(entry)) {
                 continue;
               }
               if (visibleOffset < offset) {
@@ -1610,7 +1827,7 @@ export function createWorkspaceRoutes(
               }
               visibleOffset += 1;
               const described = await describeEntry(
-                capability.root,
+                scope.root,
                 directory.path,
                 entry.name,
               );
@@ -1632,7 +1849,7 @@ export function createWorkspaceRoutes(
             }
           }
           const afterRead = await assertDirectoryIdentity(
-            capability.root,
+            scope.root,
             directory,
           );
           if (afterRead.mtimeNs !== beforeRead.mtimeNs) {
@@ -1676,23 +1893,33 @@ export function createWorkspaceRoutes(
           const { browserId } = c.req.valid("param");
           const { segments } = c.req.valid("json");
           const capability = getBrowserCapability(browserId);
-          await assertRootIdentity(capability);
+          if (capability.kind === "drives" && segments.length < 2) {
+            throw new WorkspaceRouteError(
+              "drive_root_not_selectable",
+              "A whole drive can't be a project. Open a folder inside it and choose that.",
+              422,
+              false,
+            );
+          }
+          const scope = await resolveBrowseScope(capability, segments);
           const directory = await resolveDirectoryFromSegments(
-            capability.root,
-            segments,
-            capability.rootName,
+            scope.root,
+            scope.segments,
+            scope.rootName,
           );
-          await assertDirectoryIdentity(capability.root, directory);
+          await assertDirectoryIdentity(scope.root, directory);
           await options.beforeDirectoryOperation?.({
             operation: "select",
             directory: directory.path,
           });
           const name = segments.at(-1) ?? capability.rootName;
-          const pathLabel = [
-            capability.location.pathLabel,
-            ...segments,
-          ].join("/");
+          // Drive selections already carry an unambiguous host path.
+          const pathLabel =
+            capability.kind === "drives"
+              ? directory.path
+              : [capability.location.pathLabel, ...segments].join("/");
           const workspace = await storeWorkspaceGrant({
+            request: c.req.raw,
             root: directory.path,
             identity: directory.identity,
             name,

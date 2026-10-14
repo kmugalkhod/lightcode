@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session, Workspace } from "../lib/api";
 import { displaySessionTitle, formatRelativeTime } from "../lib/api";
+import { shortcutLabel } from "../lib/client-platform";
 import { Icon } from "./icons";
 
 interface SessionRailProps {
@@ -83,11 +84,12 @@ export function SessionRail({
           <button className="new-session-button" type="button" onClick={onNewSession} disabled={!workspace}>
             <Icon name="plus" size={16} />
             New session
-            <kbd title="Control or Command + Shift + N">⇧ N</kbd>
+            <kbd>{shortcutLabel({ shift: true, key: "N" })}</kbd>
           </button>
           <button
             className="project-button"
             type="button"
+            title={workspace?.hostPath ?? workspace?.pathLabel}
             onClick={onOpenProject}
             disabled={isPickingProject}
             aria-busy={isPickingProject}
@@ -109,7 +111,7 @@ export function SessionRail({
         <label className="session-search">
           <Icon name="search" size={16} />
           <input id="session-search" type="search" value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Find a session…" aria-label="Search sessions" />
-          <kbd>⌘ K</kbd>
+          <kbd>{shortcutLabel({ key: "K" })}</kbd>
         </label>
 
         <div className="rail-section-heading">

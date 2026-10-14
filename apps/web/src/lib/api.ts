@@ -305,10 +305,22 @@ export const workspaceSchema = z
     id: nonEmptyBoundedString,
     name: z.string().min(1).max(255),
     pathLabel: z.string().min(1).max(4096),
+    /** Canonical host path, shown as a tooltip. */
+    hostPath: z.string().min(1).max(4096).optional(),
     createdAt: z.string().min(1),
   })
   .passthrough();
 export type Workspace = z.infer<typeof workspaceSchema>;
+
+const recentProjectSchema = z.object({
+  key: z.string().regex(/^[A-Za-z0-9_-]{22}$/),
+  name: z.string().min(1).max(255),
+  pathLabel: z.string().min(1).max(4096),
+  lastUsedAt: z.string().min(1),
+  available: z.boolean(),
+});
+export type RecentProject = z.infer<typeof recentProjectSchema>;
+const recentProjectsSchema = z.object({ projects: z.array(recentProjectSchema) });
 
 const workspaceSelectSchema = z.object({ workspace: workspaceSchema });
 const workspaceNativePickerResponseSchema = z.discriminatedUnion("outcome", [
@@ -536,6 +548,20 @@ export function createLightcodeApi(fetcher: AuthenticatedFetch) {
       );
     },
 
+    async listRecentProjects(): Promise<RecentProject[]> {
+      return recentProjectsSchema.parse(await request("/workspaces/recent"))
+        .projects;
+    },
+
+    async grantRecentProject(key: string): Promise<Workspace> {
+      return workspaceSelectSchema.parse(
+        await request(`/workspaces/recent/${encodeURIComponent(key)}/grant`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+      ).workspace;
+    },
+
     async grantLaunchFolder(): Promise<Workspace> {
       return workspaceSelectSchema.parse(
         await request("/workspaces/launch-folder/grant", {
@@ -564,11 +590,14 @@ export function createLightcodeApi(fetcher: AuthenticatedFetch) {
       segments,
       cursor,
       includeHidden = false,
+      directoriesOnly = true,
     }: {
       browserId: string;
       segments: string[];
       cursor?: string;
       includeHidden?: boolean;
+      /** Files are never selectable; they only help recognise a project. */
+      directoriesOnly?: boolean;
     }): Promise<BrowserPage> {
       const payload = browserEntriesSchema.parse(
         await request(`/workspaces/browser/${encodeURIComponent(browserId)}/entries`, {
@@ -578,6 +607,7 @@ export function createLightcodeApi(fetcher: AuthenticatedFetch) {
             ...(cursor ? { cursor } : {}),
             limit: 100,
             includeHidden,
+            directoriesOnly,
           }),
         }),
       );

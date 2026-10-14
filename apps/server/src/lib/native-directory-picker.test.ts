@@ -1,11 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
+import path from "node:path";
 import {
   createNativeDirectoryPicker,
   NativeDirectoryPickerError,
   runNativePickerProcess,
   type NativePickerProcessResult,
 } from "./native-directory-picker";
+
+// The Linux picker starts in the home folder only when it is a POSIX path,
+// so on a Windows host it falls back to "/".
+const linuxHome = path.posix.isAbsolute(homedir()) ? homedir() : "/";
 
 const cancelledProcess: NativePickerProcessResult = {
   exitCode: 0,
@@ -175,7 +180,7 @@ describe("native directory picker", () => {
     });
     await kde.pick();
     expect(commands[0]?.[0]).toBe("/usr/bin/kdialog");
-    expect(commands[0]?.at(-1)).toBe(homedir());
+    expect(commands[0]?.at(-1)).toBe(linuxHome);
 
     const fallback = createNativeDirectoryPicker({
       platform: "linux",
@@ -189,7 +194,7 @@ describe("native directory picker", () => {
     });
     await fallback.pick();
     expect(commands[1]?.[0]).toBe("/usr/bin/kdialog");
-    expect(commands[1]?.at(-1)).toBe(homedir());
+    expect(commands[1]?.at(-1)).toBe(linuxHome);
   });
 
   test("resolves Linux pickers only from fixed system locations", async () => {

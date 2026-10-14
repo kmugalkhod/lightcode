@@ -307,6 +307,304 @@ describe("native workspace picker route", () => {
   });
 });
 
+describe("drives location", () => {
+  async function drivesApp() {
+    const { parent } = await makeDesktop();
+    await mkdir(path.join(parent, "Self-Project", "lightcode"), {
+      recursive: true,
+    });
+    const app = createWorkspaceRoutes({
+      enableDrives: true,
+      listDrives: async () => [
+        { token: "X:", readable: true },
+        { token: "Y:", readable: false },
+      ],
+      driveRoot: (token) => (token === "X:" ? parent : path.join(parent, "nope")),
+    });
+    return { app, parent };
+  }
+
+  async function openDrives(app: ReturnType<typeof createWorkspaceRoutes>) {
+    const locations = (await (await app.request("/locations")).json()) as {
+      locations: Array<{ id: string; kind: string }>;
+    };
+    expect(locations.locations.at(-1)).toMatchObject({
+      id: "drives",
+      kind: "drives",
+    });
+    const response = await app.request(
+      "/browser/open",
+      jsonRequest({ locationId: "drives" }),
+    );
+    expect(response.status).toBe(201);
+    return ((await response.json()) as { browserId: string }).browserId;
+  }
+
+  test("lists drives, browses into one, and grants only a folder inside it", async () => {
+    const { app, parent } = await drivesApp();
+    const browserId = await openDrives(app);
+
+    const drives = await app.request(
+      `/browser/${browserId}/entries`,
+      jsonRequest({}),
+    );
+    expect(await drives.json()).toMatchObject({
+      segments: [],
+      entries: [
+        { name: "X:", kind: "directory", readable: true },
+        { name: "Y:", kind: "directory", readable: false },
+      ],
+    });
+
+    const inside = await app.request(
+      `/browser/${browserId}/entries`,
+      jsonRequest({ segments: ["X:", "Self-Project"] }),
+    );
+    expect(inside.status).toBe(200);
+    expect(await inside.json()).toMatchObject({
+      entries: [{ name: "lightcode", kind: "directory" }],
+    });
+
+    for (const segments of [[], ["X:"]]) {
+      const root = await app.request(
+        `/browser/${browserId}/select`,
+        jsonRequest({ segments }),
+      );
+      expect(root.status).toBe(422);
+      expect(await root.json()).toMatchObject({
+        code: "drive_root_not_selectable",
+      });
+    }
+
+    const selected = await app.request(
+      `/browser/${browserId}/select`,
+      jsonRequest({ segments: ["X:", "Self-Project", "lightcode"] }),
+    );
+    expect(selected.status).toBe(201);
+    const canonical = await realpath(
+      path.join(parent, "Self-Project", "lightcode"),
+    );
+    expect(await selected.json()).toMatchObject({
+      workspace: { name: "lightcode", pathLabel: canonical },
+    });
+  });
+
+  test.skipIf(process.platform !== "win32")(
+    "browses a real drive root rather than the current folder on that drive",
+    async () => {
+      const { desktop } = await makeDesktop();
+      const canonical = await realpath(desktop);
+      const { root } = path.win32.parse(canonical);
+      const drive = root.slice(0, 2).toUpperCase();
+      const [firstFolder, ...rest] = canonical
+        .slice(root.length)
+        .split("\\")
+        .filter(Boolean);
+      const app = createWorkspaceRoutes({ enableDrives: true });
+      const browserId = await openDrives(app);
+      await app.request(`/browser/${browserId}/entries`, jsonRequest({}));
+
+      const driveListing = await app.request(
+        `/browser/${browserId}/entries`,
+        jsonRequest({ segments: [drive], directoriesOnly: true, limit: 200 }),
+      );
+      expect(driveListing.status).toBe(200);
+      const { entries } = (await driveListing.json()) as {
+        entries: Array<{ name: string }>;
+      };
+      // Bun's async realpath turns "C:\" into "C:" (the cwd on C:).
+      expect(entries.map((entry) => entry.name.toLowerCase())).toContain(
+        firstFolder?.toLowerCase(),
+      );
+
+      const selected = await app.request(
+        `/browser/${browserId}/select`,
+        jsonRequest({ segments: [drive, firstFolder, ...rest] }),
+      );
+      expect(selected.status).toBe(201);
+      expect(await selected.json()).toMatchObject({
+        workspace: { pathLabel: canonical },
+      });
+    },
+    20_000,
+  );
+
+  test("accepts only drive tokens the server listed", async () => {
+    const { app } = await drivesApp();
+    const browserId = await openDrives(app);
+
+    // Not listed yet: the drive list must be read before a drive opens.
+    const early = await app.request(
+      `/browser/${browserId}/entries`,
+      jsonRequest({ segments: ["X:"] }),
+    );
+    expect(early.status).toBe(404);
+
+    await app.request(`/browser/${browserId}/entries`, jsonRequest({}));
+    for (const token of ["Q:", "x:", "X", "C:foo", "..", "X:\\"]) {
+      const response = await app.request(
+        `/browser/${browserId}/entries`,
+        jsonRequest({ segments: [token] }),
+      );
+      expect(response.status).toBeGreaterThanOrEqual(400);
+    }
+  });
+});
+
+describe("recent projects", () => {
+  test("lists distinct recent folders with opaque keys and grants by key", async () => {
+    const { desktop, parent } = await makeDesktop();
+    const missing = path.join(parent, "deleted-project");
+    const canonical = await realpath(desktop);
+    const app = createWorkspaceRoutes({
+      authorizeNativePickerRequest: () => true,
+      listRecentWorkspaces: async () => [
+        {
+          cwd: canonical,
+          identity: null,
+          lastUsedAt: new Date("2026-10-14T00:00:00.000Z"),
+        },
+        {
+          cwd: missing,
+          identity: null,
+          lastUsedAt: new Date("2026-10-13T00:00:00.000Z"),
+        },
+      ],
+    });
+
+    const listed = await app.request("/recent");
+    expect(listed.status).toBe(200);
+    const { projects } = (await listed.json()) as {
+      projects: Array<{
+        key: string;
+        name: string;
+        pathLabel: string;
+        available: boolean;
+      }>;
+    };
+    expect(projects).toMatchObject([
+      { name: "Desktop", pathLabel: canonical, available: true },
+      { name: "deleted-project", pathLabel: missing, available: false },
+    ]);
+    const [present, deleted] = projects;
+    expect(present?.key).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(present?.key).not.toContain("Desktop");
+
+    const granted = await app.request(
+      `/recent/${present?.key}/grant`,
+      jsonRequest({}),
+    );
+    expect(granted.status).toBe(201);
+    expect(await granted.json()).toMatchObject({
+      workspace: { name: "Desktop", pathLabel: canonical, hostPath: canonical },
+    });
+
+    const gone = await app.request(
+      `/recent/${deleted?.key}/grant`,
+      jsonRequest({}),
+    );
+    expect(gone.status).toBe(404);
+
+    const tampered = await app.request(
+      `/recent/${"A".repeat(22)}/grant`,
+      jsonRequest({}),
+    );
+    expect(tampered.status).toBe(404);
+    const malformed = await app.request(
+      `/recent/${encodeURIComponent(canonical)}/grant`,
+      jsonRequest({}),
+    );
+    expect(malformed.status).toBe(400);
+  });
+
+  test("leaves filesystem roots out of recent projects", async () => {
+    const { desktop } = await makeDesktop();
+    const canonical = await realpath(desktop);
+    const app = createWorkspaceRoutes({
+      listRecentWorkspaces: async () => [
+        {
+          cwd: path.parse(canonical).root,
+          identity: null,
+          lastUsedAt: new Date(),
+        },
+        { cwd: canonical, identity: null, lastUsedAt: new Date() },
+      ],
+    });
+    const { projects } = (await (await app.request("/recent")).json()) as {
+      projects: Array<{ pathLabel: string }>;
+    };
+    expect(projects.map((project) => project.pathLabel)).toEqual([canonical]);
+  });
+
+  test("refuses a recent folder whose identity changed", async () => {
+    const { desktop } = await makeDesktop();
+    const canonical = await realpath(desktop);
+    const app = createWorkspaceRoutes({
+      authorizeNativePickerRequest: () => true,
+      listRecentWorkspaces: async () => [
+        {
+          cwd: canonical,
+          identity: { device: "1", inode: "999999999" },
+          lastUsedAt: new Date(),
+        },
+      ],
+    });
+    const { projects } = (await (await app.request("/recent")).json()) as {
+      projects: Array<{ key: string }>;
+    };
+    const response = await app.request(
+      `/recent/${projects[0]?.key}/grant`,
+      jsonRequest({}),
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "workspace_replaced" });
+  });
+
+  test("grants only to an authenticated web request", async () => {
+    const { desktop } = await makeDesktop();
+    const app = createWorkspaceRoutes({
+      authorizeNativePickerRequest: () => false,
+      listRecentWorkspaces: async () => [
+        { cwd: await realpath(desktop), identity: null, lastUsedAt: new Date() },
+      ],
+    });
+    const { projects } = (await (await app.request("/recent")).json()) as {
+      projects: Array<{ key: string }>;
+    };
+    const response = await app.request(
+      `/recent/${projects[0]?.key}/grant`,
+      jsonRequest({}),
+    );
+    expect(response.status).toBe(403);
+  });
+});
+
+describe("known-folder prewarm", () => {
+  test("starts discovery when locations are listed", async () => {
+    let prewarms = 0;
+    const app = createWorkspaceRoutes({
+      enableDrives: false,
+      prewarmKnownFolders: () => {
+        prewarms += 1;
+      },
+    });
+    await app.request("/locations");
+    expect(prewarms).toBe(1);
+  });
+
+  test("omits the host path for clients that are not the authenticated web app", async () => {
+    const { desktop } = await makeDesktop();
+    const app = createWorkspaceRoutes({ desktopPath: desktop });
+    const browserId = await openDesktop(app);
+    const selected = await app.request(
+      `/browser/${browserId}/select`,
+      jsonRequest({ segments: [] }),
+    );
+    const body = (await selected.json()) as { workspace: object };
+    expect(body.workspace).not.toHaveProperty("hostPath");
+  });
+});
+
 describe("launch folder routes", () => {
   test("reports unavailable without a usable launch folder", async () => {
     for (const launchFolderPath of [
@@ -647,6 +945,7 @@ describe("workspace browser routes", () => {
       throw new Error("location discovery must remain lazy");
     };
     const app = createWorkspaceRoutes({
+      enableDrives: false,
       resolveLocationPaths: {
         desktop: failIfCalled,
         home: failIfCalled,
@@ -767,7 +1066,10 @@ describe("workspace browser routes", () => {
       jsonRequest({ locationId: "documents" }),
     );
     expect(missing.status).toBe(404);
-    expect(await missing.json()).toMatchObject({ code: "workspace_missing" });
+    expect(await missing.json()).toMatchObject({
+      code: "location_missing",
+      retryable: false,
+    });
     await expect(openDesktop(app)).resolves.toBeString();
   });
 
@@ -815,9 +1117,61 @@ describe("workspace browser routes", () => {
 
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({
-      code: "workspace_missing",
-      retryable: true,
+      code: "location_missing",
+      error: `No Desktop folder at ${missingDesktop}.`,
+      retryable: false,
     });
+  });
+
+  test("names the path and override when the Projects folder is absent", async () => {
+    const missingProjects = path.join(tmpdir(), crypto.randomUUID(), "Projects");
+    const app = createWorkspaceRoutes({
+      locationPaths: { projects: missingProjects },
+    });
+    const response = await app.request(
+      "/browser/open",
+      jsonRequest({ locationId: "projects" }),
+    );
+
+    expect(response.status).toBe(404);
+    const body = (await response.json()) as { code: string; error: string };
+    expect(body.code).toBe("location_missing");
+    expect(body.error).toContain(missingProjects);
+    expect(body.error).toContain("LIGHTCODE_PROJECTS_PATH");
+  });
+
+  test("hides Windows system entries and legacy junctions unless asked", async () => {
+    const { desktop } = await makeDesktop();
+    await mkdir(path.join(desktop, "project"));
+    await mkdir(path.join(desktop, "Recent"));
+    await writeFile(path.join(desktop, "NTUSER.DAT"), "");
+    await writeFile(path.join(desktop, "ntuser.dat.LOG1"), "");
+    await writeFile(path.join(desktop, "desktop.ini"), "");
+    await writeFile(path.join(desktop, "notes.txt"), "");
+    const app = createWorkspaceRoutes({ desktopPath: desktop });
+    const browserId = await openDesktop(app);
+
+    const list = async (body: Record<string, unknown>) => {
+      const response = await app.request(
+        `/browser/${browserId}/entries`,
+        jsonRequest(body),
+      );
+      expect(response.status).toBe(200);
+      const payload = (await response.json()) as {
+        entries: Array<{ name: string }>;
+      };
+      return payload.entries.map((entry) => entry.name).sort();
+    };
+
+    const foldersOnly = await list({ directoriesOnly: true });
+    expect(foldersOnly).toEqual(["Recent", "project"].sort());
+    const withFiles = await list({});
+    if (process.platform === "win32") {
+      expect(withFiles).toEqual(["Recent", "notes.txt", "project"].sort());
+    }
+    const everything = await list({ includeHidden: true });
+    expect(everything).toContain("desktop.ini");
+    expect(everything).toContain("NTUSER.DAT");
   });
 
   test("lists one level with hidden filtering and opaque pagination", async () => {

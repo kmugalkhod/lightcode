@@ -943,6 +943,49 @@ export async function mergeSessionTurnDelta(
   };
 }
 
+export interface RecentWorkspace {
+  cwd: string;
+  /** Identity recorded when a session last bound this folder, if any. */
+  identity: { device: string; inode: string } | null;
+  lastUsedAt: Date;
+}
+
+/** Distinct session folders, most recently used first. */
+export async function listRecentWorkspaces(
+  limit = 8,
+): Promise<RecentWorkspace[]> {
+  const sessions = await prisma.chatSession.findMany({
+    where: { cwd: { not: null } },
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    take: 200,
+    select: {
+      cwd: true,
+      workspaceDevice: true,
+      workspaceInode: true,
+      updatedAt: true,
+    },
+  });
+  const seen = new Set<string>();
+  const recent: RecentWorkspace[] = [];
+  for (const session of sessions) {
+    if (!session.cwd) continue;
+    const key =
+      process.platform === "win32" ? session.cwd.toLowerCase() : session.cwd;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    recent.push({
+      cwd: session.cwd,
+      identity:
+        session.workspaceDevice && session.workspaceInode
+          ? { device: session.workspaceDevice, inode: session.workspaceInode }
+          : null,
+      lastUsedAt: session.updatedAt,
+    });
+    if (recent.length >= limit) break;
+  }
+  return recent;
+}
+
 export async function listChatSessions(limit = 50): Promise<SessionSummary[]> {
   const safeLimit = Math.min(Math.max(limit, 1), 100);
   const sessions = await prisma.chatSession.findMany({

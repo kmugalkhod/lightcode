@@ -1682,6 +1682,23 @@ input:disabled {
   padding: 24px;
 }
 
+/* Wide screens: a sheet docked beside the 280px rail; the chat stays usable. */
+.project-browser-backdrop.sheet {
+  inset: 0 auto 0 280px;
+  display: block;
+  width: min(640px, calc(100vw - 280px));
+  background: transparent;
+  padding: 0;
+}
+
+.project-browser-backdrop.sheet .project-browser {
+  width: 100%;
+  height: 100%;
+  border-width: 0 1px 0 0;
+  border-radius: 0;
+  box-shadow: 18px 0 44px rgba(0, 0, 0, 0.5);
+}
+
 .project-browser {
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
@@ -1772,6 +1789,47 @@ input:disabled {
   border-color: #62472d;
   background: var(--accent-soft);
   color: var(--accent-text);
+}
+
+/* Reported absent this session; still clickable to re-check. */
+.location-button.missing {
+  border-style: dashed;
+  opacity: 0.55;
+}
+
+.recent-projects {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+
+.recent-projects h2 {
+  margin: 4px 10px 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.recent-projects .folder-row > span:not(.entry-note) {
+  display: grid;
+  min-width: 0;
+}
+
+.recent-projects .folder-row small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-view-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
 }
 
 .folder-breadcrumbs {
@@ -1925,6 +1983,41 @@ input:disabled {
 
 .launch-folder-offer .launch-folder-broad {
   color: var(--warning);
+}
+
+.starter-recent-projects {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.starter-recent-projects small {
+  margin-right: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.starter-recent-projects button {
+  display: inline-flex;
+  min-height: 32px;
+  max-width: 220px;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--inset);
+  padding: 4px 11px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.starter-recent-projects button:hover:not(:disabled) {
+  border-color: #3e4b5d;
+  color: var(--text);
 }
 
 .folder-loading-status {

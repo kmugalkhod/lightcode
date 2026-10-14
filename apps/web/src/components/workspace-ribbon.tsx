@@ -44,6 +44,8 @@ export function WorkspaceRibbon({
   onOpenModels,
 }: WorkspaceRibbonProps) {
   const pathLabel = session?.pathLabel ?? session?.cwd ?? workspace?.pathLabel ?? "Choose a local project";
+  // Tooltips show the real folder; browser grants label it as "Desktop/foo".
+  const hostPathTitle = session?.cwd ?? workspace?.hostPath ?? pathLabel;
   const normalizedSessionPath = (session?.pathLabel ?? session?.cwd)?.replaceAll("\\", "/").replace(/\/$/, "");
   const sessionProjectName = normalizedSessionPath?.split("/").at(-1);
   const projectName = session ? sessionProjectName || session.title || "Project" : workspace?.name ?? "Open folder";
@@ -78,7 +80,7 @@ export function WorkspaceRibbon({
         className="workspace-path"
         type="button"
         onClick={onOpenProject}
-        title={pathLabel}
+        title={hostPathTitle}
         aria-label={`Open project folder: ${projectName}`}
         disabled={isPickingProject}
         aria-busy={isPickingProject}
