@@ -10,21 +10,13 @@ import {
   type ServerInstanceLock,
 } from "./lib/server-instance-lock";
 import { isLoopbackBindHost } from "./lib/server-bind-policy";
+import { createServerFetch } from "./lib/long-running-routes";
 
 export type AppType = typeof appInstance;
 
 const logger = createLogger("server");
 const httpIdleTimeoutSeconds = 30;
 const shutdownForceExitMs = 5_000;
-
-function isChatStreamingRoute(request: Request) {
-  if (request.method !== "POST") {
-    return false;
-  }
-
-  const pathname = new URL(request.url).pathname;
-  return /^\/sessions\/[^/]+\/(?:chat|turns)$/.test(pathname);
-}
 
 function serverLockFailureMessage(error: unknown): string {
   if (
@@ -190,13 +182,7 @@ async function startServer() {
       idleTimeout: httpIdleTimeoutSeconds,
       port,
       hostname,
-      async fetch(request, bunServer) {
-        if (isChatStreamingRoute(request)) {
-          bunServer.timeout(request, 0);
-        }
-
-        return app.fetch(request);
-      },
+      fetch: createServerFetch(app),
     });
   } catch (error) {
     await releaseServerLock(instanceLock, "bind-failure");

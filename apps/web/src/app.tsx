@@ -6,12 +6,14 @@ import {
   ProjectBrowser,
   type ProjectBrowserNotice,
 } from "./components/project-browser";
+import { PickerPendingBanner } from "./components/picker-pending-banner";
 import { SessionRail } from "./components/session-rail";
 import { WorkspaceRibbon } from "./components/workspace-ribbon";
 import { ModelPicker } from "./components/model-picker";
 import {
   createAuthenticatedFetch,
   createLightcodeApi,
+  isAbortError,
   LightcodeApiError,
   loadStoredWorkspace,
   readLaunchToken,
@@ -19,6 +21,7 @@ import {
   displaySessionTitle,
   formatRelativeTime,
   type CodingMode,
+  type LaunchFolder,
   type PermissionMode,
   type ProviderStatus,
   type Session,
@@ -43,7 +46,29 @@ function isWebAuthorizationFailure(cause: unknown): cause is LightcodeApiError {
   return cause.status === 401 || (typeof code === "string" && code.startsWith("web_auth_"));
 }
 
-function nativePickerFallbackNotice(cause: unknown): ProjectBrowserNotice {
+function isWindowsClient(): boolean {
+  const nav = navigator as Navigator & {
+    userAgentData?: { platform?: string };
+  };
+  return /^win/i.test(nav.userAgentData?.platform || nav.platform || "");
+}
+
+function nativePickerFallbackNotice(
+  cause: unknown,
+  {
+    isWindows,
+    launchFolder,
+    onOpenLaunchFolder,
+  }: {
+    isWindows: boolean;
+    launchFolder: LaunchFolder | null;
+    onOpenLaunchFolder: () => void;
+  },
+): ProjectBrowserNotice {
+  const launchAction =
+    launchFolder?.available
+      ? { label: `Open ${launchFolder.pathLabel}`, onSelect: onOpenLaunchFolder }
+      : undefined;
   const code =
     cause instanceof LightcodeApiError &&
     cause.payload &&
@@ -57,6 +82,7 @@ function nativePickerFallbackNotice(cause: unknown): ProjectBrowserNotice {
       detail:
         "Choose a project from one of the common locations in this window. Lightcode will still grant only the folder you select.",
       retryable: false,
+      action: launchAction,
     };
   }
   if (code === "native_picker_busy") {
@@ -95,10 +121,14 @@ function nativePickerFallbackNotice(cause: unknown): ProjectBrowserNotice {
   }
   return {
     tone: "error",
-    title: "The system folder picker did not open",
-    detail:
-      "Retry the system dialog, or choose a project from a common location in this window.",
+    title: isWindows
+      ? "The Windows folder dialog failed to start"
+      : "The system folder picker did not open",
+    detail: launchAction
+      ? "Open the folder Lightcode was started from, retry the dialog, or browse folders in your user profile (Desktop, Documents, Downloads, Home)."
+      : "Retry the dialog, or browse folders in your user profile (Desktop, Documents, Downloads, Home). For a project elsewhere, run `lightcode web` from inside that folder.",
     retryable: true,
+    action: launchAction,
   };
 }
 
@@ -151,7 +181,13 @@ export function App() {
   const [providerStatusError, setProviderStatusError] = useState(false);
   const projectBrowserTriggerRef = useRef<HTMLElement | null>(null);
   const pickerRequestRef = useRef(false);
+  const pickerAbortRef = useRef<AbortController | null>(null);
   const railTriggerRef = useRef<HTMLElement | null>(null);
+  const [launchFolder, setLaunchFolder] = useState<LaunchFolder | null>(null);
+  const [isOpeningLaunchFolder, setIsOpeningLaunchFolder] = useState(false);
+  const [isWindows] = useState(isWindowsClient);
+  const browserOpenRef = useRef(isBrowserOpen);
+  browserOpenRef.current = isBrowserOpen;
 
   const api = useMemo(() => {
     if (!token) return null;
@@ -196,6 +232,10 @@ export function App() {
       .getProviderStatus()
       .then(setProviderStatus)
       .catch(() => setProviderStatusError(true));
+    void api
+      .getLaunchFolder()
+      .then(setLaunchFolder)
+      .catch(() => setLaunchFolder(null));
   }, [api]);
 
   const createSession = useCallback(
@@ -366,9 +406,13 @@ export function App() {
       setPickerNotice(null);
     }
     pickerRequestRef.current = true;
+    const controller = new AbortController();
+    pickerAbortRef.current = controller;
     setIsPickingProject(true);
     try {
-      const result = await api?.openWorkspacePicker();
+      const result = await api?.openWorkspacePicker({
+        signal: controller.signal,
+      });
       if (!result) return;
       if (result.outcome === "selected") {
         selectWorkspace(result.workspace);
@@ -387,15 +431,60 @@ export function App() {
         restoreProjectBrowserFocus();
       }
     } catch (cause) {
+      if (isAbortError(cause)) {
+        // The user cancelled; aborting the request also closes the dialog.
+        if (!retryFromFallback) restoreProjectBrowserFocus();
+        return;
+      }
       if (isWebAuthorizationFailure(cause)) {
         setAuthorizationError(cause.message);
         return;
       }
-      setPickerNotice(nativePickerFallbackNotice(cause));
+      setPickerNotice(
+        nativePickerFallbackNotice(cause, {
+          isWindows,
+          launchFolder,
+          onOpenLaunchFolder: () => void openLaunchFolder(),
+        }),
+      );
       setIsBrowserOpen(true);
     } finally {
       pickerRequestRef.current = false;
+      pickerAbortRef.current = null;
       setIsPickingProject(false);
+    }
+  }
+
+  function cancelNativeProjectPicker() {
+    pickerAbortRef.current?.abort();
+  }
+
+  async function openLaunchFolder() {
+    if (!api || isOpeningLaunchFolder) return;
+    setIsOpeningLaunchFolder(true);
+    setSessionError(null);
+    try {
+      selectWorkspace(await api.grantLaunchFolder());
+    } catch (cause) {
+      if (isWebAuthorizationFailure(cause)) {
+        setAuthorizationError(cause.message);
+        return;
+      }
+      const message =
+        cause instanceof Error ? cause.message : "Unable to open the launch folder.";
+      // Read through a ref: the notice action can outlive the render it closed over.
+      if (browserOpenRef.current) {
+        setPickerNotice({
+          tone: "error",
+          title: "The launch folder could not be opened",
+          detail: `${message} Choose another folder below.`,
+          retryable: false,
+        });
+      } else {
+        setSessionError(message);
+      }
+    } finally {
+      setIsOpeningLaunchFolder(false);
     }
   }
 
@@ -509,6 +598,9 @@ export function App() {
             isPickingProject={isPickingProject}
             error={sessionError}
             onBrowseCommonLocations={openProjectBrowserFallback}
+            launchFolder={launchFolder}
+            isOpeningLaunchFolder={isOpeningLaunchFolder}
+            onOpenLaunchFolder={() => void openLaunchFolder()}
             onNewSession={beginNewSession}
             onOpenSessions={openRail}
             onSelectSession={selectSession}
@@ -530,6 +622,12 @@ export function App() {
             void openNativeProjectPicker({ retryFromFallback: true })
           }
           onSelect={selectWorkspace}
+        />
+      ) : null}
+      {isPickingProject ? (
+        <PickerPendingBanner
+          isWindows={isWindows}
+          onCancel={cancelNativeProjectPicker}
         />
       ) : null}
       {isModelPickerOpen && providerStatus ? <ModelPicker api={api} status={providerStatus} onClose={() => setIsModelPickerOpen(false)} onSelect={setProviderStatus} /> : null}
@@ -562,6 +660,9 @@ function NewSessionSurface({
   isPickingProject,
   error,
   onBrowseCommonLocations,
+  launchFolder,
+  isOpeningLaunchFolder,
+  onOpenLaunchFolder,
   onNewSession,
   onOpenSessions,
   onSelectSession,
@@ -581,6 +682,9 @@ function NewSessionSurface({
   isPickingProject: boolean;
   error: string | null;
   onBrowseCommonLocations: () => void;
+  launchFolder: LaunchFolder | null;
+  isOpeningLaunchFolder: boolean;
+  onOpenLaunchFolder: () => void;
   onNewSession: () => void;
   onOpenSessions: () => void;
   onSelectSession: (session: Session) => void;
@@ -660,6 +764,29 @@ function NewSessionSurface({
             tone: "error",
           })}
         />
+        {!workspace && launchFolder?.available ? (
+          <div className="launch-folder-offer">
+            <span>
+              <small>Started from</small>
+              <strong title={launchFolder.pathLabel}>{launchFolder.pathLabel}</strong>
+              {launchFolder.broad ? (
+                <small className="launch-folder-broad">
+                  This folder contains your home directory, so the agent would get broad access.
+                </small>
+              ) : null}
+            </span>
+            <button
+              className="primary-button"
+              type="button"
+              onClick={onOpenLaunchFolder}
+              disabled={isOpeningLaunchFolder || isPickingProject}
+              aria-busy={isOpeningLaunchFolder}
+            >
+              {isOpeningLaunchFolder ? <span className="inline-spinner" aria-hidden="true" /> : <Icon name="folder-open" size={15} />}
+              {launchFolder.broad ? `Open ${launchFolder.name} (broad access)` : `Open ${launchFolder.name}`}
+            </button>
+          </div>
+        ) : null}
         <div className="starter-project-context">{projectControls}<button className="browse-common-locations-button" type="button" onClick={onBrowseCommonLocations} disabled={isPickingProject}>Browse folders</button></div>
         {error ? <div className="new-session-error" role="alert"><Icon name="warning" size={16} />{error}</div> : null}
         <div className="starter-suggestions" aria-label="Suggested prompts">

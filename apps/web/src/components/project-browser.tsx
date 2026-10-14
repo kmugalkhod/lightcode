@@ -32,6 +32,8 @@ export interface ProjectBrowserNotice {
   title: string;
   detail: string;
   retryable: boolean;
+  /** Primary recovery action shown before the retry button. */
+  action?: { label: string; onSelect: () => void };
 }
 
 interface BrowserState {
@@ -498,6 +500,16 @@ export function ProjectBrowser({
                 <small>{notice.detail}</small>
               </span>
               <div className="picker-fallback-actions">
+                {notice.action ? (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={notice.action.onSelect}
+                    disabled={interactionsLocked}
+                  >
+                    {notice.action.label}
+                  </button>
+                ) : null}
                 {notice.retryable ? (
                   <button
                     className="secondary-button"

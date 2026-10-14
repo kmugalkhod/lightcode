@@ -9,6 +9,8 @@ import {
   workspaceBrowserSelectRequestSchema,
   workspaceBrowserSelectResponseSchema,
   workspaceGrantSchema,
+  workspaceLaunchFolderGrantRequestSchema,
+  workspaceLaunchFolderResponseSchema,
   workspaceLocationsResponseSchema,
   workspaceNativePickerRequestSchema,
   workspaceNativePickerResponseSchema,
@@ -31,6 +33,7 @@ import { constants as fsConstants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { Hono, type Context } from "hono";
+import { z } from "zod";
 import {
   createChatSession,
   SessionWorkspaceIdentityError,
@@ -51,6 +54,7 @@ const defaultBrowserCapabilityTtlMs = 10 * 60 * 1_000;
 const maximumBrowserCapabilities = 64;
 const maximumWorkspaceGrants = 256;
 const maximumUserDirsConfigurationBytes = 16 * 1_024;
+const nativePickerMaximumMs = 10 * 60 * 1_000;
 
 interface RootIdentity {
   device: string;
@@ -96,8 +100,27 @@ export interface WorkspaceRoutesOptions {
   ) => Promise<{ id: string }>;
   /** Injectable seam; tests must never open a real host dialog. */
   nativeDirectoryPicker?: NativeDirectoryPicker;
-  /** Defaults to the marker set by the authenticated global web middleware. */
+  /**
+   * Gates grants of folders the browser did not navigate to (native picker,
+   * launch folder). Defaults to the authenticated global web middleware marker.
+   */
   authorizeNativePickerRequest?: (request: Request) => boolean;
+  /** Folder `lightcode web` started from. Defaults to LIGHTCODE_WEB_LAUNCH_CWD. */
+  launchFolderPath?: string | null;
+}
+
+const launchFolderEnvironmentSchema = z
+  .string()
+  .min(1)
+  .max(4_096)
+  .refine((value) => !value.includes("\0"))
+  .refine((value) => path.isAbsolute(value));
+
+function parseLaunchFolderPath(value: unknown): string | null {
+  const parsed = launchFolderEnvironmentSchema.safeParse(value);
+  return parsed.success
+    ? normalizeKnownFolderCandidate(parsed.data, process.platform)
+    : null;
 }
 
 class WorkspaceRouteError extends Error {
@@ -663,6 +686,17 @@ function mapFilesystemError(error: unknown): WorkspaceRouteError {
 }
 
 function mapNativePickerError(error: unknown): WorkspaceRouteError {
+  if (error instanceof NativeDirectoryPickerError) {
+    logger.warn("native_picker_error", {
+      code: error.code,
+      ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}),
+    });
+  } else {
+    logger.warn("native_picker_error", {
+      code: "native_picker_failed",
+      error: getErrorMessage(error),
+    });
+  }
   if (!(error instanceof NativeDirectoryPickerError)) {
     return new WorkspaceRouteError(
       "native_picker_failed",
@@ -1245,6 +1279,22 @@ export function createWorkspaceRoutes(
     options.nativeDirectoryPicker ?? createNativeDirectoryPicker();
   const authorizeNativePickerRequest =
     options.authorizeNativePickerRequest ?? isAuthenticatedWebRequest;
+  const launchFolderPath = parseLaunchFolderPath(
+    options.launchFolderPath === undefined
+      ? Bun.env.LIGHTCODE_WEB_LAUNCH_CWD
+      : options.launchFolderPath,
+  );
+  const resolveLaunchFolder = async () => {
+    if (!launchFolderPath) {
+      throw new WorkspaceRouteError(
+        "workspace_unavailable",
+        "Lightcode was not started from a project folder.",
+        404,
+        false,
+      );
+    }
+    return resolveKnownDirectory(launchFolderPath);
+  };
   const cursorSecret = randomBytes(32);
   const browserCapabilities = new Map<string, BrowserCapability>();
   const workspaceGrants = new Map<string, StoredWorkspaceGrant>();
@@ -1333,7 +1383,15 @@ export function createWorkspaceRoutes(
         try {
           let picked;
           try {
-            picked = await nativeDirectoryPicker.pick(c.req.raw.signal);
+            // The server exempts this route from its idle timeout because a
+            // human is choosing; a closed tab still aborts, and an orphaned
+            // dialog is killed at the cap.
+            picked = await nativeDirectoryPicker.pick(
+              AbortSignal.any([
+                c.req.raw.signal,
+                AbortSignal.timeout(nativePickerMaximumMs),
+              ]),
+            );
           } catch (error) {
             throw mapNativePickerError(error);
           }
@@ -1357,6 +1415,62 @@ export function createWorkspaceRoutes(
               outcome: "selected",
               workspace,
             }),
+            201,
+          );
+        } catch (error) {
+          return workspaceErrorResponse(c, error);
+        }
+      },
+    )
+    .get("/launch-folder", async (c) => {
+      try {
+        const { root } = await resolveLaunchFolder();
+        const home = await fs.realpath(homedir()).catch(() => homedir());
+        return c.json(
+          workspaceLaunchFolderResponseSchema.parse({
+            available: true,
+            name: path.basename(root),
+            pathLabel: root,
+            broad: isContainedPath(root, home),
+          }),
+        );
+      } catch {
+        return c.json(
+          workspaceLaunchFolderResponseSchema.parse({ available: false }),
+        );
+      }
+    })
+    .post(
+      "/launch-folder/grant",
+      zValidator(
+        "json",
+        workspaceLaunchFolderGrantRequestSchema,
+        (result, c) => {
+          if (!result.success) {
+            return invalidRequestResponse(c);
+          }
+        },
+      ),
+      async (c) => {
+        if (!authorizeNativePickerRequest(c.req.raw)) {
+          return c.json(
+            {
+              error:
+                "The launch folder can be opened only from an authenticated Lightcode web session.",
+              code: "web_browser_required",
+            },
+            403,
+          );
+        }
+        try {
+          const directory = await resolveLaunchFolder();
+          const workspace = await storeWorkspaceGrant({
+            ...directory,
+            name: path.basename(directory.root),
+            pathLabel: directory.root,
+          });
+          return c.json(
+            workspaceBrowserSelectResponseSchema.parse({ workspace }),
             201,
           );
         } catch (error) {

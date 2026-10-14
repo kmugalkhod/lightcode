@@ -1854,6 +1854,79 @@ input:disabled {
   gap: 7px;
 }
 
+/* Sits above the project browser backdrop so Cancel stays reachable. */
+.picker-pending-banner {
+  position: fixed;
+  z-index: 90;
+  right: 16px;
+  bottom: 16px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: min(440px, calc(100vw - 32px));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--elevated);
+  padding: 10px 12px;
+  color: var(--accent-text);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.picker-pending-banner > span:not(.inline-spinner) {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.picker-pending-banner strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.picker-pending-banner small {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.launch-folder-offer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--inset);
+  padding: 10px 12px;
+}
+
+.launch-folder-offer > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.launch-folder-offer strong {
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launch-folder-offer small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.launch-folder-offer .launch-folder-broad {
+  color: var(--warning);
+}
+
 .folder-loading-status {
   position: sticky;
   z-index: 2;

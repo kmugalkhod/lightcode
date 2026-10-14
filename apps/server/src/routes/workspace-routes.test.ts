@@ -9,7 +9,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
 import { NativeDirectoryPickerError } from "../lib/native-directory-picker";
@@ -179,6 +179,69 @@ describe("native workspace picker route", () => {
     });
   }
 
+  test("keeps the stderr diagnostic out of the HTTP response", async () => {
+    const secret = "C:\\Users\\private\\stderr-only";
+    const app = createWorkspaceRoutes({
+      authorizeNativePickerRequest: () => true,
+      nativeDirectoryPicker: {
+        pick: async () =>
+          Promise.reject(
+            new NativeDirectoryPickerError(
+              "native_picker_failed",
+              "The Windows folder picker could not be opened.",
+              `failure near ${secret}`,
+            ),
+          ),
+      },
+    });
+    const response = await app.request("/picker/open", jsonRequest({}));
+    expect(response.status).toBe(500);
+    const text = await response.text();
+    expect(text).not.toContain(secret);
+    expect(JSON.parse(text)).toEqual({
+      error: "The system folder picker could not be opened.",
+      code: "native_picker_failed",
+      retryable: true,
+    });
+  });
+
+  test("passes the client abort to the picker through a capped signal", async () => {
+    const client = new AbortController();
+    let pickerSignal: AbortSignal | undefined;
+    let pickerStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      pickerStarted = resolve;
+    });
+    const app = createWorkspaceRoutes({
+      authorizeNativePickerRequest: () => true,
+      nativeDirectoryPicker: {
+        pick: (signal) => {
+          pickerSignal = signal;
+          pickerStarted();
+          return new Promise((resolve) => {
+            signal?.addEventListener("abort", () =>
+              resolve({ outcome: "cancelled" }),
+            );
+          });
+        },
+      },
+    });
+
+    const request = new Request("http://localhost/picker/open", {
+      ...jsonRequest({}),
+      signal: client.signal,
+    });
+    const pending = app.request(request);
+    await started;
+    expect(pickerSignal).toBeDefined();
+    expect(pickerSignal).not.toBe(request.signal);
+    expect(pickerSignal?.aborted).toBe(false);
+    client.abort();
+    const response = await pending;
+    expect(pickerSignal?.aborted).toBe(true);
+    expect(await response.json()).toEqual({ outcome: "cancelled" });
+  });
+
   test("can be triggered only by an authenticated same-origin web request", async () => {
     const expectedOrigin = "http://127.0.0.1:4983";
     const token = Buffer.alloc(32, 9).toString("base64url");
@@ -241,6 +304,104 @@ describe("native workspace picker route", () => {
     );
     expect(wrongOrigin.status).toBe(403);
     expect(calls).toBe(1);
+  });
+});
+
+describe("launch folder routes", () => {
+  test("reports unavailable without a usable launch folder", async () => {
+    for (const launchFolderPath of [
+      null,
+      "relative/project",
+      process.platform === "win32" ? "C:\\" : "/",
+      path.join(tmpdir(), `lightcode-missing-${crypto.randomUUID()}`),
+    ]) {
+      const app = createWorkspaceRoutes({
+        launchFolderPath,
+        authorizeNativePickerRequest: () => true,
+      });
+      const response = await app.request("/launch-folder");
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ available: false });
+
+      const grant = await app.request(
+        "/launch-folder/grant",
+        jsonRequest({}),
+      );
+      expect(grant.status).toBeGreaterThanOrEqual(400);
+    }
+  });
+
+  test("describes and grants the canonical launch folder", async () => {
+    const { desktop } = await makeDesktop();
+    const canonical = await realpath(desktop);
+    let sessionCwd = "";
+    const app = createWorkspaceRoutes({
+      launchFolderPath: desktop,
+      authorizeNativePickerRequest: () => true,
+      createSession: async (input) => {
+        sessionCwd = input?.cwd ?? "";
+        return { id: crypto.randomUUID() };
+      },
+    });
+
+    const described = await app.request("/launch-folder");
+    expect(await described.json()).toEqual({
+      available: true,
+      name: "Desktop",
+      pathLabel: canonical,
+      broad: false,
+    });
+
+    const granted = await app.request(
+      "/launch-folder/grant",
+      jsonRequest({}),
+    );
+    expect(granted.status).toBe(201);
+    const body = (await granted.json()) as {
+      workspace: { id: string; name: string; pathLabel: string };
+    };
+    expect(body.workspace).toMatchObject({
+      name: "Desktop",
+      pathLabel: canonical,
+    });
+
+    const session = await app.request(
+      `/${body.workspace.id}/sessions`,
+      jsonRequest({}),
+    );
+    expect(session.status).toBe(201);
+    expect(sessionCwd).toBe(canonical);
+  });
+
+  test("flags a launch folder that contains the home directory as broad", async () => {
+    const app = createWorkspaceRoutes({ launchFolderPath: homedir() });
+    expect(await (await app.request("/launch-folder")).json()).toMatchObject({
+      available: true,
+      broad: true,
+    });
+  });
+
+  test("grants only to an authenticated web request with an empty body", async () => {
+    const { desktop } = await makeDesktop();
+    const unauthenticated = createWorkspaceRoutes({
+      launchFolderPath: desktop,
+      authorizeNativePickerRequest: () => false,
+    });
+    const forbidden = await unauthenticated.request(
+      "/launch-folder/grant",
+      jsonRequest({}),
+    );
+    expect(forbidden.status).toBe(403);
+
+    const authenticated = createWorkspaceRoutes({
+      launchFolderPath: desktop,
+      authorizeNativePickerRequest: () => true,
+    });
+    const smuggled = await authenticated.request(
+      "/launch-folder/grant",
+      jsonRequest({ path: tmpdir() }),
+    );
+    expect(smuggled.status).toBe(400);
   });
 });
 

@@ -4,6 +4,7 @@ import {
   displaySessionTitle,
   extractLaunchToken,
   formatRelativeTime,
+  isAbortError,
   readLaunchToken,
   requiresBroadWorkspaceConfirmation,
   webTokenStorageKey,
@@ -122,5 +123,74 @@ describe("workspace selection", () => {
     await expect(api.openWorkspacePicker()).resolves.toEqual({
       outcome: "cancelled",
     });
+  });
+
+  test("aborting the native picker rejects with an AbortError", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const fetcher = Object.assign(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          receivedSignal = init?.signal ?? undefined;
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          );
+        }),
+      { preconnect: (() => undefined) as AuthenticatedFetch["preconnect"] },
+    ) satisfies AuthenticatedFetch;
+    const api = createLightcodeApi(fetcher);
+    const controller = new AbortController();
+
+    const pending = api.openWorkspacePicker({ signal: controller.signal });
+    controller.abort();
+    const cause = await pending.catch((error: unknown) => error);
+    expect(receivedSignal).toBe(controller.signal);
+    expect(isAbortError(cause)).toBe(true);
+    expect(isAbortError(new Error("network down"))).toBe(false);
+  });
+
+  test("reads and grants the launch folder with strict empty requests", async () => {
+    const calls: Array<{ input: string; init?: RequestInit }> = [];
+    const fetcher = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ input: String(input), init });
+        const body =
+          init?.method === "POST"
+            ? {
+                workspace: {
+                  id: "workspace-1",
+                  name: "lightcode",
+                  pathLabel: "D:\\Self-Project\\lightcode",
+                  createdAt: "2026-10-14T00:00:00.000Z",
+                },
+              }
+            : {
+                available: true,
+                name: "lightcode",
+                pathLabel: "D:\\Self-Project\\lightcode",
+                broad: false,
+              };
+        return new Response(JSON.stringify(body), {
+          status: init?.method === "POST" ? 201 : 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      { preconnect: (() => undefined) as AuthenticatedFetch["preconnect"] },
+    ) satisfies AuthenticatedFetch;
+    const api = createLightcodeApi(fetcher);
+
+    await expect(api.getLaunchFolder()).resolves.toEqual({
+      available: true,
+      name: "lightcode",
+      pathLabel: "D:\\Self-Project\\lightcode",
+      broad: false,
+    });
+    await expect(api.grantLaunchFolder()).resolves.toMatchObject({
+      name: "lightcode",
+    });
+    expect(calls.map((call) => call.input)).toEqual([
+      "/workspaces/launch-folder",
+      "/workspaces/launch-folder/grant",
+    ]);
+    expect(calls[1]?.init?.body).toBe("{}");
   });
 });

@@ -293,6 +293,9 @@ export async function startAuthenticatedWebServer(): Promise<WebServerLaunchResu
         LIGHTCODE_HOST: "127.0.0.1",
         LIGHTCODE_PARENT_PID: String(process.pid),
         LIGHTCODE_WEB_AUTH_FILE: authFile,
+        // Offered to the browser as a one-click project; the server validates
+        // it and grants it only on an explicit authenticated request.
+        LIGHTCODE_WEB_LAUNCH_CWD: process.cwd(),
       },
     });
 

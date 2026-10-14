@@ -17,10 +17,35 @@ export class NativeDirectoryPickerError extends Error {
   constructor(
     readonly code: NativeDirectoryPickerErrorCode,
     message: string,
+    /** Log-only stderr excerpt. Never return it in an HTTP response. */
+    readonly diagnostic?: string,
   ) {
     super(message);
     this.name = "NativeDirectoryPickerError";
   }
+}
+
+const maximumDiagnosticLength = 500;
+
+/** Windows PowerShell serializes stderr as CLIXML; keep only the error text. */
+function unwrapClixml(stderr: string): string {
+  if (!stderr.startsWith("#< CLIXML")) return stderr;
+  const errors = [...stderr.matchAll(/<S S="Error">([^<]*)<\/S>/g)].map(
+    (match) => match[1] ?? "",
+  );
+  return errors
+    .join("")
+    .replace(/_x000D_/g, "")
+    .replace(/_x000A_/g, " ");
+}
+
+function pickerDiagnostic(stderr: string): string | undefined {
+  const cleaned = unwrapClixml(stderr)
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/ {2,}/g, " ")
+    .trim()
+    .slice(0, maximumDiagnosticLength);
+  return cleaned || undefined;
 }
 
 export interface NativePickerProcessResult {
@@ -139,22 +164,40 @@ export const runNativePickerProcess: NativePickerProcessRunner = async (
   }
 };
 
+/**
+ * Runs under Windows PowerShell 5.1 (.NET Framework). Its FolderBrowserDialog
+ * lacks the modern-.NET members (auto-upgrade, description-as-title, initial
+ * directory); setting one throws under ErrorActionPreference=Stop and the
+ * dialog never opens. The windows smoke test runs everything above the
+ * `lightcode:show-dialog` marker for real to catch that class of bug.
+ */
 const windowsPickerScript = String.raw`
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName System.Windows.Forms
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
 $dialog.Description = 'Choose a project folder'
 $dialog.ShowNewFolderButton = $true
-$dialog.AutoUpgradeEnabled = $true
 $owner = New-Object System.Windows.Forms.Form
+$owner.Text = 'Lightcode - choose a project folder'
 $owner.TopMost = $true
-$owner.ShowInTaskbar = $false
+# A taskbar button keeps the dialog findable when Windows refuses to bring it
+# in front of the browser.
+$owner.ShowInTaskbar = $true
 $owner.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
-$owner.Location = New-Object System.Drawing.Point(-32000, -32000)
+$workArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$owner.Location = New-Object System.Drawing.Point(
+  [int]($workArea.Left + $workArea.Width / 2),
+  [int]($workArea.Top + $workArea.Height / 2))
 $owner.Size = New-Object System.Drawing.Size(1, 1)
 $owner.Opacity = 0
+# lightcode:show-dialog
 try {
+  # The spawner's windowsHide turns the process's first show into SW_HIDE.
+  # Showing again makes the owner, and its taskbar button, actually visible.
+  $owner.Show()
+  $owner.Hide()
   $owner.Show()
   $owner.Activate()
   $result = $dialog.ShowDialog($owner)
@@ -220,6 +263,7 @@ function parseWindowsResult(
     throw new NativeDirectoryPickerError(
       "native_picker_failed",
       "The Windows folder picker could not be opened.",
+      pickerDiagnostic(result.stderr),
     );
   }
   if (output === "cancelled") return { outcome: "cancelled" };
@@ -270,6 +314,7 @@ function parseMacosResult(
     throw new NativeDirectoryPickerError(
       "native_picker_failed",
       "The macOS folder picker could not be opened.",
+      pickerDiagnostic(result.stderr),
     );
   }
   return {
@@ -286,6 +331,7 @@ function parseLinuxResult(
     throw new NativeDirectoryPickerError(
       "native_picker_failed",
       "The Linux folder picker could not be opened.",
+      pickerDiagnostic(result.stderr),
     );
   }
   return {

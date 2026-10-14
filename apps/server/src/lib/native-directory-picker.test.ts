@@ -50,6 +50,54 @@ describe("native directory picker", () => {
     expect(decodedScript).not.toContain("WindowState]::Minimized");
   });
 
+  test("keeps the Windows script free of modern-.NET-only dialog members", async () => {
+    let command: readonly string[] = [];
+    const picker = createNativeDirectoryPicker({
+      platform: "win32",
+      environment: { SystemRoot: "C:\\Windows" },
+      which: (candidate) => candidate,
+      runProcess: async (argv) => {
+        command = argv;
+        return cancelledProcess;
+      },
+    });
+    await picker.pick();
+
+    const decodedScript = Buffer.from(
+      command[command.indexOf("-EncodedCommand") + 1] ?? "",
+      "base64",
+    ).toString("utf16le");
+    // The win32 smoke test cuts the script at this marker.
+    expect(decodedScript).toContain("# lightcode:show-dialog");
+    expect(decodedScript).toContain("$owner.ShowInTaskbar = $true");
+    for (const member of [
+      "AutoUpgradeEnabled",
+      "UseDescriptionForTitle",
+      "InitialDirectory",
+    ]) {
+      expect(decodedScript).not.toContain(member);
+    }
+  });
+
+  test("carries a readable stderr diagnostic on Windows failures", async () => {
+    const stderr =
+      '#< CLIXML\r\n<Objs Version="1.1.0.1"><S S="Error">The property \'X\' cannot be found._x000D__x000A_</S><S S="Error">At line:9 char:1_x000D__x000A_</S></Objs>';
+    const picker = createNativeDirectoryPicker({
+      platform: "win32",
+      environment: { SystemRoot: "C:\\Windows" },
+      which: (candidate) => candidate,
+      runProcess: async () => ({ exitCode: 1, stdout: "", stderr }),
+    });
+
+    const error = await picker.pick().catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(NativeDirectoryPickerError);
+    expect(error).toMatchObject({
+      code: "native_picker_failed",
+      diagnostic: "The property 'X' cannot be found. At line:9 char:1",
+    });
+    expect(String(error)).not.toContain("cannot be found");
+  });
+
   test("treats Windows, macOS, and Linux cancellation as a normal outcome", async () => {
     const windows = createNativeDirectoryPicker({
       platform: "win32",

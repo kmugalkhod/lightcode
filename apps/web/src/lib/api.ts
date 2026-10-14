@@ -323,6 +323,25 @@ const workspaceNativePickerResponseSchema = z.discriminatedUnion("outcome", [
 export type WorkspaceNativePickerResponse = z.infer<
   typeof workspaceNativePickerResponseSchema
 >;
+const launchFolderSchema = z.discriminatedUnion("available", [
+  z.object({
+    available: z.literal(true),
+    name: z.string().min(1).max(255),
+    pathLabel: z.string().min(1).max(4096),
+    broad: z.boolean(),
+  }),
+  z.object({ available: z.literal(false) }),
+]);
+export type LaunchFolder = z.infer<typeof launchFolderSchema>;
+
+export function isAbortError(cause: unknown): boolean {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    Reflect.get(cause, "name") === "AbortError"
+  );
+}
+
 const sessionReferenceSchema = z.object({ id: z.string().min(1) });
 export type SessionReference = z.infer<typeof sessionReferenceSchema>;
 
@@ -499,13 +518,31 @@ export function createLightcodeApi(fetcher: AuthenticatedFetch) {
   return {
     fetch: fetcher,
 
-    async openWorkspacePicker(): Promise<WorkspaceNativePickerResponse> {
+    async openWorkspacePicker({
+      signal,
+    }: { signal?: AbortSignal } = {}): Promise<WorkspaceNativePickerResponse> {
       return workspaceNativePickerResponseSchema.parse(
         await request("/workspaces/picker/open", {
           method: "POST",
           body: JSON.stringify({}),
+          signal,
         }),
       );
+    },
+
+    async getLaunchFolder(): Promise<LaunchFolder> {
+      return launchFolderSchema.parse(
+        await request("/workspaces/launch-folder"),
+      );
+    },
+
+    async grantLaunchFolder(): Promise<Workspace> {
+      return workspaceSelectSchema.parse(
+        await request("/workspaces/launch-folder/grant", {
+          method: "POST",
+          body: JSON.stringify({}),
+        }),
+      ).workspace;
     },
 
     async listLocations(): Promise<WorkspaceLocation[]> {

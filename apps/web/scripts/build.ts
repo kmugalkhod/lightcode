@@ -21,7 +21,8 @@ const result = Bun.spawnSync(
     "--production",
     "--minify",
     "--external",
-    "/app/geist-latin.woff2",
+    // A wildcard: Bun on Windows fails to match the exact "/app/..." URL.
+    "/app/*",
   ],
   {
     cwd: webRoot,

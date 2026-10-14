@@ -169,6 +169,31 @@ export type WorkspaceNativePickerResponse = z.infer<
   typeof workspaceNativePickerResponseSchema
 >;
 
+/**
+ * The folder `lightcode web` was started from. The server derives the path
+ * itself; the browser can only ask whether it exists and request a grant.
+ */
+export const workspaceLaunchFolderResponseSchema = z.discriminatedUnion(
+  "available",
+  [
+    z
+      .object({
+        available: z.literal(true),
+        name: z.string().min(1).max(255),
+        pathLabel: z.string().min(1).max(4_096),
+        /** True when the folder contains the user's home directory. */
+        broad: z.boolean(),
+      })
+      .strict(),
+    z.object({ available: z.literal(false) }).strict(),
+  ],
+);
+export type WorkspaceLaunchFolderResponse = z.infer<
+  typeof workspaceLaunchFolderResponseSchema
+>;
+
+export const workspaceLaunchFolderGrantRequestSchema = z.object({}).strict();
+
 export const workspaceBrowserSelectResponseSchema = z
   .object({
     workspace: workspaceGrantSchema,
