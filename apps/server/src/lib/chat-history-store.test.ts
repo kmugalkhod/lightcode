@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -29,14 +29,15 @@ afterEach(async () => {
   } else {
     process.env.LIGHTCODE_HOME = originalLightcodeHome;
   }
-  await rm(tempHome, { recursive: true, force: true }).catch((error) => {
-    // The libSQL client keeps lightcode.db open for the process lifetime and
-    // Windows cannot delete an open file; leave that temp folder to the OS.
-    if (process.platform === "win32" && Reflect.get(error, "code") === "EBUSY") {
-      return;
+  // The lazily imported Prisma client binds to the first test's
+  // LIGHTCODE_HOME for the whole `bun test` process, and later test files
+  // share it. Deleting its lightcode.db breaks them (and Windows cannot delete
+  // the open file anyway), so clear everything except the database files.
+  for (const entry of await readdir(tempHome)) {
+    if (!entry.startsWith("lightcode.db")) {
+      await rm(path.join(tempHome, entry), { recursive: true, force: true });
     }
-    throw error;
-  });
+  }
 });
 
 describe("session history", () => {
