@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { UIMessage } from "ai";
 import type {
   CodingMode,
+  ContextReport,
   LightcodeApi,
   PermissionMode,
   ProviderStatus,
@@ -17,6 +18,7 @@ import {
 } from "../lib/web-command-executor";
 import { ChatMessage } from "./chat-message";
 import { CommandComposer } from "./command-composer";
+import { ContextMeter } from "./context-meter";
 import { Icon } from "./icons";
 import { displaySessionTitle } from "../lib/api";
 
@@ -90,6 +92,25 @@ export function ChatSurface({
   const [commandResult, setCommandResult] = useState<CommandResult | null>(null);
   const [commandBusy, setCommandBusy] = useState<string | null>(null);
   const [following, setFollowing] = useState(true);
+  const [contextReport, setContextReport] = useState<ContextReport | null>(null);
+
+  // Refresh the context meter on open and after each run (compaction happens
+  // server-side while streaming).
+  useEffect(() => {
+    if (chat.isStreaming) return;
+    let cancelled = false;
+    void api
+      .getContext(session.id)
+      .then((report) => {
+        if (!cancelled) setContextReport(report);
+      })
+      .catch(() => {
+        if (!cancelled) setContextReport(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, chat.isStreaming, session.id]);
 
   useEffect(() => {
     onRunStateChange(chat.isStreaming);
@@ -267,6 +288,7 @@ export function ChatSurface({
           />
           <div className="composer-hint">
             <span>Enter to send · Shift+Enter for a new line</span>
+            <ContextMeter report={contextReport} />
             {projectControls}
           </div>
         </div>

@@ -2,6 +2,8 @@ import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import { memo, useState } from "react";
 import { MessageMarkdown } from "./message-markdown";
 import { Icon } from "./icons";
+import { ToolViewBody } from "./tool-parts/tool-view-body";
+import { toolView, toolViewBadge } from "./tool-parts/tool-view";
 
 interface ChatMessageProps {
   message: UIMessage;
@@ -58,6 +60,22 @@ const ToolPart = memo(function ToolPart({ part }: { part: Extract<UIMessage["par
         : state === "output-denied"
           ? part.approval.reason ?? "Tool execution was denied."
           : null;
+  const view = state === "output-available" ? toolView(toolName, part.output) : { kind: "generic" as const };
+  const badge = toolViewBadge(view);
+  const rawDetails = (
+    <>
+      <div>
+        <span>Input</span>
+        <pre>{stringifyPreview(part.input, 1_000)}</pre>
+      </div>
+      {hasOutput ? (
+        <div>
+          <span>{state === "output-error" ? "Error" : "Result"}</span>
+          <pre>{stringifyPreview(output)}</pre>
+        </div>
+      ) : null}
+    </>
+  );
 
   return (
     <details className={`tool-event state-${state}`} open={state === "approval-requested" || state === "output-error"}>
@@ -67,19 +85,23 @@ const ToolPart = memo(function ToolPart({ part }: { part: Extract<UIMessage["par
           <strong>{toolStateLabel(state)} · {toolName.replaceAll("_", " ")}</strong>
           {target ? <small title={target}>{target}</small> : null}
         </span>
+        {badge ? (
+          <span className={view.kind === "command" && view.exitCode !== 0 ? "tool-badge failed" : "tool-badge"}>
+            {badge}
+          </span>
+        ) : null}
         <Icon name="chevron-down" size={15} />
       </summary>
       <div className="tool-details">
-        <div>
-          <span>Input</span>
-          <pre>{stringifyPreview(part.input, 1_000)}</pre>
-        </div>
-        {hasOutput ? (
-          <div>
-            <span>{state === "output-error" ? "Error" : "Result"}</span>
-            <pre>{stringifyPreview(output)}</pre>
-          </div>
-        ) : null}
+        {view.kind === "generic" ? rawDetails : (
+          <>
+            <ToolViewBody view={view} />
+            <details className="tool-raw">
+              <summary>Details</summary>
+              {rawDetails}
+            </details>
+          </>
+        )}
       </div>
     </details>
   );
