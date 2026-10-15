@@ -1,13 +1,11 @@
+import {
+  contextHelpLine,
+  contextKeyHints,
+  contextKeyLabels,
+  type KeyContext,
+} from "../commands/context-keys";
 import { keymap, type KeyBinding } from "../commands/keymap";
 import { typeRole, borderStyleFor, cliTheme } from "../ui/cli-theme";
-
-const screenHints: Array<{ context: string; hint: string }> = [
-  { context: "Chat", hint: "Tab/Ctrl+T switch mode · @ attach files · /compact, /undo actions" },
-  { context: "Chat", hint: "Ctrl+O expand tool output · Ctrl+R show reasoning · Enter send · Shift/Ctrl/Alt+Enter newline" },
-  { context: "IDE", hint: "F2 IDE layout (Explorer · Editor · Chat) · Tab focus Explorer · →/Enter open file · e edit, Ctrl+S save · [ ] tabs" },
-  { context: "Copy", hint: "Ctrl+Y copy mode (↑/↓ pick, Enter copy, c code) · /copy [last|code|all]" },
-  { context: "Sessions", hint: "Enter resume · r rename · f fork · / filter · e export (.md) · d delete" },
-];
 
 function formatSequence(binding: KeyBinding): string {
   return binding.shortcutLabel ?? binding.sequence.toUpperCase();
@@ -46,10 +44,10 @@ export function HelpOverlay() {
       </box>
 
       <box flexDirection="column">
-        {screenHints.map((entry, index) => (
-          <box key={`${entry.context}-${index}`} flexDirection="row">
-            <text {...typeRole("label")}>{entry.context.padEnd(10)}</text>
-            <text {...typeRole("secondary")}>{entry.hint}</text>
+        {(Object.keys(contextKeyHints) as KeyContext[]).map((context) => (
+          <box key={context} flexDirection="row">
+            <text {...typeRole("label")}>{contextKeyLabels[context].padEnd(10)}</text>
+            <text {...typeRole("secondary")}>{contextHelpLine(context)}</text>
           </box>
         ))}
       </box>

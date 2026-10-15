@@ -169,7 +169,6 @@ export function IdeLayout({
         <TabButton label="Terminal" active={false} onPress={onExitIde} />
         <TabButton label="IDE" active onPress={() => {}} />
         <box flexGrow={1} />
-        <text {...typeRole("caption")}>F2 exit IDE</text>
       </box>
 
       <box flexDirection="row" flexGrow={1} width="100%" gap={2} paddingX={1} paddingTop={1}>

@@ -86,6 +86,7 @@ import {
   loadCodingSessionTodos,
   shouldImplementApprovedPlan,
 } from "./chat/chat-screen-helpers";
+import { contextHintLine } from "../commands/context-keys";
 
 export function ChatScreen() {
   const routeParams = useParams();
@@ -992,15 +993,13 @@ export function ChatScreen() {
                     into the meta cluster in a narrow IDE chat column. */}
                 <box flexShrink={1} height={1} overflow="hidden">
                   {copyModeOpen ? (
-                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Copy: ↑/↓ select · Enter copy · c code · Esc exit</text>
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>{contextHintLine("copy")}</text>
                   ) : panelFocused ? (
                     <text wrapMode="none" truncate fg={cliTheme.text.muted}>
-                      {panelTab === "files"
-                        ? "↑/↓ · Enter open · e edit · Esc"
-                        : "↑/↓ · Enter diff · r refresh · Esc"}
+                      {contextHintLine(panelTab === "files" ? "explorer" : "changes")}
                     </text>
                   ) : panelVisible ? (
-                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Enter send · Tab explorer · F2 exit</text>
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>{contextHintLine("ide")}</text>
                   ) : canRetryRecoverableResponse ? (
                     <text wrapMode="none" truncate fg={cliTheme.text.muted}>
                       {errorMessage && /rate.?limit/i.test(errorMessage)
@@ -1008,13 +1007,13 @@ export function ChatScreen() {
                         : "Type retry or regenerate to try again"}
                     </text>
                   ) : pendingApprovals.length > 0 ? (
-                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Enter approve · type deny to reject · or reply</text>
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>{contextHintLine("approval")}</text>
                   ) : hasBlockingPopup ? (
                     <text wrapMode="none" truncate fg={cliTheme.text.muted}>Complete the inline prompt to continue</text>
                   ) : slashMenuOpen ? (
-                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>↑/↓ select · Enter open · Esc close</text>
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>{contextHintLine("slash")}</text>
                   ) : (
-                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>Enter send · Shift+Enter newline</text>
+                    <text wrapMode="none" truncate fg={cliTheme.text.muted}>{contextHintLine("chat")}</text>
                   )}
                 </box>
                 <box flexDirection="row" gap={1} alignItems="center" flexShrink={0}>

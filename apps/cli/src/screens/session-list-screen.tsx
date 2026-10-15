@@ -21,6 +21,7 @@ import { activeGlyphs } from "../ui/cli-theme-capabilities";
 import { cliTheme, getOverlayRowColors } from "../ui/cli-theme";
 import { isDownKey, isEnterKey, isEscapeKey, isUpKey } from "../utils/key-utils";
 import { formatDate, getErrorMessage, truncateInline } from "../utils/text-utils";
+import { contextHintLine } from "../commands/context-keys";
 
 function getSessionLabel(session: SessionSummary) {
   return session.title ?? session.latestUserPromptPreview ?? session.id;
@@ -397,7 +398,7 @@ export function SessionListScreen() {
       return `u refresh · l resume latest · ${BACK_SHORTCUT_LABEL} back`;
     }
 
-    return "Enter resume · r rename · f fork · / filter · e export · d delete · u refresh";
+    return contextHintLine("sessions");
   }, [sessions.length]);
 
   return (

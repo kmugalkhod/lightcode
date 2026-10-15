@@ -8,6 +8,7 @@ import type { ChatActionTone } from "../../commands/chat-slash-actions";
 import { borderStyleFor, cliTheme } from "../../ui/cli-theme";
 import { TabButton } from "../../ui/components/tab-button";
 import type { useIdePanels } from "./use-ide-panels";
+import { contextHintLine } from "../../commands/context-keys";
 
 /**
  * Explorer/Changes, the editor pane and the chat column, laid out as the
@@ -133,11 +134,7 @@ export function IdeWorkspace({
       <NarrowPanelDrawer
         explorer={explorerSidebar}
         editor={editorCenter}
-        hint={
-          panelTab === "files"
-            ? "↑/↓ · Enter open · e edit · Tab changes · Esc close"
-            : "↑/↓ · Enter diff · r refresh · Tab files · Esc close"
-        }
+        hint={contextHintLine(panelTab === "files" ? "explorer" : "changes")}
         onClose={() => {
           setPanelFocused(false);
           setChangesPanelOpen(false);
