@@ -37,8 +37,7 @@ describe("windows native directory picker prologue", () => {
       expect(markerIndex).toBeGreaterThan(0);
 
       const prologue = `${script.slice(0, markerIndex)}
-[Console]::Out.Write('prologue-ok:' + [bool]$dialog + ':' + [bool]$owner)
-$dialog.Dispose()
+[Console]::Out.Write('prologue-ok:' + [bool]$owner + ':' + $modernPicker)
 $owner.Dispose()
 `;
       const smokeArgv = [...argv];

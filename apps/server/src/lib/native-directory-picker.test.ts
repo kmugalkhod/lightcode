@@ -50,7 +50,12 @@ describe("native directory picker", () => {
       command[encodedIndex] ?? "",
       "base64",
     ).toString("utf16le");
+    // Explorer-style dialog first; the XP-era tree only as the fallback.
+    expect(decodedScript).toContain("[Lightcode.FolderPicker]::Pick($owner.Handle");
     expect(decodedScript).toContain("FolderBrowserDialog");
+    expect(decodedScript.indexOf("FolderPicker]::Pick")).toBeLessThan(
+      decodedScript.indexOf("New-Object System.Windows.Forms.FolderBrowserDialog"),
+    );
     expect(decodedScript).toContain("$owner.Activate()");
     expect(decodedScript).not.toContain("WindowState]::Minimized");
   });

@@ -25,3 +25,10 @@ export function shortcutLabel(
   }
   return `Ctrl+${keys.shift ? "Shift+" : ""}${keys.key}`;
 }
+
+/** Label for the button that opens the OS folder dialog instead. */
+export function systemFolderDialogLabel(platform = clientPlatform()): string {
+  if (isWindowsClient(platform)) return "Use Windows dialog";
+  if (isMacClient(platform)) return "Use Finder";
+  return "Use system dialog";
+}

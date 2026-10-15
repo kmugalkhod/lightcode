@@ -166,19 +166,100 @@ export const runNativePickerProcess: NativePickerProcessRunner = async (
 
 /**
  * Runs under Windows PowerShell 5.1 (.NET Framework). Its FolderBrowserDialog
- * lacks the modern-.NET members (auto-upgrade, description-as-title, initial
- * directory); setting one throws under ErrorActionPreference=Stop and the
- * dialog never opens. The windows smoke test runs everything above the
- * `lightcode:show-dialog` marker for real to catch that class of bug.
+ * is the cramped XP-era tree and lacks the modern-.NET members (auto-upgrade,
+ * description-as-title, initial directory); setting one throws under
+ * ErrorActionPreference=Stop and the dialog never opens. So the script
+ * compiles a small IFileOpenDialog wrapper for the Explorer-style folder
+ * dialog and keeps FolderBrowserDialog only as the fallback for hosts that
+ * refuse to compile it (constrained language mode, blocked csc.exe). The
+ * windows smoke test runs everything above the `lightcode:show-dialog` marker
+ * for real to catch that class of bug.
  */
 const windowsPickerScript = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = 'Choose a project folder'
-$dialog.ShowNewFolderButton = $true
+$modernPicker = $false
+try {
+  Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace Lightcode {
+  [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+  internal class FileOpenDialogCoClass {}
+
+  [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  internal interface IShellItem {
+    void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+    void GetParent(out IShellItem ppsi);
+    void GetDisplayName(uint sigdnName, out IntPtr ppszName);
+    void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+    void Compare(IShellItem psi, uint hint, out int piOrder);
+  }
+
+  // IFileOpenDialog; only the IModalWindow/IFileDialog prefix of the vtable
+  // is declared, in order.
+  [ComImport, Guid("d57c7288-d4ad-4768-be02-9d969532d960"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  internal interface IFileOpenDialog {
+    [PreserveSig] int Show(IntPtr parent);
+    void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+    void SetFileTypeIndex(uint iFileType);
+    void GetFileTypeIndex(out uint piFileType);
+    void Advise(IntPtr pfde, out uint pdwCookie);
+    void Unadvise(uint dwCookie);
+    void SetOptions(uint fos);
+    void GetOptions(out uint pfos);
+    void SetDefaultFolder(IShellItem psi);
+    void SetFolder(IShellItem psi);
+    void GetFolder(out IShellItem ppsi);
+    void GetCurrentSelection(out IShellItem ppsi);
+    void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+    void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+    void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+    void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+    void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+    void GetResult(out IShellItem ppsi);
+  }
+
+  public static class FolderPicker {
+    const uint PickFolders = 0x20, ForceFileSystem = 0x40, PathMustExist = 0x800, NoChangeDir = 0x8;
+    const uint FileSystemPath = 0x80058000;
+    const int Cancelled = unchecked((int)0x800704C7);
+
+    // Returns the chosen folder, or null when the user cancels.
+    public static string Pick(IntPtr owner, string title) {
+      var dialog = (IFileOpenDialog)new FileOpenDialogCoClass();
+      try {
+        uint options;
+        dialog.GetOptions(out options);
+        dialog.SetOptions(options | PickFolders | ForceFileSystem | PathMustExist | NoChangeDir);
+        dialog.SetTitle(title);
+        dialog.SetOkButtonLabel("Open project");
+        int hr = dialog.Show(owner);
+        if (hr == Cancelled) return null;
+        Marshal.ThrowExceptionForHR(hr);
+        IShellItem item;
+        dialog.GetResult(out item);
+        IntPtr name;
+        item.GetDisplayName(FileSystemPath, out name);
+        try {
+          return Marshal.PtrToStringUni(name);
+        } finally {
+          Marshal.FreeCoTaskMem(name);
+        }
+      } finally {
+        Marshal.ReleaseComObject(dialog);
+      }
+    }
+  }
+}
+'@
+  $modernPicker = $true
+} catch {
+  $modernPicker = $false
+}
 $owner = New-Object System.Windows.Forms.Form
 $owner.Text = 'Lightcode - choose a project folder'
 $owner.TopMost = $true
@@ -200,15 +281,35 @@ try {
   $owner.Hide()
   $owner.Show()
   $owner.Activate()
-  $result = $dialog.ShowDialog($owner)
-  if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-    $bytes = [Text.Encoding]::UTF8.GetBytes($dialog.SelectedPath)
+  $selected = $null
+  $shown = $false
+  if ($modernPicker) {
+    try {
+      $selected = [Lightcode.FolderPicker]::Pick($owner.Handle, 'Choose a project folder')
+      $shown = $true
+    } catch {
+      # The dialog failed to open; fall back to the classic picker below.
+    }
+  }
+  if (-not $shown) {
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dialog.Description = 'Choose a project folder'
+    $dialog.ShowNewFolderButton = $true
+    try {
+      if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+        $selected = $dialog.SelectedPath
+      }
+    } finally {
+      $dialog.Dispose()
+    }
+  }
+  if ($selected) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($selected)
     [Console]::Out.Write('selected:' + [Convert]::ToBase64String($bytes))
   } else {
     [Console]::Out.Write('cancelled')
   }
 } finally {
-  $dialog.Dispose()
   $owner.Dispose()
 }
 `;

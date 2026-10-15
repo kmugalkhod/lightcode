@@ -28,7 +28,7 @@ import {
   type Session,
   type Workspace,
 } from "./lib/api";
-import { isWindowsClient } from "./lib/client-platform";
+import { isWindowsClient, systemFolderDialogLabel } from "./lib/client-platform";
 import type { SlashCommandDefinition } from "./lib/slash-command-registry";
 import {
   executeWebCommand,
@@ -288,7 +288,7 @@ export function App() {
       : null;
   }
 
-  function openProjectBrowserFallback() {
+  function openProjectBrowser() {
     rememberProjectChooserTrigger();
     setPickerNotice(null);
     setIsBrowserOpen(true);
@@ -335,7 +335,7 @@ export function App() {
   function beginNewSession() {
     setIsRunning(false);
     if (!workspace) {
-      void openNativeProjectPicker();
+      openProjectBrowser();
       return;
     }
 
@@ -403,20 +403,13 @@ export function App() {
     }
   }
 
-  async function openNativeProjectPicker({
-    retryFromFallback = false,
-  }: {
-    retryFromFallback?: boolean;
-  } = {}) {
+  /** The OS folder dialog, opened from the project browser's footer. */
+  async function openNativeProjectPicker() {
     if (pickerRequestRef.current) return;
     const attemptTrigger =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    if (!retryFromFallback) {
-      rememberProjectChooserTrigger();
-      setPickerNotice(null);
-    }
     pickerRequestRef.current = true;
     const controller = new AbortController();
     pickerAbortRef.current = controller;
@@ -428,7 +421,7 @@ export function App() {
       if (!result) return;
       if (result.outcome === "selected") {
         selectWorkspace(result.workspace);
-      } else if (retryFromFallback) {
+      } else {
         window.requestAnimationFrame(() => {
           const fallback = document.querySelector<HTMLElement>(
             ".project-browser button:not(:disabled)",
@@ -439,13 +432,10 @@ export function App() {
               : fallback;
           focusTarget?.focus();
         });
-      } else {
-        restoreProjectBrowserFocus();
       }
     } catch (cause) {
       if (isAbortError(cause)) {
         // The user cancelled; aborting the request also closes the dialog.
-        if (!retryFromFallback) restoreProjectBrowserFocus();
         return;
       }
       if (isWebAuthorizationFailure(cause)) {
@@ -569,7 +559,7 @@ export function App() {
     workspace={workspace} session={activeSession} mode={mode} permissionMode={permissionMode}
     providerStatus={providerStatus} providerStatusError={providerStatusError}
     isRunning={isRunning} isCreating={isCreating} isPickingProject={isPickingProject}
-    onOpenMenu={openRail} onOpenProject={() => void openNativeProjectPicker()}
+    onOpenMenu={openRail} onOpenProject={openProjectBrowser}
     onModeChange={setMode} onPermissionModeChange={(nextMode) => void persistPermissionMode(nextMode)}
     onOpenModels={() => setIsModelPickerOpen(true)}
   />;
@@ -584,17 +574,17 @@ export function App() {
         isPickingProject={isPickingProject}
         error={sessionError}
         mobileOpen={isRailOpen}
-        backgroundInert={isBrowserOpen && isNarrowViewport}
+        backgroundInert={isBrowserOpen}
         onCloseMobile={closeRail}
         onNewSession={beginNewSession}
-        onOpenProject={() => void openNativeProjectPicker()}
+        onOpenProject={openProjectBrowser}
         onSelectSession={selectSession}
         onRetry={() => void loadSessions()}
       />
 
       <main
         className="workspace-main"
-        inert={isRailOpen || (isBrowserOpen && isNarrowViewport) ? true : undefined}
+        inert={isRailOpen || isBrowserOpen ? true : undefined}
       >
         {activeSession ? (
           <ChatSurface
@@ -632,7 +622,6 @@ export function App() {
             isCreating={isCreating}
             isPickingProject={isPickingProject}
             error={sessionError}
-            onBrowseCommonLocations={openProjectBrowserFallback}
             launchFolder={launchFolder}
             isOpeningLaunchFolder={isOpeningLaunchFolder}
             onOpenLaunchFolder={() => void openLaunchFolder()}
@@ -655,13 +644,15 @@ export function App() {
           nativePickerPending={isPickingProject}
           notice={pickerNotice}
           onClose={closeProjectBrowser}
-          onRetryNativePicker={() =>
-            void openNativeProjectPicker({ retryFromFallback: true })
-          }
           onSelect={selectWorkspace}
           recentProjects={recentProjects}
           onOpenRecent={(project) => void openRecentProject(project)}
-          modal={isNarrowViewport}
+          systemPickerLabel={systemFolderDialogLabel()}
+          onUseSystemPicker={() =>
+            void openNativeProjectPicker()
+          }
+          onCancelSystemPicker={cancelNativeProjectPicker}
+          compact={isNarrowViewport}
         />
       ) : null}
       {isPickingProject ? (
@@ -699,7 +690,6 @@ function NewSessionSurface({
   isCreating,
   isPickingProject,
   error,
-  onBrowseCommonLocations,
   launchFolder,
   isOpeningLaunchFolder,
   onOpenLaunchFolder,
@@ -723,7 +713,6 @@ function NewSessionSurface({
   isCreating: boolean;
   isPickingProject: boolean;
   error: string | null;
-  onBrowseCommonLocations: () => void;
   launchFolder: LaunchFolder | null;
   isOpeningLaunchFolder: boolean;
   onOpenLaunchFolder: () => void;
@@ -855,7 +844,7 @@ function NewSessionSurface({
             ))}
           </div>
         ) : null}
-        <div className="starter-project-context">{projectControls}<button className="browse-common-locations-button" type="button" onClick={onBrowseCommonLocations} disabled={isPickingProject}>Browse folders</button></div>
+        <div className="starter-project-context">{projectControls}</div>
         {error ? <div className="new-session-error" role="alert"><Icon name="warning" size={16} />{error}</div> : null}
         <div className="starter-suggestions" aria-label="Suggested prompts">
           {[{ icon: "search" as const, title: "Understand the code", text: "Explain this project's architecture and the main flows I should understand." }, { icon: "tool" as const, title: "Find an issue", text: "Review this project for its highest-risk bug. Explain what you find before making changes." }, { icon: "instructions" as const, title: "Plan a change", text: "Help me plan a change to this project. Start by understanding the code and asking what I want to build." }].map((suggestion) => (

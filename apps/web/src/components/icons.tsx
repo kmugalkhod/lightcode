@@ -9,9 +9,14 @@ export type IconName =
   | "chevron-down"
   | "chevron-right"
   | "code"
+  | "desktop"
+  | "document"
+  | "download"
+  | "drive"
   | "folder"
   | "folder-open"
   | "history"
+  | "home"
   | "instructions"
   | "lightcode"
   | "menu"
@@ -56,6 +61,19 @@ function IconPaths({ name }: { name: IconName }) {
       return <path d="m10 7 5 5-5 5" />;
     case "code":
       return <path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 5l-4 14" />;
+    case "desktop":
+      return <path d="M3.5 5h17v11h-17zM9 20h6M12 16v4" />;
+    case "document":
+      return <path d="M6 3.5h8l4 4v13H6zM14 3.5v4h4M9 12h6M9 16h6" />;
+    case "download":
+      return <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14" />;
+    case "drive":
+      return (
+        <>
+          <rect x="3.5" y="7" width="17" height="10" rx="2" />
+          <path d="M7 12h.01M11 12h6" />
+        </>
+      );
     case "folder":
       return <path d="M3.5 7.5h6l2-2h3l2 2h4v11h-17z" />;
     case "folder-open":
@@ -67,6 +85,8 @@ function IconPaths({ name }: { name: IconName }) {
           <path d="M4 4v4.5h4.5M12 8v4l3 2" />
         </>
       );
+    case "home":
+      return <path d="M4 11.5 12 5l8 6.5M6.5 9.5v10h11v-10M10 19.5v-5h4v5" />;
     case "instructions":
       return (
         <>
