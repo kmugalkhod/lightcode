@@ -467,8 +467,7 @@ function AppContent() {
         justifyContent="space-between"
         paddingLeft={2}
         paddingRight={2}
-        paddingTop={1}
-        paddingBottom={1}
+        flexShrink={0}
         backgroundColor={cliTheme.surfaces.panel}
       >
         <box flexDirection="row" gap={1} alignItems="center">
@@ -498,7 +497,7 @@ function AppContent() {
         </text>
       </box>
 
-      <box flexGrow={1} padding={1} position="relative">
+      <box flexGrow={1} paddingX={1} position="relative">
         <Routes>
           <Route path="/" element={<HomeScreen />} />
           <Route path="/home" element={<Navigate to="/" replace />} />
@@ -547,7 +546,7 @@ function AppContent() {
         justifyContent="center"
         gap={2}
         paddingX={2}
-        paddingY={1}
+        flexShrink={0}
         backgroundColor={cliTheme.surfaces.panel}
       >
         <text fg={ctrlCNotice ? cliTheme.semantic.warning : cliTheme.text.muted}>

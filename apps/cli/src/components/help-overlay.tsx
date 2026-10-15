@@ -3,7 +3,7 @@ import { typeRole, borderStyleFor, cliTheme } from "../ui/cli-theme";
 
 const screenHints: Array<{ context: string; hint: string }> = [
   { context: "Chat", hint: "Tab/Ctrl+T switch mode · @ attach files · /compact, /undo actions" },
-  { context: "Chat", hint: "Ctrl+O expand tool output · Ctrl+R show reasoning · Enter send · Ctrl+Enter newline" },
+  { context: "Chat", hint: "Ctrl+O expand tool output · Ctrl+R show reasoning · Enter send · Shift/Ctrl/Alt+Enter newline" },
   { context: "IDE", hint: "F2 IDE layout (Explorer · Editor · Chat) · Tab focus Explorer · →/Enter open file · e edit, Ctrl+S save · [ ] tabs" },
   { context: "Copy", hint: "Ctrl+Y copy mode (↑/↓ pick, Enter copy, c code) · /copy [last|code|all]" },
   { context: "Sessions", hint: "Enter resume · r rename · f fork · / filter · e export (.md) · d delete" },
@@ -14,7 +14,14 @@ function formatSequence(binding: KeyBinding): string {
 }
 
 export function HelpOverlay() {
-  const bindings = Object.values(keymap.bindings);
+  // Aliases (e.g. Ctrl+_ for Ctrl+/) share a label; list each shortcut once.
+  const seen = new Set<string>();
+  const bindings = Object.values(keymap.bindings).filter((binding) => {
+    const key = `${formatSequence(binding)}|${binding.label}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
   return (
     <box

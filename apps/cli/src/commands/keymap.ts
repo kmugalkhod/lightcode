@@ -24,6 +24,8 @@ export const keymap: KeymapConfig = {
     "f1": { sequence: "f1", action: "system:help", label: "Help", category: "system" },
     "f2": { sequence: "f2", action: "system:toggleChangesPanel", label: "Toggle Changes Panel", category: "action" },
     "ctrl+/": { sequence: "ctrl+/", action: "system:help", label: "Help", category: "system" },
+    // Many terminals (incl. Windows conhost) send Ctrl+/ as 0x1F, i.e. Ctrl+_.
+    "ctrl+_": { sequence: "ctrl+_", action: "system:help", label: "Help", category: "system", shortcutLabel: "Ctrl+/" },
     "ctrl+o": { sequence: "ctrl+o", action: "system:toggleToolOutput", label: "Expand Tool Output", category: "action" },
     "ctrl+r": { sequence: "ctrl+r", action: "system:toggleReasoning", label: "Show Reasoning", category: "action" },
   },

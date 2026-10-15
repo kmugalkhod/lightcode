@@ -41,6 +41,8 @@ function pasteDebug(message: string): void {
 interface TextareaKeyEvent {
   name: string;
   ctrl?: boolean;
+  shift?: boolean;
+  meta?: boolean;
   preventDefault: () => void;
 }
 
@@ -67,14 +69,24 @@ function getTrailingMentionQuery(text: string): string | null {
   return match ? match[1] : null;
 }
 
+// Some Windows terminals (conhost, older Windows Terminal) send Ctrl+Enter as
+// a plain Enter, so Shift+Enter and Alt+Enter insert a newline too.
+const newlineModifiers = [{ ctrl: true }, { shift: true }, { meta: true }] as const;
+
 const textareaKeyBindings: Array<{
   name: string;
   ctrl?: boolean;
+  shift?: boolean;
+  meta?: boolean;
   action: "newline" | "submit";
 }> = [
-  { name: "return", ctrl: true, action: "newline" },
-  { name: "enter", ctrl: true, action: "newline" },
-  { name: "linefeed", ctrl: true, action: "newline" },
+  ...(["return", "enter", "linefeed"] as const).flatMap((name) =>
+    newlineModifiers.map((modifier) => ({
+      name,
+      ...modifier,
+      action: "newline" as const,
+    })),
+  ),
   { name: "return", action: "submit" },
   { name: "enter", action: "submit" },
 ];
@@ -225,7 +237,7 @@ export function ChatTextArea({
         event.name === "enter" ||
         event.name === "linefeed";
 
-      if (isEnterLike && event.ctrl) {
+      if (isEnterLike && (event.ctrl || event.shift || event.meta)) {
         event.preventDefault();
         lastManualNewlineAt.current = Date.now();
         textareaRef.current?.newLine();

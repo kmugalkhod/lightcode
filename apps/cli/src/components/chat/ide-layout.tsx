@@ -3,10 +3,10 @@ import type { PermissionMode } from "@lightcode/ai";
 import { borderStyleFor, cliTheme, typeRole } from "../../ui/cli-theme";
 import { terminalCapabilities } from "../../ui/cli-theme-capabilities";
 import { Badge } from "../../ui/components/badge";
-import { TabButton } from "./file-explorer-panel";
+import { TabButton } from "../../ui/components/tab-button";
 
 const UNICODE = terminalCapabilities.unicode;
-const BRANCH_GLYPH = UNICODE ? "⎇" : "git";
+export const BRANCH_GLYPH = UNICODE ? "⎇" : "git";
 const AHEAD_GLYPH = UNICODE ? "↑" : "+";
 const BEHIND_GLYPH = UNICODE ? "↓" : "-";
 
@@ -85,6 +85,51 @@ function StatusBar({
         <text {...typeRole("caption")}>
           {lineCount > 0 ? `${lineCount} ln · UTF-8` : "UTF-8"}
         </text>
+      </box>
+    </box>
+  );
+}
+
+/**
+ * F2 in a terminal too narrow for three panes: Explorer/Changes on top and the
+ * file viewer below, over the chat. Keys work as in the wide layout; Esc or F2
+ * closes it.
+ */
+export function NarrowPanelDrawer({
+  explorer,
+  editor,
+  hint,
+  onClose,
+}: {
+  explorer: ReactNode;
+  editor: ReactNode;
+  hint: string;
+  onClose: () => void;
+}) {
+  return (
+    <box width="100%" height="100%" flexDirection="column">
+      <box
+        flexDirection="row"
+        alignItems="center"
+        flexShrink={0}
+        gap={1}
+        paddingX={1}
+        borderStyle={borderStyleFor.chrome}
+        border={["bottom"]}
+        borderColor={cliTheme.borders.default}
+        backgroundColor={cliTheme.surfaces.panel}
+      >
+        <TabButton label="Chat" active={false} onPress={onClose} />
+        <TabButton label="Files" active onPress={() => {}} />
+        <box flexGrow={1} flexShrink={1} height={1} overflow="hidden">
+          <text wrapMode="none" truncate {...typeRole("caption")}>{hint}</text>
+        </box>
+      </box>
+      <box height="40%" minHeight={6} flexShrink={0} flexDirection="column">
+        {explorer}
+      </box>
+      <box flexGrow={1} flexDirection="column">
+        {editor}
       </box>
     </box>
   );
