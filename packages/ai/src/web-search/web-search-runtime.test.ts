@@ -116,6 +116,10 @@ describe("web_search runtime", () => {
   });
 
   test("returns a distinct timeout error", async () => {
+    // AbortSignal.timeout uses an unref'd timer; with nothing else keeping the
+    // loop alive, Bun on Windows never fires it. A live server always has the
+    // listener, so only the test needs this keep-alive.
+    const keepAlive = setInterval(() => {}, 50);
     const output = await executeWebSearch(
       { query: "current news" },
       {
@@ -134,6 +138,8 @@ describe("web_search runtime", () => {
           }),
       },
     );
+
+    clearInterval(keepAlive);
 
     expect(output.ok).toBe(false);
     expect(output.error?.code).toBe("timeout");

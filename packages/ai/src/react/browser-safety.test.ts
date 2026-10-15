@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 describe("@lightcode/ai/react browser entry", () => {
   test("bundles without importing Node execution runtimes", async () => {
     const result = await Bun.build({
-      entrypoints: [new URL("./index.ts", import.meta.url).pathname],
+      // URL.pathname is "/D:/..." on Windows; fileURLToPath gives a real path.
+      entrypoints: [fileURLToPath(new URL("./index.ts", import.meta.url))],
       target: "browser",
       external: ["@ai-sdk/react", "@lightcode/shared", "ai", "react", "zod"],
     });

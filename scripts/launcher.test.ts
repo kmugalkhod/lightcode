@@ -6,7 +6,8 @@ import { runInNewContext } from "node:vm";
 // Exercise the generated Node launcher on every OS without launching Bun or
 // touching the host certificate stores. Real TLS verification has separate tests.
 const buildScript = readFileSync(new URL("./build-dist.ts", import.meta.url), "utf8");
-const template = /const launcherSource = (`[\s\S]*?`);\n\nconst launcherPath/.exec(buildScript)?.[1];
+// Windows checkouts with core.autocrlf use CRLF line endings.
+const template = /const launcherSource = (`[\s\S]*?`);\r?\n\r?\nconst launcherPath/.exec(buildScript)?.[1];
 if (!template) throw new Error("Cannot find launcher template");
 const launcher: string = runInNewContext(template);
 

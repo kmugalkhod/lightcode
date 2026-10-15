@@ -8,6 +8,7 @@ import {
   materializeProviderAttachments,
   storeInlineMessageBlobs,
 } from "./attachment-store";
+import { canCreateFileSymlinks } from "@lightcode/shared/testing";
 
 let tempHome: string;
 let workspace: string;
@@ -95,25 +96,28 @@ describe("attachment store", () => {
     });
     expect(JSON.stringify(materialized)).toContain(encoded);
 
-    const outsidePath = path.join(tempHome, "outside.txt");
-    await writeFile(outsidePath, "secret");
-    await symlink(outsidePath, path.join(workspace, "escape.txt"));
-    const escaped = await materializeProviderAttachments({
-      messages: [
-        {
-          id: "u2",
-          role: "user",
-          parts: [
-            {
-              type: "data-file-ref",
-              data: { path: "escape.txt", contentHash: hash("secret") },
-            },
-          ],
-        },
-      ],
-      cwd: workspace,
-    });
-    expect(JSON.stringify(escaped)).toContain("Attached file is unavailable");
-    expect(JSON.stringify(escaped)).not.toContain("secret");
+    // Windows needs Developer Mode or elevation to create the escape link.
+    if (canCreateFileSymlinks) {
+      const outsidePath = path.join(tempHome, "outside.txt");
+      await writeFile(outsidePath, "secret");
+      await symlink(outsidePath, path.join(workspace, "escape.txt"));
+      const escaped = await materializeProviderAttachments({
+        messages: [
+          {
+            id: "u2",
+            role: "user",
+            parts: [
+              {
+                type: "data-file-ref",
+                data: { path: "escape.txt", contentHash: hash("secret") },
+              },
+            ],
+          },
+        ],
+        cwd: workspace,
+      });
+      expect(JSON.stringify(escaped)).toContain("Attached file is unavailable");
+      expect(JSON.stringify(escaped)).not.toContain("secret");
+    }
   });
 });

@@ -13,6 +13,7 @@ import {
   loadSkill as readSkill,
   clearSkillsCache,
 } from "./runtime";
+import { canCreateFileSymlinks } from "@lightcode/shared/testing";
 
 const listSkills = ({ cwd }: { cwd: string }) =>
   discoverSkills({ cwd, home: path.join(cwd, "home"), env: {} });
@@ -61,7 +62,8 @@ describe("skills resolver", () => {
     expect(skills[0]?.description).toBe("First line second line");
   });
 
-  test("ignores broken links, loops and malformed skills without losing valid symlinked skills", () => {
+  // Windows needs Developer Mode or elevation to create these links.
+  test.skipIf(!canCreateFileSymlinks)("ignores broken links, loops and malformed skills without losing valid symlinked skills", () => {
     const cwd = createTempWorkspace();
     const root = path.join(cwd, ".agents/skills");
     const installed = path.join(cwd, "installed/demo");
@@ -97,7 +99,8 @@ describe("skills resolver", () => {
     ).toEqual(["custom"]);
   });
 
-  test("loads supporting resources while rejecting traversal and escaping symlinks", () => {
+  // Windows needs Developer Mode or elevation to create these links.
+  test.skipIf(!canCreateFileSymlinks)("loads supporting resources while rejecting traversal and escaping symlinks", () => {
     const cwd = createTempWorkspace();
     const root = path.join(cwd, ".lightcode/skills/demo");
     mkdirSync(path.join(root, "references"), { recursive: true });

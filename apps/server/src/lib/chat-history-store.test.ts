@@ -29,7 +29,14 @@ afterEach(async () => {
   } else {
     process.env.LIGHTCODE_HOME = originalLightcodeHome;
   }
-  await rm(tempHome, { recursive: true, force: true });
+  await rm(tempHome, { recursive: true, force: true }).catch((error) => {
+    // The libSQL client keeps lightcode.db open for the process lifetime and
+    // Windows cannot delete an open file; leave that temp folder to the OS.
+    if (process.platform === "win32" && Reflect.get(error, "code") === "EBUSY") {
+      return;
+    }
+    throw error;
+  });
 });
 
 describe("session history", () => {

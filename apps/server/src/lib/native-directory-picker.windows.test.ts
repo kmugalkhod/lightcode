@@ -46,7 +46,18 @@ $owner.Dispose()
         "base64",
       );
 
-      const result = await runNativePickerProcess(smokeArgv);
+      const result = await runNativePickerProcess(smokeArgv).catch((error) => {
+        // EPERM here means Windows refused to start PowerShell at all (seen
+        // intermittently with Defender scanning repeated launches). That says
+        // nothing about the script, so name the cause instead of a stack.
+        if (Reflect.get(error, "code") === "EPERM") {
+          throw new Error(
+            "Windows refused to start powershell.exe (EPERM). Security software may be blocking it; " +
+              "retry, or set LIGHTCODE_SKIP_PICKER_SMOKE=1 on this machine.",
+          );
+        }
+        throw error;
+      });
       expect({ ...result, stderr: result.stderr.trim() }).toEqual({
         exitCode: 0,
         stdout: "prologue-ok:True:True",

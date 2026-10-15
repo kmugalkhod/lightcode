@@ -15,6 +15,7 @@ import {
   loadWebAuthStateFromEnvironment,
   loadWebAuthTokenFromHandoffFile,
 } from "./web-auth";
+import { canCreateFileSymlinks } from "@lightcode/shared/testing";
 
 const expectedOrigin = "http://127.0.0.1:4983";
 const token = Buffer.alloc(32, 7).toString("base64url");
@@ -366,14 +367,17 @@ describe("web authentication handoff", () => {
     },
   );
 
-  test("rejects a symbolic-link handoff", async () => {
-    const target = await makeHandoff();
-    const linkedPath = path.join(path.dirname(target), "linked.json");
-    await symlink(target, linkedPath);
-    expect(() => loadWebAuthTokenFromHandoffFile(linkedPath)).toThrow(
-      /regular file/,
-    );
-  });
+  test.skipIf(!canCreateFileSymlinks)(
+    "rejects a symbolic-link handoff",
+    async () => {
+      const target = await makeHandoff();
+      const linkedPath = path.join(path.dirname(target), "linked.json");
+      await symlink(target, linkedPath);
+      expect(() => loadWebAuthTokenFromHandoffFile(linkedPath)).toThrow(
+        /regular file/,
+      );
+    },
+  );
 
   test("rejects stale, malformed, and oversized handoffs", async () => {
     const stale = await makeHandoff(0o600, {
