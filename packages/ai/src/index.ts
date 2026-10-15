@@ -33,3 +33,4 @@ export * from "./todo-write/schema";
 export * from "./tool-input";
 export * from "./web-search/config";
 export * from "./workspace-browser";
+export * from "./session-changes-schemas";

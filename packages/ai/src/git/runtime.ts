@@ -184,6 +184,45 @@ export async function executeGitStatus(
   });
 }
 
+export interface GitLineCounts {
+  /** Null for binary files. */
+  added: number | null;
+  removed: number | null;
+}
+
+/**
+ * Added/removed line counts per workspace-relative path, unstaged and staged
+ * combined. Renames are reported under their new path. Empty when git fails.
+ */
+export async function executeGitNumstat(
+  workspaceContext: WorkspaceContext = getDefaultWorkspaceContext(),
+): Promise<Map<string, GitLineCounts>> {
+  const counts = new Map<string, GitLineCounts>();
+  for (const staged of [false, true]) {
+    const args = ["diff", "--no-ext-diff", "--no-renames", "--numstat"];
+    if (staged) args.push("--cached");
+    args.push("--", ".");
+    const result = await runGit(args, workspaceContext);
+    if (!result.ok) continue;
+    for (const line of result.stdout.split("\n")) {
+      const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line.trimEnd());
+      if (!match) continue;
+      const [, addedText, removedText, path] = match;
+      const binary = addedText === "-" || removedText === "-";
+      const previous = counts.get(path);
+      counts.set(path, {
+        added: binary || previous?.added === null
+          ? null
+          : (previous?.added ?? 0) + Number(addedText),
+        removed: binary || previous?.removed === null
+          ? null
+          : (previous?.removed ?? 0) + Number(removedText),
+      });
+    }
+  }
+  return counts;
+}
+
 export async function executeGitDiff(
   input: GitDiffInput,
   workspaceContext: WorkspaceContext = getDefaultWorkspaceContext(),

@@ -8,6 +8,7 @@ import { extensionRoutes } from "./routes/extension-routes";
 import { rootRoutes } from "./routes/root-routes";
 import { webRoutes } from "./routes/web-routes";
 import { workspaceRoutes } from "./routes/workspace-routes";
+import { sessionChangesRoutes } from "./routes/session-changes-routes";
 
 const maxRequestBodyBytes = 32 * 1024 * 1024;
 
@@ -28,4 +29,5 @@ export const app = new Hono()
   .route("/diagnostics", diagnosticsRoutes)
   .route("/extensions", extensionRoutes)
   .route("/workspaces", workspaceRoutes)
-  .route("/sessions", sessionRoutes);
+  .route("/sessions", sessionRoutes)
+  .route("/sessions", sessionChangesRoutes);

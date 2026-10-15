@@ -354,6 +354,30 @@ export function isAbortError(cause: unknown): boolean {
   );
 }
 
+const changedFileSchema = z.object({
+  fileId: z.string().regex(/^[A-Za-z0-9_-]{22}$/),
+  path: z.string().min(1).max(4096),
+  originalPath: z.string().max(4096).nullable(),
+  changeKind: z.enum(["created", "modified", "deleted", "renamed", "untracked"]),
+  added: z.number().int().nonnegative().nullable(),
+  removed: z.number().int().nonnegative().nullable(),
+});
+export type ChangedFile = z.infer<typeof changedFileSchema>;
+const sessionChangesSchema = z.object({
+  isRepo: z.boolean(),
+  branch: z.string().nullable(),
+  files: z.array(changedFileSchema),
+  truncated: z.boolean(),
+});
+export type SessionChanges = z.infer<typeof sessionChangesSchema>;
+const changeDiffSchema = z.object({
+  path: z.string().min(1),
+  diff: z.string(),
+  truncated: z.boolean(),
+  binary: z.boolean(),
+});
+export type ChangeDiff = z.infer<typeof changeDiffSchema>;
+
 const sessionReferenceSchema = z.object({ id: z.string().min(1) });
 export type SessionReference = z.infer<typeof sessionReferenceSchema>;
 
@@ -659,6 +683,20 @@ export function createLightcodeApi(fetcher: AuthenticatedFetch) {
 
     async getProviderStatus(): Promise<ProviderStatus> {
       return providerStatusSchema.parse(await request("/config/status"));
+    },
+
+    async listChanges(sessionId: string): Promise<SessionChanges> {
+      return sessionChangesSchema.parse(
+        await request(`/sessions/${encodeURIComponent(sessionId)}/changes`),
+      );
+    },
+
+    async getChangeDiff(sessionId: string, fileId: string): Promise<ChangeDiff> {
+      return changeDiffSchema.parse(
+        await request(
+          `/sessions/${encodeURIComponent(sessionId)}/changes/${encodeURIComponent(fileId)}/diff`,
+        ),
+      );
     },
 
     async getContext(sessionId: string): Promise<ContextReport> {

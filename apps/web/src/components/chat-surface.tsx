@@ -1,6 +1,6 @@
 import type { PendingToolApproval, PendingUserPrompt } from "@lightcode/ai/react";
 import { useCodingSessionChat } from "@lightcode/ai/react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UIMessage } from "ai";
 import type {
   CodingMode,
@@ -18,7 +18,19 @@ import {
 } from "../lib/web-command-executor";
 import { ChatMessage } from "./chat-message";
 import { CommandComposer } from "./command-composer";
+import { ChangesPanel } from "./changes-panel";
 import { ContextMeter } from "./context-meter";
+import { shortcutLabel } from "../lib/client-platform";
+
+const changesOpenStorageKey = "lightcode.web.changes-open";
+
+function readChangesOpen(): boolean {
+  try {
+    return window.localStorage.getItem(changesOpenStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
 import { Icon } from "./icons";
 import { displaySessionTitle } from "../lib/api";
 
@@ -93,6 +105,46 @@ export function ChatSurface({
   const [commandBusy, setCommandBusy] = useState<string | null>(null);
   const [following, setFollowing] = useState(true);
   const [contextReport, setContextReport] = useState<ContextReport | null>(null);
+  const [changesOpen, setChangesOpen] = useState(readChangesOpen);
+  const [changeCount, setChangeCount] = useState<number | null>(null);
+
+  const toggleChanges = useCallback(() => {
+    setChangesOpen((open) => {
+      try {
+        window.localStorage.setItem(changesOpenStorageKey, open ? "0" : "1");
+      } catch {
+        // The panel still toggles for this page view.
+      }
+      return !open;
+    });
+  }, []);
+
+  // Ctrl/Cmd+B toggles the panel from anywhere in the conversation.
+  useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        toggleChanges();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [toggleChanges]);
+
+  // Re-read changes after every finished tool call and at the end of a run.
+  const finishedToolCalls = useMemo(
+    () =>
+      chat.messages.reduce(
+        (count, message) =>
+          count +
+          message.parts.filter(
+            (part) => "toolCallId" in part && part.state === "output-available",
+          ).length,
+        0,
+      ),
+    [chat.messages],
+  );
+  const changesRefreshKey = finishedToolCalls * 2 + (chat.isStreaming ? 1 : 0);
 
   // Refresh the context meter on open and after each run (compaction happens
   // server-side while streaming).
@@ -211,7 +263,19 @@ export function ChatSurface({
   }
 
   return (
+    <div className="chat-with-changes">
     <section className="chat-surface" aria-label="Project conversation">
+      <button
+        className={changesOpen ? "changes-toggle active" : "changes-toggle"}
+        type="button"
+        onClick={toggleChanges}
+        aria-pressed={changesOpen}
+        title={`Changes (${shortcutLabel({ key: "B" })})`}
+      >
+        <Icon name="code" size={14} />
+        Changes
+        {changeCount ? <span className="changes-count">{changeCount}</span> : null}
+      </button>
       <h1 className="sr-only">{displaySessionTitle(session)}</h1>
       <div className="conversation-scroll" ref={scrollRef} onScroll={handleScroll}>
         <div className="conversation-column">
@@ -294,6 +358,16 @@ export function ChatSurface({
         </div>
       </div>
     </section>
+    {changesOpen ? (
+      <ChangesPanel
+        api={api}
+        sessionId={session.id}
+        refreshKey={changesRefreshKey}
+        onClose={toggleChanges}
+        onCountChange={setChangeCount}
+      />
+    ) : null}
+    </div>
   );
 }
 
