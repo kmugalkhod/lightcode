@@ -29,7 +29,8 @@ console.log(`Releasing lightcode v${lightcodeVersion} (${publish ? "publish" : "
 
 run(["bun", "audit"]);
 run(["bun", "run", "typecheck"]);
-run(["bun", "test"]);
+// Process-spawning tests (git, bash) can exceed the 5s default on a busy Windows machine.
+run(["bun", "test", "--timeout", "30000"]);
 run(["bun", "scripts/build-dist.ts"]);
 
 if (publish) {
