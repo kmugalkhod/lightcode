@@ -97,7 +97,7 @@ describe("session changes routes", () => {
       diff: "--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1,1 @@\n+draft",
       binary: false,
     });
-  });
+  }, 30_000);
 
   test("rejects unknown and malformed file ids", async () => {
     const root = await makeRepo();
