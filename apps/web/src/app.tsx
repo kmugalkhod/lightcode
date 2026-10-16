@@ -773,11 +773,8 @@ function NewSessionSurface({
     <section className="new-session-surface">
       <div className="new-session-inner">
         <div className="new-session-title">
-          <span className="new-session-mark"><Icon name="lightcode" size={25} /></span>
-          <div>
-            <h1>{workspace ? "What would you like to build?" : "Your next idea starts here."}</h1>
-            <p className="starter-description">{workspace ? `Explore, plan, and make progress in ${workspace.name}.` : "Open a local project. Give Lightcode a task. Keep the work moving."}</p>
-          </div>
+          <h1>{workspace ? "What would you like to build?" : "Your next idea starts here."}</h1>
+          <p className="starter-description">{workspace ? `Explore, plan, and make progress in ${workspace.name}.` : "Open a local project. Give Lightcode a task. Keep the work moving."}</p>
         </div>
 
         <CommandComposer
