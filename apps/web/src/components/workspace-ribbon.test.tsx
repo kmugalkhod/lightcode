@@ -6,14 +6,13 @@ function render(placement: "project" | "agent", mode: "plan" | "build" = "plan",
   return renderToStaticMarkup(<WorkspaceRibbon placement={placement} workspace={null} session={null}
     mode={mode} permissionMode="workspace-write" providerStatus={null} providerStatusError={false}
     isRunning={isRunning} isCreating={false} isPickingProject={false}
-    onOpenMenu={() => {}} onOpenProject={() => {}} onModeChange={() => {}}
+    onOpenProject={() => {}} onModeChange={() => {}}
     onPermissionModeChange={() => {}} onOpenModels={() => {}} />);
 }
 
 test("project context is a compact folder action without a header or path subtitle", () => {
   const html = render("project");
   expect(html).toContain("Open project folder");
-  expect(html).toContain("Open sessions");
   expect(html).not.toContain("<header");
   expect(html).not.toContain("<small");
   expect(html).not.toContain('aria-label="Agent mode"');

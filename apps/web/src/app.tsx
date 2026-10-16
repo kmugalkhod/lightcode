@@ -8,6 +8,7 @@ import {
 } from "./components/project-browser";
 import { PickerPendingBanner } from "./components/picker-pending-banner";
 import { SessionRail } from "./components/session-rail";
+import { TopBar } from "./components/top-bar";
 import { WorkspaceRibbon } from "./components/workspace-ribbon";
 import { ModelPicker } from "./components/model-picker";
 import {
@@ -18,8 +19,6 @@ import {
   loadStoredWorkspace,
   readLaunchToken,
   storeWorkspace,
-  displaySessionTitle,
-  formatRelativeTime,
   type CodingMode,
   type LaunchFolder,
   type PermissionMode,
@@ -559,7 +558,7 @@ export function App() {
     workspace={workspace} session={activeSession} mode={mode} permissionMode={permissionMode}
     providerStatus={providerStatus} providerStatusError={providerStatusError}
     isRunning={isRunning} isCreating={isCreating} isPickingProject={isPickingProject}
-    onOpenMenu={openRail} onOpenProject={openProjectBrowser}
+    onOpenProject={openProjectBrowser}
     onModeChange={setMode} onPermissionModeChange={(nextMode) => void persistPermissionMode(nextMode)}
     onOpenModels={() => setIsModelPickerOpen(true)}
   />;
@@ -572,6 +571,7 @@ export function App() {
         workspace={workspace}
         isLoading={isLoadingSessions}
         isPickingProject={isPickingProject}
+        isRunning={isRunning}
         error={sessionError}
         mobileOpen={isRailOpen}
         backgroundInert={isBrowserOpen}
@@ -771,10 +771,12 @@ function NewSessionSurface({
 
   return (
     <section className="new-session-surface">
+      <TopBar onOpenMenu={onOpenSessions}>{projectControls}</TopBar>
+      <div className="new-session-body">
       <div className="new-session-inner">
         <div className="new-session-title">
-          <h1>{workspace ? "What would you like to build?" : "Your next idea starts here."}</h1>
-          <p className="starter-description">{workspace ? `Explore, plan, and make progress in ${workspace.name}.` : "Open a local project. Give Lightcode a task. Keep the work moving."}</p>
+          <h1>{workspace ? <>What should we build in <span className="title-project">{workspace.name}</span>?</> : "What should we build?"}</h1>
+          {workspace ? null : <p className="starter-description">Open a local project to get started.</p>}
         </div>
 
         <CommandComposer
@@ -786,7 +788,7 @@ function NewSessionSurface({
           hasSession={false}
           canSendMessage={Boolean(workspace) && !isCreating}
           autoFocus={Boolean(workspace)}
-          placeholder={workspace ? "What are you building? Type / for commands" : "Type / for commands, or choose a project first"}
+          placeholder={workspace ? "Ask a question or describe a change" : "Choose a project first, or type / for commands"}
           commandResult={commandResult}
           commandBusy={commandBusy}
           onDismissResult={() => setCommandResult(null)}
@@ -801,61 +803,55 @@ function NewSessionSurface({
             tone: "error",
           })}
         />
-        {!workspace && launchFolder?.available ? (
-          <div className="launch-folder-offer">
-            <span>
-              <small>Started from</small>
-              <strong title={launchFolder.pathLabel}>{launchFolder.pathLabel}</strong>
-              {launchFolder.broad ? (
-                <small className="launch-folder-broad">
-                  This folder contains your home directory, so the agent would get broad access.
-                </small>
-              ) : null}
-            </span>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={onOpenLaunchFolder}
-              disabled={isOpeningLaunchFolder || isPickingProject}
-              aria-busy={isOpeningLaunchFolder}
-            >
-              {isOpeningLaunchFolder ? <span className="inline-spinner" aria-hidden="true" /> : <Icon name="folder-open" size={15} />}
-              {launchFolder.broad ? `Open ${launchFolder.name} (broad access)` : `Open ${launchFolder.name}`}
-            </button>
+        {error ? <div className="new-session-error" role="alert"><Icon name="warning" size={16} />{error}</div> : null}
+        {workspace ? (
+          <div className="starter-suggestions" aria-label="Suggested prompts">
+            {[{ icon: "search" as const, title: "Explain this codebase", text: "Explain this project's architecture and the main flows I should understand." }, { icon: "warning" as const, title: "Find a bug", text: "Review this project for its highest-risk bug. Explain what you find before making changes." }, { icon: "instructions" as const, title: "Plan a change", text: "Help me plan a change to this project. Start by understanding the code and asking what I want to build." }].map((suggestion) => (
+              <button key={suggestion.title} type="button" disabled={isCreating} onClick={() => setSuggestedDraft({ text: suggestion.text, id: Date.now() })}>
+                <Icon name={suggestion.icon} size={14} />{suggestion.title}
+              </button>
+            ))}
           </div>
         ) : null}
-        {!workspace && starterRecentProjects.length > 0 ? (
-          <div className="starter-recent-projects" aria-label="Recent projects">
-            <small>Recent</small>
+        {!workspace && (launchFolder?.available || starterRecentProjects.length > 0) ? (
+          <div className="starter-projects" aria-label="Projects">
+            {launchFolder?.available ? (
+              <button
+                className="starter-project"
+                type="button"
+                title={launchFolder.pathLabel}
+                onClick={onOpenLaunchFolder}
+                disabled={isOpeningLaunchFolder || isPickingProject}
+                aria-busy={isOpeningLaunchFolder}
+              >
+                {isOpeningLaunchFolder ? <span className="inline-spinner" aria-hidden="true" /> : <Icon name="folder-open" size={15} />}
+                <span className="starter-project-copy">
+                  <strong>{launchFolder.name}</strong>
+                  <small>{launchFolder.broad ? "Started here · contains your home folder, so access would be broad" : "Started here"}</small>
+                </span>
+                <span className="starter-project-action">Open</span>
+              </button>
+            ) : null}
             {starterRecentProjects.map((project) => (
               <button
+                className="starter-project"
                 key={project.key}
                 type="button"
                 title={project.pathLabel}
                 onClick={() => onOpenRecent(project)}
                 disabled={isOpeningLaunchFolder || isPickingProject}
               >
-                <Icon name="folder" size={14} />
-                {project.name}
+                <Icon name="folder" size={15} />
+                <span className="starter-project-copy">
+                  <strong>{project.name}</strong>
+                  <small>{project.pathLabel}</small>
+                </span>
+                <span className="starter-project-action">Open</span>
               </button>
             ))}
           </div>
         ) : null}
-        <div className="starter-project-context">{projectControls}</div>
-        {error ? <div className="new-session-error" role="alert"><Icon name="warning" size={16} />{error}</div> : null}
-        <div className="starter-suggestions" aria-label="Suggested prompts">
-          {[{ icon: "search" as const, title: "Understand the code", text: "Explain this project's architecture and the main flows I should understand." }, { icon: "tool" as const, title: "Find an issue", text: "Review this project for its highest-risk bug. Explain what you find before making changes." }, { icon: "instructions" as const, title: "Plan a change", text: "Help me plan a change to this project. Start by understanding the code and asking what I want to build." }].map((suggestion) => (
-            <button key={suggestion.title} type="button" disabled={!workspace || isCreating} onClick={() => setSuggestedDraft({ text: suggestion.text, id: Date.now() })}>
-              <Icon name={suggestion.icon} size={16} />{suggestion.title}<Icon name="chevron-right" size={14} />
-            </button>
-          ))}
-        </div>
-        {sessions.length > 0 ? <section className="recent-sessions" aria-label="Recent sessions">
-          <div className="recent-sessions-heading"><h2>Pick up where you left off</h2><button type="button" onClick={onOpenSessions}>All sessions<Icon name="chevron-right" size={14} /></button></div>
-          {sessions.slice(0, 3).map((session) => <button className="recent-session" type="button" key={session.id} onClick={() => onSelectSession(session)}>
-            <Icon name="message" size={17} /><span><strong>{displaySessionTitle(session)}</strong><small>{session.pathLabel ?? session.cwd ?? "Local project"}</small></span><time>{formatRelativeTime(session.updatedAt)}</time><Icon name="chevron-right" size={15} />
-          </button>)}
-        </section> : <p className="starter-footnote"><Icon name="shield" size={14} />Start in Plan mode to explore before making changes.</p>}
+      </div>
       </div>
     </section>
   );

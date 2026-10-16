@@ -1,13 +1,18 @@
 import { getToolName, isToolUIPart, type UIMessage } from "ai";
 import { memo, useState } from "react";
 import { MessageMarkdown } from "./message-markdown";
-import { Icon } from "./icons";
+import { Icon, type IconName } from "./icons";
 import { ToolViewBody } from "./tool-parts/tool-view-body";
 import { toolView, toolViewBadge } from "./tool-parts/tool-view";
 
 interface ChatMessageProps {
   message: UIMessage;
 }
+
+type MessagePart = UIMessage["parts"][number];
+type ToolUIPart = Extract<MessagePart, { toolCallId: string }>;
+type ReasoningUIPart = Extract<MessagePart, { type: "reasoning" }>;
+type ActivityPart = ToolUIPart | ReasoningUIPart;
 
 function safeExternalUrl(value: string): string | null {
   try {
@@ -28,30 +33,112 @@ function stringifyPreview(value: unknown, limit = 1_600) {
   }
 }
 
-function toolTarget(input: unknown): string | null {
+function inputString(input: unknown, keys: string[]): string | null {
   if (!input || typeof input !== "object") return null;
-  for (const key of ["path", "command", "query", "pattern", "url", "description"]) {
+  for (const key of keys) {
     const value = Reflect.get(input, key);
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return null;
 }
 
-function toolStateLabel(state: string) {
-  if (state === "approval-requested") return "Approval needed";
-  if (state === "approval-responded") return "Approval received";
-  if (state === "output-available") return "Completed";
-  if (state === "output-error") return "Failed";
-  if (state === "output-denied") return "Denied";
-  if (state === "input-streaming") return "Preparing";
-  return "Running";
+function baseName(path: string) {
+  return path.replaceAll("\\", "/").replace(/\/$/, "").split("/").at(-1) || path;
 }
 
-const ToolPart = memo(function ToolPart({ part }: { part: Extract<UIMessage["parts"][number], { toolCallId: string }> }) {
+type ToolCategory = "read" | "edit" | "command" | "search" | "other";
+
+interface ToolDescription {
+  icon: IconName;
+  category: ToolCategory;
+  done: string;
+  active: string;
+  target: string | null;
+  /** Full value for the tooltip when the target is shortened. */
+  fullTarget: string | null;
+}
+
+function describeTool(toolName: string, input: unknown): ToolDescription {
+  const path = inputString(input, ["path", "file_path"]);
+  const pathTarget = path ? baseName(path) : null;
+  switch (toolName) {
+    case "read_file":
+      return { icon: "document", category: "read", done: "Read", active: "Reading", target: pathTarget, fullTarget: path };
+    case "edit_file":
+      return { icon: "code", category: "edit", done: "Edited", active: "Editing", target: pathTarget, fullTarget: path };
+    case "write_file":
+      return { icon: "code", category: "edit", done: "Wrote", active: "Writing", target: pathTarget, fullTarget: path };
+    case "bash": {
+      const command = inputString(input, ["command"]);
+      return { icon: "terminal", category: "command", done: "Ran", active: "Running", target: command, fullTarget: command };
+    }
+    case "grep": {
+      const query = inputString(input, ["pattern", "query"]);
+      return { icon: "search", category: "search", done: "Searched for", active: "Searching for", target: query, fullTarget: query };
+    }
+    case "glob_search": {
+      const pattern = inputString(input, ["pattern", "query"]);
+      return { icon: "search", category: "search", done: "Found files", active: "Finding files", target: pattern, fullTarget: pattern };
+    }
+    case "list_files":
+      return { icon: "folder", category: "search", done: "Listed", active: "Listing", target: pathTarget ?? ".", fullTarget: path };
+    case "web_search": {
+      const query = inputString(input, ["query"]);
+      return { icon: "search", category: "search", done: "Searched the web for", active: "Searching the web for", target: query, fullTarget: query };
+    }
+    case "web_fetch": {
+      const url = inputString(input, ["url"]);
+      let host = url;
+      try {
+        if (url) host = new URL(url).host;
+      } catch {
+        // Keep the raw value.
+      }
+      return { icon: "download", category: "other", done: "Fetched", active: "Fetching", target: host, fullTarget: url };
+    }
+    case "todo_write":
+      return { icon: "instructions", category: "other", done: "Updated the plan", active: "Updating the plan", target: null, fullTarget: null };
+    case "skill": {
+      const name = inputString(input, ["name", "skill"]);
+      return { icon: "spark", category: "other", done: "Loaded skill", active: "Loading skill", target: name, fullTarget: name };
+    }
+    default: {
+      const label = toolName.replaceAll("_", " ");
+      const target = inputString(input, ["path", "command", "query", "pattern", "url", "description"]);
+      return {
+        icon: "tool",
+        category: "other",
+        done: label.charAt(0).toUpperCase() + label.slice(1),
+        active: label.charAt(0).toUpperCase() + label.slice(1),
+        target,
+        fullTarget: target,
+      };
+    }
+  }
+}
+
+function isToolFinished(part: ToolUIPart) {
+  return part.state === "output-available" || part.state === "output-error" || part.state === "output-denied";
+}
+
+function isActivityPart(part: MessagePart): part is ActivityPart {
+  return isToolUIPart(part) || part.type === "reasoning";
+}
+
+function isActivityRunning(part: ActivityPart) {
+  return part.type === "reasoning" ? part.state === "streaming" : !isToolFinished(part);
+}
+
+function needsAttention(part: ActivityPart) {
+  return part.type !== "reasoning" && (part.state === "approval-requested" || part.state === "output-error");
+}
+
+const ToolLine = memo(function ToolLine({ part }: { part: ToolUIPart }) {
   const toolName = getToolName(part);
-  const target = toolTarget(part.input);
   const state = part.state;
-  const hasOutput = state === "output-available" || state === "output-error" || state === "output-denied";
+  const description = describeTool(toolName, part.input);
+  const finished = isToolFinished(part);
+  const hasOutput = finished;
   const output =
     state === "output-available"
       ? part.output
@@ -62,6 +149,15 @@ const ToolPart = memo(function ToolPart({ part }: { part: Extract<UIMessage["par
           : null;
   const view = state === "output-available" ? toolView(toolName, part.output) : { kind: "generic" as const };
   const badge = toolViewBadge(view);
+  const verb = finished ? description.done : description.active;
+  const note =
+    state === "output-error"
+      ? "Failed"
+      : state === "output-denied"
+        ? "Denied"
+        : state === "approval-requested"
+          ? "Approval needed"
+          : null;
   const rawDetails = (
     <>
       <div>
@@ -78,19 +174,28 @@ const ToolPart = memo(function ToolPart({ part }: { part: Extract<UIMessage["par
   );
 
   return (
-    <details className={`tool-event state-${state}`} open={state === "approval-requested" || state === "output-error"}>
+    <details className={`activity-item tool-event state-${state}`} open={state === "approval-requested" || state === "output-error" ? true : undefined}>
       <summary>
-        <span className="tool-state-mark"><Icon name={state === "output-error" ? "warning" : state === "output-available" ? "check" : "terminal"} size={15} /></span>
-        <span className="tool-summary-copy">
-          <strong>{toolStateLabel(state)} · {toolName.replaceAll("_", " ")}</strong>
-          {target ? <small title={target}>{target}</small> : null}
+        <span className="activity-icon">
+          {finished || state === "approval-requested" ? (
+            <Icon name={state === "output-error" || state === "approval-requested" ? "warning" : description.icon} size={14} />
+          ) : (
+            <span className="activity-spinner" aria-hidden="true" />
+          )}
         </span>
+        <span className="activity-label">
+          <span className="activity-verb">{verb}</span>
+          {description.target ? (
+            <code className="activity-target" title={description.fullTarget ?? description.target}>{description.target}</code>
+          ) : null}
+        </span>
+        {note ? <span className="activity-note">{note}</span> : null}
         {badge ? (
           <span className={view.kind === "command" && view.exitCode !== 0 ? "tool-badge failed" : "tool-badge"}>
             {badge}
           </span>
         ) : null}
-        <Icon name="chevron-down" size={15} />
+        <Icon className="activity-chevron" name="chevron-right" size={13} />
       </summary>
       <div className="tool-details">
         {view.kind === "generic" ? rawDetails : (
@@ -107,22 +212,88 @@ const ToolPart = memo(function ToolPart({ part }: { part: Extract<UIMessage["par
   );
 });
 
-type ToolUIPart = Extract<UIMessage["parts"][number], { toolCallId: string }>;
-
-function CompletedTools({ parts }: { parts: ToolUIPart[] }) {
+function ReasoningLine({ part }: { part: ReasoningUIPart }) {
   const [expanded, setExpanded] = useState(false);
-  return <details className="completed-tools" onToggle={(event) => setExpanded(event.currentTarget.open)}>
-    <summary><Icon name="check" size={15} /><span>{parts.length} completed tool calls</span><Icon name="chevron-down" size={14} /></summary>
-    {expanded ? <div>{parts.map(part => <ToolPart key={part.toolCallId} part={part} />)}</div> : null}
-  </details>;
+  const streaming = part.state === "streaming";
+  if (!part.text.trim() && !streaming) return null;
+  return (
+    <details className="activity-item reasoning-part" onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary>
+        <span className="activity-icon">
+          {streaming ? <span className="activity-spinner" aria-hidden="true" /> : <Icon name="spark" size={14} />}
+        </span>
+        <span className="activity-label"><span className={streaming ? "activity-verb shimmer" : "activity-verb"}>{streaming ? "Thinking" : "Thought"}</span></span>
+        <Icon className="activity-chevron" name="chevron-right" size={13} />
+      </summary>
+      {expanded ? <div className="reasoning-body"><MessageMarkdown text={part.text} streaming={streaming} /></div> : null}
+    </details>
+  );
 }
 
-function ReasoningPart({ text, streaming }: { text: string; streaming: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  return <details className="reasoning-part" onToggle={(event) => setExpanded(event.currentTarget.open)}>
-    <summary>{streaming ? "Thinking…" : "Reasoning"}</summary>
-    {expanded ? <MessageMarkdown text={text} streaming={streaming} /> : null}
-  </details>;
+function plural(count: number, one: string, many: string) {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** "Read 3 files, ran 2 commands" — what a finished stretch of work did. */
+export function summarizeActivity(parts: ActivityPart[]): string {
+  const counts: Record<ToolCategory, number> = { read: 0, edit: 0, command: 0, search: 0, other: 0 };
+  let thoughts = 0;
+  for (const part of parts) {
+    if (part.type === "reasoning") thoughts += 1;
+    else counts[describeTool(getToolName(part), part.input).category] += 1;
+  }
+  const phrases = [
+    counts.read ? `read ${plural(counts.read, "file", "files")}` : null,
+    counts.edit ? `edited ${plural(counts.edit, "file", "files")}` : null,
+    counts.command ? `ran ${plural(counts.command, "command", "commands")}` : null,
+    counts.search ? plural(counts.search, "search", "searches") : null,
+    counts.other ? plural(counts.other, "other step", "other steps") : null,
+  ].filter(Boolean);
+  if (phrases.length === 0) return thoughts ? "Thought it through" : "Worked";
+  const sentence = phrases.join(", ");
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+}
+
+function ActivityItems({ parts }: { parts: ActivityPart[] }) {
+  return (
+    <div className="activity-list">
+      {parts.map((part, index) =>
+        part.type === "reasoning" ? (
+          <ReasoningLine key={`reasoning-${index}`} part={part} />
+        ) : (
+          <ToolLine key={part.toolCallId} part={part} />
+        ),
+      )}
+    </div>
+  );
+}
+
+/** Steps shown inline before they are folded behind a summary line. */
+const inlineActivityLimit = 2;
+
+/**
+ * Settled steps fold behind one summary line; anything still running, failed,
+ * or waiting for approval stays visible beneath it.
+ */
+function ActivityGroup({ parts }: { parts: ActivityPart[] }) {
+  const [open, setOpen] = useState(false);
+  const visibleSteps = parts.filter((part) => part.type !== "reasoning" || part.text.trim() || part.state === "streaming");
+
+  if (visibleSteps.length <= inlineActivityLimit) return <ActivityItems parts={visibleSteps} />;
+
+  const live = visibleSteps.filter((part) => isActivityRunning(part) || needsAttention(part));
+  const settled = visibleSteps.filter((part) => !live.includes(part));
+  if (settled.length === 0) return <ActivityItems parts={visibleSteps} />;
+
+  return (
+    <div className={open ? "activity-group open" : "activity-group"}>
+      <button className="activity-summary" type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span>{summarizeActivity(settled)}</span>
+        <Icon name="chevron-right" size={13} />
+      </button>
+      {open ? <ActivityItems parts={visibleSteps} /> : live.length > 0 ? <ActivityItems parts={live} /> : null}
+    </div>
+  );
 }
 
 export const ChatMessage = memo(function ChatMessage({ message }: ChatMessageProps) {
@@ -130,33 +301,26 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
   const visibleParts = message.parts.filter((part) => part.type !== "step-start");
   if (visibleParts.length === 0) return null;
 
+  const blocks: Array<{ kind: "activity"; parts: ActivityPart[] } | { kind: "part"; part: MessagePart }> = [];
+  for (const part of visibleParts) {
+    if (isActivityPart(part)) {
+      const last = blocks.at(-1);
+      if (last?.kind === "activity") last.parts.push(part);
+      else blocks.push({ kind: "activity", parts: [part] });
+    } else {
+      blocks.push({ kind: "part", part });
+    }
+  }
+
   return (
     <article className={`chat-message role-${message.role}`}>
-      <header>
-        <span className="role-mark">
-          <Icon name={message.role === "assistant" ? "lightcode" : message.role === "user" ? "arrow-up" : "settings"} size={14} />
-        </span>
-        <span>{roleLabel}</span>
-      </header>
+      <h2 className="sr-only">{roleLabel}</h2>
       <div className="message-parts">
-        {visibleParts.map((part, index) => {
-          const key = `${message.id}-${part.type}-${index}`;
-          if (isToolUIPart(part) && part.state === "output-available") {
-            const previous = visibleParts[index - 1];
-            if (previous && isToolUIPart(previous) && previous.state === "output-available") return null;
-            const group: ToolUIPart[] = [];
-            for (let cursor = index; cursor < visibleParts.length; cursor++) {
-              const candidate = visibleParts[cursor];
-              if (!candidate || !isToolUIPart(candidate) || candidate.state !== "output-available") break;
-              group.push(candidate);
-            }
-            return group.length > 1 ? <CompletedTools key={key} parts={group} /> : <ToolPart key={key} part={part} />;
-          }
+        {blocks.map((block, index) => {
+          const key = `${message.id}-${index}`;
+          if (block.kind === "activity") return <ActivityGroup key={key} parts={block.parts} />;
+          const part = block.part;
           if (part.type === "text") return <MessageMarkdown key={key} text={part.text} streaming={part.state === "streaming"} />;
-          if (part.type === "reasoning") {
-            return <ReasoningPart key={key} text={part.text} streaming={part.state === "streaming"} />;
-          }
-          if (isToolUIPart(part)) return <ToolPart key={key} part={part} />;
           if (part.type === "source-url") {
             const href = safeExternalUrl(part.url);
             return href ? (

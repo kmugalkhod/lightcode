@@ -13,7 +13,6 @@ interface WorkspaceRibbonProps {
   isRunning: boolean;
   isCreating: boolean;
   isPickingProject: boolean;
-  onOpenMenu: () => void;
   onOpenProject: () => void;
   onModeChange: (mode: CodingMode) => void;
   onPermissionModeChange: (mode: PermissionMode) => void;
@@ -21,10 +20,15 @@ interface WorkspaceRibbonProps {
 }
 
 const permissionLabels: Record<PermissionMode, string> = {
-  "read-only": "Read",
-  "workspace-write": "Write",
-  "danger-full-access": "Full",
+  "read-only": "Read only",
+  "workspace-write": "Can edit",
+  "danger-full-access": "Full access",
 };
+
+/** "openrouter/anthropic/claude-x" reads as "claude-x"; the full id stays in the tooltip. */
+function shortModelName(model: string) {
+  return model.split("/").at(-1) || model;
+}
 
 export function WorkspaceRibbon({
   placement,
@@ -37,7 +41,6 @@ export function WorkspaceRibbon({
   isRunning,
   isCreating,
   isPickingProject,
-  onOpenMenu,
   onOpenProject,
   onModeChange,
   onPermissionModeChange,
@@ -73,9 +76,11 @@ export function WorkspaceRibbon({
   return (
     <div className={`workspace-controls workspace-controls-${placement}`} role="group" aria-label={placement === "project" ? "Project controls" : "Agent controls"}>
       {placement === "project" ? <>
-      <button className="icon-button mobile-only ribbon-menu" type="button" onClick={onOpenMenu} aria-label="Open sessions">
-        <Icon name="menu" />
-      </button>
+      {providerStatusError || needsProviderSetup || isCreating ? <div className="ribbon-status" role="status" title={statusDetail}>
+        <span className={isRunning ? "live-dot active" : "live-dot"} />
+        {statusLabel}
+      </div> : null}
+
       <button
         className="workspace-path"
         type="button"
@@ -89,31 +94,23 @@ export function WorkspaceRibbon({
           {isPickingProject ? (
             <span className="inline-spinner" aria-hidden="true" />
           ) : (
-            <Icon name="folder-open" size={16} />
+            <Icon name="folder" size={15} />
           )}
         </span>
         <span className="workspace-path-copy">
           <strong>{isPickingProject ? "Opening folder picker" : projectName}</strong>
         </span>
-        <Icon name="chevron-down" size={15} />
+        <Icon name="chevron-down" size={14} />
       </button>
-
-      {!session || providerStatusError || needsProviderSetup || !providerStatus ? <div className="ribbon-status" role="status" title={statusDetail}>
-        <span className={isRunning ? "live-dot active" : "live-dot"} />
-        {statusLabel}
-      </div> : null}
-
       </> : <>
       {providerStatus?.selectedModel || session?.model ? (
         <button type="button" className="ribbon-model" onClick={onOpenModels} disabled={isRunning || !providerStatus} aria-label="Choose model" title={providerStatus?.selectedModel ?? session?.model ?? undefined}>
-          <Icon name="agent" size={15} />
-          <span>{providerStatus?.selectedModel ?? session?.model}</span><Icon name="chevron-down" size={13} />
+          <span>{shortModelName(providerStatus?.selectedModel ?? session?.model ?? "")}</span><Icon name="chevron-down" size={13} />
         </button>
       ) : null}
 
       <label className={modeDisabled ? "ribbon-select disabled" : "ribbon-select"}>
         <span className="sr-only">Agent mode</span>
-        <Icon name="code" size={15} />
         <span className="ribbon-select-value" aria-hidden="true">
           {mode === "build" ? "Build" : "Plan"}
         </span>
@@ -138,7 +135,6 @@ export function WorkspaceRibbon({
         title={mode === "plan" ? "Permission: Read (Plan mode is always read-only)" : `Permission: ${permissionLabels[permissionMode]}`}
       >
         <span className="sr-only">Permission mode</span>
-        <Icon name="shield" size={15} />
         <span className="ribbon-select-value" aria-hidden="true">
           {permissionLabels[effectivePermissionMode]}
         </span>

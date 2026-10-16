@@ -20,6 +20,7 @@ import { ChatMessage } from "./chat-message";
 import { CommandComposer } from "./command-composer";
 import { ChangesPanel } from "./changes-panel";
 import { ContextMeter } from "./context-meter";
+import { TopBar } from "./top-bar";
 import { shortcutLabel } from "../lib/client-platform";
 
 const changesOpenStorageKey = "lightcode.web.changes-open";
@@ -107,6 +108,7 @@ export function ChatSurface({
   const [contextReport, setContextReport] = useState<ContextReport | null>(null);
   const [changesOpen, setChangesOpen] = useState(readChangesOpen);
   const [changeCount, setChangeCount] = useState<number | null>(null);
+  const elapsedSeconds = useElapsedSeconds(chat.isStreaming);
 
   const toggleChanges = useCallback(() => {
     setChangesOpen((open) => {
@@ -265,25 +267,26 @@ export function ChatSurface({
   return (
     <div className="chat-with-changes">
     <section className="chat-surface" aria-label="Project conversation">
-      <button
-        className={changesOpen ? "changes-toggle active" : "changes-toggle"}
-        type="button"
-        onClick={toggleChanges}
-        aria-pressed={changesOpen}
-        title={`Changes (${shortcutLabel({ key: "B" })})`}
-      >
-        <Icon name="code" size={14} />
-        Changes
-        {changeCount ? <span className="changes-count">{changeCount}</span> : null}
-      </button>
-      <h1 className="sr-only">{displaySessionTitle(session)}</h1>
+      <TopBar title={displaySessionTitle(session)} onOpenMenu={onOpenSessions}>
+        {projectControls}
+        <button
+          className={changesOpen ? "changes-toggle active" : "changes-toggle"}
+          type="button"
+          onClick={toggleChanges}
+          aria-pressed={changesOpen}
+          aria-label="Changes"
+          title={`Changes (${shortcutLabel({ key: "B" })})`}
+        >
+          <Icon name="code" size={15} />
+          {changeCount ? <span className="changes-count">{changeCount}</span> : null}
+        </button>
+      </TopBar>
       <div className="conversation-scroll" ref={scrollRef} onScroll={handleScroll}>
         <div className="conversation-column">
           {chat.isHistoryLoading ? <ConversationSkeleton /> : null}
           {!chat.isHistoryLoading && chat.messages.length === 0 ? (
             <div className="conversation-empty">
-              <span className="empty-mark"><Icon name="lightcode" size={24} /></span>
-              <h1>Start with the project in front of you.</h1>
+              <h2>What should we work on?</h2>
               <p>Ask Lightcode to trace behavior, plan a change, fix an issue, or verify the work.</p>
             </div>
           ) : null}
@@ -292,8 +295,8 @@ export function ChatSurface({
           ))}
           {chat.isStreaming ? (
             <div className="agent-working" role="status">
-              <span className="live-dot" />
-              Lightcode is working
+              <span className="shimmer">Working</span>
+              <span className="agent-working-time">{formatElapsed(elapsedSeconds)}</span>
             </div>
           ) : null}
         </div>
@@ -322,19 +325,13 @@ export function ChatSurface({
 
           <CommandComposer
             workspaceControls={workspaceControls}
-            sessionInfo={{
-              title: displaySessionTitle(session),
-              mode: mode === "plan" ? "Plan mode" : "Build mode",
-              permission: mode === "plan" || permissionMode === "read-only" ? "Read only" : permissionMode === "workspace-write" ? "Project access" : "Full access",
-              messageCount: chat.messages.filter((message) => message.role === "user").length,
-              status: chat.pendingApprovals.length || chat.pendingUserPrompts.length ? "Input needed" : chat.errorMessage ? "Error" : chat.isHistoryLoading ? "Loading" : chat.isStreaming ? "Working" : "Ready",
-            }}
+            toolbarEnd={<ContextMeter report={contextReport} />}
             draftKey={session.id}
             appearance="conversation"
             hasSession
             canSendMessage={!chat.isLoading && chat.pendingApprovals.length === 0 && chat.pendingUserPrompts.length === 0}
             isStreaming={chat.isStreaming}
-            placeholder={chat.pendingApprovals.length > 0 || chat.pendingUserPrompts.length > 0 ? "Resolve the active step, or type / for commands" : "What are you building? Type / for commands"}
+            placeholder={chat.pendingApprovals.length > 0 || chat.pendingUserPrompts.length > 0 ? "Resolve the step above, or type / for commands" : "Ask for a change, or type / for commands"}
             commandResult={commandResult}
             commandBusy={commandBusy}
             onDismissResult={() => setCommandResult(null)}
@@ -350,11 +347,6 @@ export function ChatSurface({
               tone: "error",
             })}
           />
-          <div className="composer-hint">
-            <span>Enter to send · Shift+Enter for a new line</span>
-            <ContextMeter report={contextReport} />
-            {projectControls}
-          </div>
         </div>
       </div>
     </section>
@@ -440,6 +432,27 @@ function PromptDock({
       ) : null}
     </section>
   );
+}
+
+/** Seconds since `active` last turned on; resets when it turns off. */
+function useElapsedSeconds(active: boolean) {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    if (!active) {
+      setSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setSeconds(0);
+    const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return seconds;
+}
+
+function formatElapsed(seconds: number) {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 function ConversationSkeleton() {

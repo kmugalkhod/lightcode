@@ -49,7 +49,7 @@ test("completed tools are grouped without hiding failed or approval-required cal
     { type: "dynamic-tool", toolName: "shell", toolCallId: "4", state: "approval-requested", input: {}, approval: { id: "approval-1" } },
   ] };
   const html = renderToStaticMarkup(<ChatMessage message={message} />);
-  expect(html).toContain("2 completed tool calls");
+  expect(html).toContain("Read 2 files");
   expect(html).not.toContain("private large output");
   expect(html).toContain("Permission denied");
   expect(html).toContain("Approval needed");

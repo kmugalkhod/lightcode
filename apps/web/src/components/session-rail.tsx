@@ -10,6 +10,7 @@ interface SessionRailProps {
   workspace: Workspace | null;
   isLoading: boolean;
   isPickingProject: boolean;
+  isRunning: boolean;
   error: string | null;
   mobileOpen: boolean;
   backgroundInert: boolean;
@@ -26,6 +27,7 @@ export function SessionRail({
   workspace,
   isLoading,
   isPickingProject,
+  isRunning,
   error,
   mobileOpen,
   backgroundInert,
@@ -72,7 +74,7 @@ export function SessionRail({
       >
         <header className="rail-header">
           <div className="brand-lockup">
-            <span className="brand-mark"><Icon name="lightcode" size={17} /></span>
+            <span className="brand-mark"><Icon name="lightcode" size={16} /></span>
             <span>Lightcode</span>
           </div>
           <button ref={mobileCloseRef} className="icon-button mobile-only" type="button" onClick={onCloseMobile} aria-label="Close sessions">
@@ -80,14 +82,19 @@ export function SessionRail({
           </button>
         </header>
 
-        <div className="rail-actions">
-          <button className="new-session-button" type="button" onClick={onNewSession} disabled={!workspace}>
+        <nav className="rail-nav" aria-label="Workspace">
+          <button className="rail-nav-item" type="button" onClick={onNewSession} disabled={!workspace}>
             <Icon name="plus" size={16} />
-            New session
+            <span>New session</span>
             <kbd>{shortcutLabel({ shift: true, key: "N" })}</kbd>
           </button>
+          <label className="rail-nav-item session-search">
+            <Icon name="search" size={16} />
+            <input id="session-search" type="search" value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search" aria-label="Search sessions" />
+            <kbd>{shortcutLabel({ key: "K" })}</kbd>
+          </label>
           <button
-            className="project-button"
+            className="rail-nav-item project-button"
             type="button"
             title={workspace?.hostPath ?? workspace?.pathLabel}
             onClick={onOpenProject}
@@ -97,66 +104,59 @@ export function SessionRail({
             {isPickingProject ? (
               <span className="inline-spinner" aria-hidden="true" />
             ) : (
-              <Icon name="folder-open" size={16} />
+              <Icon name="folder" size={16} />
             )}
             <span className="project-button-label">
               {isPickingProject
                 ? "Opening folder picker"
-                : workspace?.name ?? "Choose project"}
+                : workspace?.name ?? "Open project"}
             </span>
-            <Icon name="chevron-right" size={15} />
           </button>
-        </div>
-
-        <label className="session-search">
-          <Icon name="search" size={16} />
-          <input id="session-search" type="search" value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Find a session…" aria-label="Search sessions" />
-          <kbd>{shortcutLabel({ key: "K" })}</kbd>
-        </label>
+        </nav>
 
         <div className="rail-section-heading">
-          <span>Sessions</span>
-          <span>{query ? `${filteredSessions.length} / ` : ""}{sessions.length}</span>
+          <span>Recent</span>
+          {query ? <span>{filteredSessions.length}</span> : null}
         </div>
         <nav className="session-list" aria-label="Saved conversations">
           {isLoading ? <SessionSkeleton /> : null}
           {!isLoading && error ? (
             <div className="rail-state">
-              <Icon name="warning" size={18} />
+              <Icon name="warning" size={16} />
               <p>{error}</p>
               <button type="button" onClick={onRetry}>Retry</button>
             </div>
           ) : null}
           {!isLoading && !error && sessions.length === 0 ? (
             <div className="rail-state">
-              <Icon name="message" size={18} />
-              <p>No sessions yet. Start one in this project.</p>
+              <p>No sessions yet.</p>
             </div>
           ) : null}
           {!isLoading && !error
-            ? filteredSessions.map((session) => (
-                <button
-                  className={activeSessionId === session.id ? "session-item active" : "session-item"}
-                  key={session.id}
-                  type="button"
-                  onClick={() => onSelectSession(session)}
-                  aria-current={activeSessionId === session.id ? "page" : undefined}
-                >
-                  <span className="session-marker" />
-                  <span className="session-copy">
-                    <strong>{displaySessionTitle(session)}</strong>
-                    <small>
-                      {(session.pathLabel ?? session.cwd)?.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? (session.mode === "plan" ? "Plan" : "Build")}
-                      <span aria-hidden="true"> · </span>
-                      {formatRelativeTime(session.updatedAt)}
-                    </small>
-                  </span>
-                </button>
-              ))
+            ? filteredSessions.map((session) => {
+                const active = activeSessionId === session.id;
+                const project = (session.pathLabel ?? session.cwd)?.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
+                return (
+                  <button
+                    className={active ? "session-item active" : "session-item"}
+                    key={session.id}
+                    type="button"
+                    title={[displaySessionTitle(session), project, formatRelativeTime(session.updatedAt)].filter(Boolean).join(" · ")}
+                    onClick={() => onSelectSession(session)}
+                    aria-current={active ? "page" : undefined}
+                  >
+                    {active && isRunning ? (
+                      <span className="session-spinner" aria-label="Working" />
+                    ) : (
+                      <span className="session-marker" aria-hidden="true" />
+                    )}
+                    <span className="session-title">{displaySessionTitle(session)}</span>
+                  </button>
+                );
+              })
             : null}
-          {!isLoading && !error && query && filteredSessions.length === 0 ? <div className="rail-state"><p>No matching sessions. Try a title or project name.</p></div> : null}
+          {!isLoading && !error && query && filteredSessions.length === 0 ? <div className="rail-state"><p>No matching sessions.</p></div> : null}
         </nav>
-        <footer className="rail-footer"><Icon name="terminal" size={16} /><span>One workspace. Web & terminal.<small>Your conversations stay together.</small></span></footer>
       </aside>
     </>
   );
