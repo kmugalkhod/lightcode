@@ -4,6 +4,75 @@ import { displaySessionTitle, formatRelativeTime } from "../lib/api";
 import { shortcutLabel } from "../lib/client-platform";
 import { Icon } from "./icons";
 
+export interface SessionGroup {
+  key: string;
+  name: string;
+  path: string | null;
+  sessions: Session[];
+}
+
+const collapsedGroupsStorageKey = "lightcode.web.collapsedProjects";
+/** Sessions shown per project before the rest fold behind "Show more". */
+export const sessionsPerGroup = 5;
+
+function normalizeProjectPath(path: string | null | undefined): string {
+  if (!path) return "";
+  const slashed = path.replaceAll("\\", "/").replace(/\/+$/, "");
+  // Windows paths are case-insensitive; keep POSIX paths exact.
+  return /^[A-Za-z]:/.test(slashed) ? slashed.toLowerCase() : slashed;
+}
+
+function projectName(path: string): string {
+  const parts = path.replaceAll("\\", "/").split("/").filter(Boolean);
+  return parts.at(-1) ?? path;
+}
+
+/**
+ * Buckets sessions by the folder they ran in. The open project leads, the
+ * rest follow by their most recent activity; sessions stay newest first.
+ */
+export function groupSessionsByProject(sessions: Session[], workspace: Workspace | null): SessionGroup[] {
+  const groups = new Map<string, SessionGroup>();
+  for (const session of sessions) {
+    const path = session.cwd ?? session.pathLabel ?? null;
+    const key = normalizeProjectPath(path);
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, name: path ? projectName(path) : "Other", path, sessions: [] };
+      groups.set(key, group);
+    }
+    group.sessions.push(session);
+  }
+  const currentKey = normalizeProjectPath(workspace?.hostPath ?? workspace?.pathLabel);
+  const latest = (group: SessionGroup) => group.sessions.reduce((max, session) => (session.updatedAt > max ? session.updatedAt : max), "");
+  for (const group of groups.values()) {
+    group.sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+  return [...groups.values()].sort((a, b) => {
+    if (currentKey && a.key === currentKey) return -1;
+    if (currentKey && b.key === currentKey) return 1;
+    if (!a.key !== !b.key) return a.key ? -1 : 1;
+    return latest(b).localeCompare(latest(a));
+  });
+}
+
+function readCollapsedGroups(): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(collapsedGroupsStorageKey) ?? "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeCollapsedGroups(keys: Set<string>) {
+  try {
+    window.localStorage.setItem(collapsedGroupsStorageKey, JSON.stringify([...keys]));
+  } catch {
+    // Collapsed state is a convenience; it resets when storage is unavailable.
+  }
+}
+
 interface SessionRailProps {
   sessions: Session[];
   activeSessionId: string | null;
@@ -39,7 +108,30 @@ export function SessionRail({
 }: SessionRailProps) {
   const mobileCloseRef = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState(readCollapsedGroups);
+  const [showAll, setShowAll] = useState<ReadonlySet<string>>(() => new Set());
   const filteredSessions = sessions.filter((session) => `${displaySessionTitle(session)} ${session.pathLabel ?? session.cwd ?? ""}`.toLowerCase().includes(query.toLowerCase().trim()));
+  const groups = groupSessionsByProject(filteredSessions, workspace);
+  const searching = query.trim().length > 0;
+
+  function toggleGroup(key: string) {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      writeCollapsedGroups(next);
+      return next;
+    });
+  }
+
+  function toggleShowAll(key: string) {
+    setShowAll((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (mobileOpen) {
@@ -115,7 +207,7 @@ export function SessionRail({
         </nav>
 
         <div className="rail-section-heading">
-          <span>Recent</span>
+          <span>Projects</span>
           {query ? <span>{filteredSessions.length}</span> : null}
         </div>
         <nav className="session-list" aria-label="Saved conversations">
@@ -133,25 +225,63 @@ export function SessionRail({
             </div>
           ) : null}
           {!isLoading && !error
-            ? filteredSessions.map((session) => {
-                const active = activeSessionId === session.id;
-                const project = (session.pathLabel ?? session.cwd)?.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
+            ? groups.map((group) => {
+                // Searching shows every match; a collapsed project keeps its active session visible.
+                const isCollapsed = !searching && collapsed.has(group.key);
+                const expandedFully = searching || showAll.has(group.key);
+                const visible = isCollapsed
+                  ? group.sessions.filter((session) => session.id === activeSessionId)
+                  : expandedFully
+                    ? group.sessions
+                    : group.sessions.filter((session, index) => index < sessionsPerGroup || session.id === activeSessionId);
+                const hiddenCount = group.sessions.length - visible.length;
+                const listId = `session-group-${group.key || "other"}`;
                 return (
-                  <button
-                    className={active ? "session-item active" : "session-item"}
-                    key={session.id}
-                    type="button"
-                    title={[displaySessionTitle(session), project, formatRelativeTime(session.updatedAt)].filter(Boolean).join(" · ")}
-                    onClick={() => onSelectSession(session)}
-                    aria-current={active ? "page" : undefined}
-                  >
-                    {active && isRunning ? (
-                      <span className="session-spinner" aria-label="Working" />
-                    ) : (
-                      <span className="session-marker" aria-hidden="true" />
-                    )}
-                    <span className="session-title">{displaySessionTitle(session)}</span>
-                  </button>
+                  <section className={isCollapsed ? "session-group collapsed" : "session-group"} key={group.key}>
+                    <button
+                      className="session-group-header"
+                      type="button"
+                      title={group.path ?? undefined}
+                      onClick={() => toggleGroup(group.key)}
+                      aria-expanded={!isCollapsed}
+                      aria-controls={listId}
+                      disabled={searching}
+                    >
+                      <span className="session-group-icon" aria-hidden="true">
+                        <Icon name="folder" size={14} />
+                        <Icon name="chevron-right" size={13} />
+                      </span>
+                      <span className="session-group-name">{group.name}</span>
+                      <span className="session-group-count">{group.sessions.length}</span>
+                    </button>
+                    <div className="session-group-items" id={listId}>
+                      {visible.map((session) => {
+                        const active = activeSessionId === session.id;
+                        return (
+                          <button
+                            className={active ? "session-item active" : "session-item"}
+                            key={session.id}
+                            type="button"
+                            title={[displaySessionTitle(session), formatRelativeTime(session.updatedAt)].join(" · ")}
+                            onClick={() => onSelectSession(session)}
+                            aria-current={active ? "page" : undefined}
+                          >
+                            {active && isRunning ? (
+                              <span className="session-spinner" aria-label="Working" />
+                            ) : (
+                              <span className="session-marker" aria-hidden="true" />
+                            )}
+                            <span className="session-title">{displaySessionTitle(session)}</span>
+                          </button>
+                        );
+                      })}
+                      {!isCollapsed && !searching && (hiddenCount > 0 || showAll.has(group.key)) ? (
+                        <button className="session-group-more" type="button" onClick={() => toggleShowAll(group.key)}>
+                          {hiddenCount > 0 ? `Show ${hiddenCount} more` : "Show less"}
+                        </button>
+                      ) : null}
+                    </div>
+                  </section>
                 );
               })
             : null}
