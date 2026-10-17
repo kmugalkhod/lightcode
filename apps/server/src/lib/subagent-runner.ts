@@ -1,5 +1,6 @@
 import {
   artifactizeLargeToolOutputs,
+  DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS,
   buildSubagentSystemPrompt,
   capSubagentSummary,
   createSubagentToolset,
@@ -141,6 +142,8 @@ export async function runSubagentToolTask(
       prepareStep: async ({ messages }) => {
         const artifactized = await artifactizeLargeToolOutputs(messages, {
           signal: context.abortSignal,
+          currentTurnThresholdCharacters:
+            DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS,
         });
         const turn = assembler.assembleModelMessages(artifactized.messages, {
           preserveRecentTokens,

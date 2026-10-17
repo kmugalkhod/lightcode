@@ -3,7 +3,7 @@ import { MAX_TOOL_TEXT_OUTPUT_CHARS } from "../constants";
 import { boundedPathSchema, integerRangeSchema, positiveLineSchema } from "../common/base-schemas";
 
 export const readFileDescription =
-  "Read file content from the working directory. Prefer a startLine/endLine range over whole files — large files are truncated head+tail.";
+  "Read file content from the working directory. Each call returns about 6,000 characters (roughly 150 lines); longer content is truncated head+tail. Small files: read them whole. Long files: find the spot with grep first, then read a startLine/endLine range of about 100-150 lines around it.";
 
 export const readFileInputSchema = z
   .object({

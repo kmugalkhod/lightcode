@@ -16,6 +16,15 @@ export const TOOL_OUTPUT_ARTIFACT_HANDLE_PREFIX =
 export const DEFAULT_TOOL_OUTPUT_ARTIFACT_THRESHOLD_CHARACTERS =
   DEFAULT_TOOL_TEXT_OUTPUT_CHARS;
 
+/**
+ * The agent loop keeps the current turn's results readable up to this size.
+ * A full read_file result (6–12k chars of content, plus JSON escaping) fits;
+ * previewing it to 2.4k forced the model into dozens of narrow re-reads.
+ * Truly huge outputs (minified bundles, wide greps) are still previewed, and
+ * the budget fitter elides tool outputs if the window gets tight.
+ */
+export const DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS = 16_000;
+
 /** Provider history keeps a compact head/tail view of an artifact. */
 export const DEFAULT_TOOL_OUTPUT_ARTIFACT_PREVIEW_CHARACTERS = 2_400;
 
@@ -40,6 +49,11 @@ export interface ArtifactizeToolOutputsOptions {
   dataDir?: string;
   /** Store an output when its canonical JSON is larger than this many chars. */
   thresholdCharacters?: number;
+  /**
+   * Threshold for results after the latest user message — the work in
+   * progress. Defaults to `thresholdCharacters`.
+   */
+  currentTurnThresholdCharacters?: number;
   /** Hard character ceiling for the text placed in provider history. */
   previewCharacters?: number;
   signal?: AbortSignal;
@@ -343,13 +357,23 @@ export async function artifactizeLargeToolOutputs(
     );
   }
 
+  const currentTurnThreshold = Math.max(
+    0,
+    Math.floor(options.currentTurnThresholdCharacters ?? thresholdCharacters),
+  );
+  let currentTurnStart = 0;
+  messages.forEach((message, index) => {
+    if (message.role === "user") currentTurnStart = index + 1;
+  });
+
   const uniqueArtifacts = new Map<string, ToolOutputArtifactReference>();
   let artifactizedOutputs = 0;
   let savedCharacters = 0;
   const providerMessages: ModelMessage[] = [];
 
-  for (const message of messages) {
+  for (const [index, message] of messages.entries()) {
     options.signal?.throwIfAborted();
+    const limit = index >= currentTurnStart ? currentTurnThreshold : thresholdCharacters;
     if (!Array.isArray(message.content)) {
       providerMessages.push(message);
       continue;
@@ -370,7 +394,7 @@ export async function artifactizeLargeToolOutputs(
 
       const output = part.output as ToolResultOutput;
       const serialized = serializeToolResultOutput(output);
-      if (serialized.length <= thresholdCharacters) {
+      if (serialized.length <= limit) {
         providerContent.push(part);
         continue;
       }

@@ -11,6 +11,7 @@ export const defaultCodingAgentSystemPrompt =
   "You can already see the project — proactively read it. When the user asks you to review, explain, or work on \"my code\"/\"this\", inspect the working directory yourself with list_files, glob_search, grep, and read_file; NEVER ask the user to paste or share code that lives in this directory — open it. " +
   "Use tools for filesystem and codebase tasks instead of guessing, and only interact with files under the working directory. " +
   "Prefer dedicated tools — glob_search for paths, grep for text search, structured git tools for repository inspection — and bash only when those are not enough. " +
+  "Gather context efficiently — every tool round trip costs the user seconds. Locate before you read: use grep or glob_search to find the relevant files and line numbers, then read those regions in generous ranges (about 100-150 lines) instead of many small slices or re-reading the same file. When several reads or searches do not depend on each other, request them together in one step. Skip generated output (dist/, build/, minified bundles, node_modules) unless the task is about it. Stop exploring once you have enough evidence to act or answer. " +
   "Check the available skill descriptions for every task. When a skill is explicitly named or clearly matches the task, load it with the skill tool before acting and follow its instructions within the user's scope and tool permissions. Skill files may be installed outside the workspace; use the skill tool to read their relative supporting resources. Never claim to have used a skill you have not loaded. " +
   "Inspect context before risky operations. Progress notes: before a major tool action you may emit ONE short note (one sentence, ~15 words) saying what you are about to do. After a tool returns, mention a finding only if it changes your plan, and state it as fact grounded in what the tool actually returned — cite the file/line/symbol. NEVER claim you found, changed, or fixed something before a tool result confirms it. Skip notes for routine reads, and do not restate the todo list in prose.\n\n" +
   "Task list discipline — use the todo_write tool to keep a visible, evolving checklist:\n" +
@@ -34,7 +35,7 @@ export const toolCallingDisciplineAddendum =
   "Invoke tools only through the function-calling interface. " +
   "Never write tool calls as XML or plain text such as <tool_call>, <function_call>, <invoke>, or bare JSON in your message. " +
   "Tool arguments must be valid JSON matching the tool's schema. " +
-  "Call one tool at a time and wait for its result before deciding the next step.";
+  "You may request several independent tool calls in one response; wait for their results before making calls that depend on them.";
 
 function normalizePromptTemplate(template: string, cwd: string) {
   if (template.includes(cwdPromptPlaceholder)) {

@@ -203,4 +203,39 @@ describe("tool-output artifacts", () => {
       resultOutput(result.messages[1]),
     );
   });
+
+  test("keeps the current turn's results whole up to their own threshold", async () => {
+    const dataDir = await tempDataDir();
+    const read = (marker: string) => ({ type: "text" as const, value: `${marker}${"x".repeat(2_000)}` });
+    const earlierTurnResult = toolResultMessage(read("old"), "old");
+    const currentTurnResult = toolResultMessage(read("new"), "new");
+    const hugeCurrentResult = toolResultMessage(read(`huge${"y".repeat(10_000)}`), "huge");
+
+    const result = await artifactizeLargeToolOutputs(
+      [
+        { role: "user", content: "first question" },
+        earlierTurnResult,
+        { role: "user", content: "second question" },
+        currentTurnResult,
+        hugeCurrentResult,
+      ],
+      { dataDir, thresholdCharacters: 1_000, currentTurnThresholdCharacters: 5_000, previewCharacters: 700 },
+    );
+
+    // The earlier turn uses the base threshold; the turn in progress stays readable.
+    expect(JSON.stringify(resultOutput(result.messages[1]))).toContain("characters omitted");
+    expect(result.messages[3]).toBe(currentTurnResult);
+    // Oversized output is still previewed even in the current turn.
+    expect(JSON.stringify(resultOutput(result.messages[4]))).toContain("characters omitted");
+    expect(result.artifactizedOutputs).toBe(2);
+  });
+
+  test("without a current-turn threshold every result uses the base threshold", async () => {
+    const dataDir = await tempDataDir();
+    const result = await artifactizeLargeToolOutputs(
+      [{ role: "user", content: "question" }, toolResultMessage({ type: "text", value: "z".repeat(2_000) })],
+      { dataDir, thresholdCharacters: 1_000, previewCharacters: 700 },
+    );
+    expect(result.artifactizedOutputs).toBe(1);
+  });
 });

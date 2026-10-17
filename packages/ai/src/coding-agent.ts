@@ -40,7 +40,10 @@ import {
 } from "./runtime-registry";
 import type { SandboxConfig } from "./sandbox/config";
 import { ProviderTurnAssembler } from "./context/provider-turn-assembler";
-import { artifactizeLargeToolOutputs } from "./context/tool-output-artifacts";
+import {
+  artifactizeLargeToolOutputs,
+  DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS,
+} from "./context/tool-output-artifacts";
 
 const codingAgentLogger = createLogger("coding-agent");
 
@@ -518,6 +521,8 @@ export function createCodingAgent({
       });
       const artifactized = await artifactizeLargeToolOutputs(messages, {
         signal: context.assemblyAbortSignal,
+        currentTurnThresholdCharacters:
+          DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS,
       });
       const assembled = assembler.assembleModelMessages(artifactized.messages, {
         preserveRecentTokens: context.preserveRecentTokens,
