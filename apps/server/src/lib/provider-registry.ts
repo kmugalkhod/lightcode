@@ -54,6 +54,8 @@ export interface ProviderModelCapabilities {
   pricing?: {
     inputPerMTok: number;
     outputPerMTok: number;
+    /** Prompt-cache read price; its presence means the model caches. */
+    cachedInputPerMTok?: number | null;
   } | null;
   /** Explicit catalog signal for Anthropic dynamic-filtering web search. */
   supportsAnthropicWebSearch20260209?: boolean;
@@ -82,11 +84,20 @@ export interface ResolvedProviderModel {
   /** Max completion tokens the model accepts, for clamping maxOutputTokens. */
   maxCompletionTokens?: number | null;
   /**
-   * True when requests to this model benefit from provider prompt caching
-   * (direct Anthropic, or an OpenRouter Anthropic-family passthrough with
-   * cache_control set). Context pruning keeps the prefix byte-stable then.
+   * True when requests to this model benefit from provider prompt caching:
+   * direct Anthropic, an OpenRouter Anthropic-family passthrough with
+   * cache_control set, or any OpenRouter model whose catalog entry prices
+   * cache reads (DeepSeek, MiniMax, Gemini, ... cache a stable prefix
+   * automatically). Context pruning keeps the prefix byte-stable then.
    */
   supportsPromptCaching: boolean;
+  /**
+   * Fold old turns into the summary every few turns instead of waiting for
+   * context pressure, keeping the per-turn payload flat. Off where Lightcode
+   * places Anthropic cache breakpoints itself; defaults to the inverse of
+   * supportsPromptCaching when omitted.
+   */
+  rollingCompaction?: boolean;
   /** Per-token pricing (USD per million tokens); null when unknown. */
   pricing: ModelPricing | null;
   /** Search backend selected from config, credentials, and active provider. */
@@ -328,6 +339,7 @@ function resolveAnthropicModel({
     contextWindow: getModelContextWindow("anthropic", modelId),
     missingCredentialHints,
     supportsPromptCaching: true,
+    rollingCompaction: false,
     pricing: getAnthropicModelPricing(modelId),
     webSearchCapability,
     providerTools:
@@ -362,8 +374,10 @@ function resolveCapabilityPricing(
   return {
     inputPerMTok: pricing.inputPerMTok,
     outputPerMTok: pricing.outputPerMTok,
+    // The catalog's real cache-read price beats the family-wide estimate.
     cachedInputPerMTok:
-      cachedInputFactor === null ? null : pricing.inputPerMTok * cachedInputFactor,
+      pricing.cachedInputPerMTok ??
+      (cachedInputFactor === null ? null : pricing.inputPerMTok * cachedInputFactor),
   };
 }
 
@@ -464,6 +478,13 @@ function resolveOpenAITransportModel({
     storedCredentials,
   });
 
+  const openRouterAnthropicFamily =
+    isOpenRouter && isOpenRouterAnthropicFamilyModel(configuredModel);
+  // OpenRouter prices cache reads only for models whose upstream caches a
+  // repeated prompt prefix, so the catalog entry is the caching signal.
+  const openRouterCatalogCaching =
+    isOpenRouter && (capabilities?.pricing?.cachedInputPerMTok ?? 0) > 0;
+
   // The XML middleware stays on for every OpenAI-compatible model: it passes
   // native function calls through untouched and only converts <tool_call>
   // XML found in text. Models like MiniMax advertise native tools via the
@@ -498,12 +519,13 @@ function resolveOpenAITransportModel({
         : [], // Local/custom endpoints may intentionally require no API key.
     maxCompletionTokens: capabilities?.maxCompletionTokens ?? null,
     supportsPromptCaching:
-      isOpenRouter && isOpenRouterAnthropicFamilyModel(configuredModel),
+      openRouterAnthropicFamily || openRouterCatalogCaching,
+    // Breakpoint-cached Anthropic history stays verbatim until pressure;
+    // everything else rolls so long sessions keep a flat per-turn payload.
+    rollingCompaction: !openRouterAnthropicFamily,
     pricing: resolveCapabilityPricing(
       capabilities,
-      isOpenRouter && isOpenRouterAnthropicFamilyModel(configuredModel)
-        ? 0.1
-        : null,
+      openRouterAnthropicFamily ? 0.1 : null,
     ),
     webSearchCapability,
     providerTools:

@@ -11,19 +11,11 @@ import {
 const casualPromptPattern =
   /^(hi|hello|hey|how are you|how r you|what'?s up|whats up|sup|thanks|thank you|ok|okay|yes|no|nice|cool|great)[\s?!.,]*$/i;
 
-const gitIntentPattern =
-  /(?:\bgit\b|\bcommits?\b|\bstaged?\b|\bunstaged\b|\buntracked\b|\bworking tree\b|\brepositor(?:y|ies)\s+(?:status|diff|history|changes))/i;
 const webIntentPattern =
   /(?:\bhttps?:\/\/|\bwww\.|\bweb(?:site|page)?\b|\binternet\b|\bonline\b|\burl\b|\bbrowser\b|\bsearch\s+(?:the\s+)?web\b|\bbrowse\s+(?:the\s+web|online|for)\b|\blook\s+up\b|\b(?:latest|current|recent|today'?s)\s+(?:news|price|weather|docs?|documentation|release|version)\b)/i;
 const mcpIntentPattern = /(?:\bmcp\b|\bmodel context protocol\b)/i;
 const skillIntentPattern = /\bskills?\b/i;
 
-const gitToolNames = [
-  "git_status",
-  "git_diff",
-  "git_log",
-  "git_show",
-] as const satisfies readonly CodingAgentToolName[];
 const webToolNames = [
   "web_fetch",
   "web_search",
@@ -102,22 +94,29 @@ function collectTextFromUnknown(value: unknown): string {
   return "";
 }
 
-function getLastUserText(messages: unknown, prompt: unknown) {
+/** Non-empty user texts in conversation order, falling back to the prompt. */
+function getUserTexts(messages: unknown, prompt: unknown): string[] {
+  const texts: string[] = [];
   if (Array.isArray(messages)) {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
+    for (const message of messages) {
       if (!isRecord(message) || message.role !== "user") {
         continue;
       }
 
       const text = collectTextFromUnknown(message).trim();
       if (text) {
-        return text;
+        texts.push(text);
       }
     }
   }
 
-  return collectTextFromUnknown(prompt).trim();
+  if (texts.length === 0) {
+    const promptText = collectTextFromUnknown(prompt).trim();
+    if (promptText) {
+      texts.push(promptText);
+    }
+  }
+  return texts;
 }
 
 function escapeRegExp(value: string) {
@@ -152,11 +151,15 @@ function addTools(
 }
 
 /**
- * Select a compact first-step grammar. Every real task gets all mode-allowed
- * registry `core` tools, while larger Git, web, MCP, and skill schemas are
- * included only when the latest user request clearly asks for that capability.
- * `tool_search` remains core so a model can discover a specialized tool during
- * the loop without paying for every specialized schema up front.
+ * Select the provider tool grammar for a request. Every real task gets all
+ * mode-allowed registry `core` tools; MCP and web schemas join only when the
+ * user asks for them. `tool_search` remains core so a model can discover a
+ * specialized tool during the loop without paying for every schema up front.
+ *
+ * The tool list heads the provider prompt, so it must not flip between turns:
+ * any change is a full prompt-cache miss on the whole history. Selection is
+ * therefore session-sticky (based on every user message), except web tools,
+ * whose provider search is approved per turn.
  */
 export function selectCodingAgentIntentTools({
   mode,
@@ -169,14 +172,16 @@ export function selectCodingAgentIntentTools({
   messages: unknown;
   availableSkillNames?: readonly string[];
 }): CodingAgentToolName[] {
-  const userText = getLastUserText(messages, prompt);
-  const normalizedText = userText.toLowerCase();
+  const userTexts = getUserTexts(messages, prompt);
 
-  // Genuine chit-chat ("hi", "thanks") keeps the tool-less fast path.
-  if (!normalizedText || casualPromptPattern.test(normalizedText)) {
+  // Only a conversation that is entirely chit-chat ("hi", "thanks") keeps the
+  // tool-less fast path. A terse follow-up to real work ("ok", "yes") must
+  // keep the agent's tools, or it cannot act on the answer.
+  if (userTexts.every((text) => casualPromptPattern.test(text))) {
     return [];
   }
 
+  const latestText = userTexts.at(-1) ?? "";
   const modeTools = getRegistryToolsForMode(mode);
   const selected = new Set<CodingAgentToolName>(
     modeTools.filter(
@@ -184,18 +189,20 @@ export function selectCodingAgentIntentTools({
     ),
   );
 
-  if (gitIntentPattern.test(userText)) {
-    addTools(selected, gitToolNames);
-  }
-  if (webIntentPattern.test(userText)) {
+  // Provider-executed search bills per use and is gated by a one-turn
+  // approval; a sticky selection would re-request approval every later turn.
+  if (webIntentPattern.test(latestText)) {
     addTools(selected, webToolNames);
   }
-  if (mcpIntentPattern.test(userText)) {
+  if (userTexts.some((text) => mcpIntentPattern.test(text))) {
     addTools(selected, mcpToolNames);
   }
   if (
-    skillIntentPattern.test(userText) ||
-    requestsAvailableSkill(userText, availableSkillNames)
+    userTexts.some(
+      (text) =>
+        skillIntentPattern.test(text) ||
+        requestsAvailableSkill(text, availableSkillNames),
+    )
   ) {
     selected.add("skill");
   }

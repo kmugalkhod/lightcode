@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { z } from "zod";
-import { DEFAULT_TOOL_TEXT_OUTPUT_CHARS } from "../constants";
+import { READ_FILE_OUTPUT_CHARS } from "../constants";
 import {
   getDefaultWorkspaceContext,
   resolveWithinWorkspace,
@@ -45,16 +45,53 @@ export async function executeReadFile(
   const fileContent = await fs.readFile(resolvedPath, "utf8");
   const lines = fileContent.split(/\r?\n/);
   const { start, end } = clampLineRange(lines.length, parsedInput.startLine, parsedInput.endLine);
-  const selectedContent = lines.slice(start - 1, end).join("\n");
-  const maxChars = parsedInput.maxChars ?? DEFAULT_TOOL_TEXT_OUTPUT_CHARS;
-  const truncated = truncateText(selectedContent, maxChars);
+  const maxChars = parsedInput.maxChars ?? READ_FILE_OUTPUT_CHARS;
+  const taken = takeWholeLines(lines.slice(start - 1, end), maxChars);
+  const lastLine = start + taken.lineCount - 1;
 
   return readFileOutputSchema.parse({
     path: relativePath,
     startLine: start,
-    endLine: end,
-    content: truncated.text,
+    endLine: lastLine,
+    content: taken.text,
     totalLines: lines.length,
-    truncated: truncated.truncated,
+    truncated: taken.truncated,
+    ...(lastLine < end ? { nextStartLine: lastLine + 1 } : {}),
   });
+}
+
+/**
+ * Keeps whole lines within the budget, so a cut result ends at an exact line
+ * the model can continue from — unlike a head+tail cut, which hides the
+ * middle of the file behind a marker. Only a single line longer than the
+ * whole budget (minified output) is cut within the line.
+ */
+function takeWholeLines(
+  lines: readonly string[],
+  maxChars: number,
+): { text: string; lineCount: number; truncated: boolean } {
+  let used = 0;
+  let lineCount = 0;
+  for (const line of lines) {
+    const cost = line.length + (lineCount > 0 ? 1 : 0);
+    if (used + cost > maxChars) {
+      break;
+    }
+    used += cost;
+    lineCount += 1;
+  }
+
+  if (lineCount === 0 && lines.length > 0) {
+    return {
+      text: truncateText(lines[0] ?? "", maxChars).text,
+      lineCount: 1,
+      truncated: true,
+    };
+  }
+
+  return {
+    text: lines.slice(0, lineCount).join("\n"),
+    lineCount,
+    truncated: lineCount < lines.length,
+  };
 }

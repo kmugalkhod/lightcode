@@ -42,7 +42,7 @@ import type { SandboxConfig } from "./sandbox/config";
 import { ProviderTurnAssembler } from "./context/provider-turn-assembler";
 import {
   artifactizeLargeToolOutputs,
-  DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS,
+  resolveToolOutputArtifactThresholds,
 } from "./context/tool-output-artifacts";
 
 const codingAgentLogger = createLogger("coding-agent");
@@ -69,6 +69,7 @@ export interface CodingAgentExecutionContext {
   reservedOutputTokens?: number;
   preserveRecentTokens?: number;
   originalInputTokens?: number;
+  promptCacheActive?: boolean;
   assemblyAbortSignal?: AbortSignal;
 }
 
@@ -521,8 +522,9 @@ export function createCodingAgent({
       });
       const artifactized = await artifactizeLargeToolOutputs(messages, {
         signal: context.assemblyAbortSignal,
-        currentTurnThresholdCharacters:
-          DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS,
+        ...resolveToolOutputArtifactThresholds({
+          promptCacheActive: context.promptCacheActive ?? false,
+        }),
       });
       const assembled = assembler.assembleModelMessages(artifactized.messages, {
         preserveRecentTokens: context.preserveRecentTokens,
@@ -608,6 +610,7 @@ export function createCodingAgent({
           reservedOutputTokens: options.maxOutputTokens,
           preserveRecentTokens: options.preserveRecentTokens,
           originalInputTokens: options.originalInputTokens,
+          promptCacheActive: options.promptCacheActive,
           assemblyAbortSignal: options.assemblyAbortSignal,
         } satisfies CodingAgentExecutionContext,
         instructions,

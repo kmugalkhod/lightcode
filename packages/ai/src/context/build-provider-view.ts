@@ -52,11 +52,25 @@ export interface BuildProviderViewOptions {
   measuredInputTokens?: number | null;
   pendingInteractionCount?: number;
   /**
-   * Whether the active provider benefits from prompt caching. When false (e.g.
-   * OpenRouter), Tier-1 prunes more aggressively — there is no byte-stable
-   * prefix to protect. Defaults to true, preserving the conservative behavior.
+   * Whether the active provider benefits from prompt caching. When false (no
+   * cache-read pricing), Tier-1 prunes more aggressively — there is no
+   * byte-stable prefix to protect. Defaults to true, preserving the
+   * conservative behavior.
    */
   cacheActive?: boolean;
+  /**
+   * Fold the oldest turns into the summary once enough user turns pile up past
+   * the anchor, independent of context pressure. Defaults to `!cacheActive`.
+   * Automatically cached providers enable it too: one roll every few turns
+   * costs one cache miss, while a growing history slows every request.
+   */
+  rollingCompaction?: boolean;
+  /**
+   * Set by a rolling pass that already folded once: keep folding until only
+   * the hysteresis target of recent turns remains, instead of stopping as soon
+   * as the trigger threshold is no longer exceeded.
+   */
+  continueRolling?: boolean;
   /** System prompt plus the active tool grammar for the final request. */
   fixedInputTokens?: number;
 }
@@ -81,7 +95,7 @@ export interface ProviderViewResult {
   /** True when a (new) Tier-2 compaction should run before streaming. */
   needsCompaction: boolean;
   /**
-   * True when an uncached session has accumulated enough user turns past the
+   * True when a rolling session has accumulated enough user turns past the
    * anchor that its oldest turns should be folded into the summary — run after
    * the turn completes (off the request path), independent of context pressure.
    */
@@ -309,11 +323,17 @@ export function buildProviderView(
         index >= afterAnchorIndex && message.role === "user",
     )
     .map(({ index }) => index);
+  // Hysteresis: trigger above N turns, fold down to N/2. Each roll rewrites the
+  // summary at the head of the provider view — a full prompt-cache miss — so
+  // folding one turn per turn past N would miss the cache on every request.
+  const rollingKeepUserTurns = Math.max(
+    1,
+    Math.ceil(config.uncachedRollingCompactionUserTurns / 2),
+  );
   const rollingTurnCutoffIndex =
-    userIndicesAfterAnchor.length > config.uncachedRollingCompactionUserTurns
+    userIndicesAfterAnchor.length > rollingKeepUserTurns
       ? (userIndicesAfterAnchor[
-          userIndicesAfterAnchor.length -
-            config.uncachedRollingCompactionUserTurns
+          userIndicesAfterAnchor.length - rollingKeepUserTurns
         ] ?? afterAnchorIndex)
       : afterAnchorIndex;
   // Cap each round to a token budget so the summarizer's own input stays bounded
@@ -323,15 +343,22 @@ export function buildProviderView(
     triggerTokens(estimate.tokens) >
     config.compactAtFraction * inputBudgetTokens;
 
-  // Rolling trigger for uncached sessions: fold history into the summary once
-  // enough user turns have piled up past the anchor, regardless of pressure —
-  // per-turn input then plateaus at summary + recent window instead of growing.
+  // Rolling trigger: fold history into the summary once enough user turns have
+  // piled up past the anchor, regardless of pressure — per-turn input then
+  // plateaus at summary + recent window instead of growing. The uncached-prune
+  // switch remains its opt-out.
+  const rollingActive =
+    (options.rollingCompaction ?? options.cacheActive === false) &&
+    config.aggressivePruneWhenUncached;
   const userTurnsAfterAnchor = messages
     .slice(afterAnchorIndex)
     .filter((message) => message.role === "user").length;
   const rollingThresholdReached =
-    uncachedActive &&
-    userTurnsAfterAnchor > config.uncachedRollingCompactionUserTurns;
+    rollingActive &&
+    userTurnsAfterAnchor >
+      (options.continueRolling
+        ? rollingKeepUserTurns
+        : config.uncachedRollingCompactionUserTurns);
   const compactionCutoffIndex = rollingThresholdReached
     ? Math.max(tokenBoundedCutoffIndex, rollingTurnCutoffIndex)
     : tokenBoundedCutoffIndex;

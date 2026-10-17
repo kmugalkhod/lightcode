@@ -10,6 +10,10 @@ const logger = createLogger("openrouter-models");
 const openRouterModelsUrl = "https://openrouter.ai/api/v1/models";
 const cacheTtlMs = 24 * 60 * 60 * 1000;
 const fetchTimeoutMs = 15_000;
+// Bumped when a summary field starts driving behavior (v2: cache-read pricing
+// decides prompt-cache-aware context handling). An older cache is treated as
+// stale so it refreshes promptly, but still serves as the offline fallback.
+const modelsCacheVersion = 2;
 
 export const openRouterModelSummarySchema = z.object({
   id: z.string(),
@@ -23,12 +27,15 @@ export const openRouterModelSummarySchema = z.object({
     .object({
       prompt: z.string().nullable(),
       completion: z.string().nullable(),
+      /** Discounted price for prompt-cache hits; present when the model caches. */
+      inputCacheRead: z.string().nullable().default(null),
     })
     .nullable(),
 });
 export type OpenRouterModelSummary = z.infer<typeof openRouterModelSummarySchema>;
 
 const modelsCacheSchema = z.object({
+  version: z.number().int().optional(),
   fetchedAt: z.number(),
   models: z.array(openRouterModelSummarySchema),
 });
@@ -102,6 +109,10 @@ function summarizeRawModel(raw: unknown): OpenRouterModelSummary | null {
             typeof Reflect.get(pricingRaw, "completion") === "string"
               ? (Reflect.get(pricingRaw, "completion") as string)
               : null,
+          inputCacheRead:
+            typeof Reflect.get(pricingRaw, "input_cache_read") === "string"
+              ? (Reflect.get(pricingRaw, "input_cache_read") as string)
+              : null,
         }
       : null;
 
@@ -153,13 +164,18 @@ export async function listOpenRouterModels({
   fromCache: boolean;
 }> {
   const cache = readCache();
-  if (!forceRefresh && cache && Date.now() - cache.fetchedAt < cacheTtlMs) {
+  if (
+    !forceRefresh &&
+    cache &&
+    cache.version === modelsCacheVersion &&
+    Date.now() - cache.fetchedAt < cacheTtlMs
+  ) {
     return { models: cache.models, fromCache: true };
   }
 
   try {
     const models = await fetchModelsFromApi();
-    writeCache({ fetchedAt: Date.now(), models });
+    writeCache({ version: modelsCacheVersion, fetchedAt: Date.now(), models });
     return { models, fromCache: false };
   } catch (error) {
     logger.warn("openrouter_models_fetch_failed", {
@@ -217,8 +233,16 @@ function toCapabilityPricing(
     return null;
   }
 
+  const cacheReadPerToken = pricing.inputCacheRead
+    ? Number.parseFloat(pricing.inputCacheRead)
+    : Number.NaN;
+
   return {
     inputPerMTok: promptPerToken * 1_000_000,
     outputPerMTok: completionPerToken * 1_000_000,
+    cachedInputPerMTok:
+      Number.isFinite(cacheReadPerToken) && cacheReadPerToken > 0
+        ? cacheReadPerToken * 1_000_000
+        : null,
   };
 }

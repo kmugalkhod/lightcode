@@ -6,6 +6,12 @@ export const MAX_TOOL_TEXT_OUTPUT_CHARS = 12_000;
  * how to retrieve the omitted middle, so accuracy is preserved.
  */
 export const DEFAULT_TOOL_TEXT_OUTPUT_CHARS = 6_000;
+/**
+ * read_file's per-call budget: whole files up to roughly 600 lines at once.
+ * Every extra read is a model round trip costing seconds, while re-sending a
+ * larger result on later steps is a cheap prompt-cache hit.
+ */
+export const READ_FILE_OUTPUT_CHARS = 24_000;
 export const MAX_TOOL_LIST_ENTRIES = 200;
 export const MAX_TOOL_SEARCH_RESULTS = 200;
 export const ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET = 24;

@@ -184,6 +184,35 @@ describe("provider registry", () => {
     });
 
     expect(resolved.supportsPromptCaching).toBe(false);
+    expect(resolved.rollingCompaction).toBe(true);
+    expect(resolved.providerOptions).toEqual({
+      openrouter: {
+        provider: {
+          allow_fallbacks: true,
+          require_parameters: true,
+        },
+      },
+    });
+  });
+
+  test("treats OpenRouter models with catalog cache-read pricing as cached", () => {
+    const resolved = resolveConfiguredProviderModel({
+      config: {
+        ...baseConfig,
+        provider: "openrouter",
+        model: "minimax/minimax-m3",
+      },
+      env: { OPENROUTER_API_KEY: "test-openrouter-key" },
+      capabilities: {
+        pricing: { inputPerMTok: 0.3, outputPerMTok: 1.2, cachedInputPerMTok: 0.06 },
+      },
+    });
+
+    // Automatic upstream caching needs a byte-stable prefix, but no explicit
+    // breakpoints — and history still rolls to keep the payload flat.
+    expect(resolved.supportsPromptCaching).toBe(true);
+    expect(resolved.rollingCompaction).toBe(true);
+    expect(resolved.pricing?.cachedInputPerMTok).toBeCloseTo(0.06);
     expect(resolved.providerOptions).toEqual({
       openrouter: {
         provider: {
@@ -201,6 +230,7 @@ describe("provider registry", () => {
     });
 
     expect(resolved.supportsPromptCaching).toBe(true);
+    expect(resolved.rollingCompaction).toBe(false);
   });
 
   test("does not set provider routing for non-OpenRouter OpenAI-compatible providers", () => {

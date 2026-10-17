@@ -1,6 +1,7 @@
 import { zValidator } from "@hono/zod-validator";
 import {
   artifactizeLargeToolOutputs,
+  resolveToolOutputArtifactThresholds,
   buildProviderView,
   createCodingAgentTools,
   codingChatRequestSchema,
@@ -103,7 +104,6 @@ import {
 } from "../lib/runtime-config";
 import {
   buildWorkspaceContext,
-  buildWorkspaceContextDelta,
   collectRelatedWorkspacePaths,
 } from "../lib/workspace-context";
 import { internalErrorResponse } from "./route-helpers";
@@ -139,19 +139,11 @@ async function assembleStoredSessionProviderTurn({
     cwd: session.cwd,
   });
 
-  const environmentContext = messages.some(
-    (message) => message.role === "assistant",
-  )
-    ? await buildWorkspaceContextDelta({
-        cwd: session.cwd,
-        sessionId: session.id,
-        relatedPaths: collectRelatedWorkspacePaths(messages),
-      })
-    : await buildWorkspaceContext({
-        cwd: session.cwd,
-        sessionId: session.id,
-        relatedPaths: collectRelatedWorkspacePaths(messages),
-      });
+  const environmentContext = await buildWorkspaceContext({
+    cwd: session.cwd,
+    sessionId: session.id,
+    relatedPaths: collectRelatedWorkspacePaths(messages),
+  });
   const callSettings = resolveCodingAgentCallSettings({
     options: {
       cwd: session.cwd,
@@ -218,6 +210,9 @@ async function assembleStoredSessionProviderTurn({
     endpointLimitTokens,
     reservedOutputTokens,
     cacheActive: resolvedProviderModel.supportsPromptCaching,
+    rollingCompaction:
+      resolvedProviderModel.rollingCompaction ??
+      !resolvedProviderModel.supportsPromptCaching,
     fixedInputTokens: baseAssembler.fixedInputTokens,
   });
   const assembler = new ProviderTurnAssembler({
@@ -233,8 +228,12 @@ async function assembleStoredSessionProviderTurn({
     normalizeProviderMessages(view.providerMessages),
     { tools },
   );
+  // Mirror the agent loop's per-step view so estimates match real requests.
   const artifactized = await artifactizeLargeToolOutputs(modelMessages, {
     signal: abortSignal,
+    ...resolveToolOutputArtifactThresholds({
+      promptCacheActive: resolvedProviderModel.supportsPromptCaching,
+    }),
   });
   const assembled = assembler.assembleModelMessages(
     artifactized.messages,

@@ -322,6 +322,80 @@ describe("buildProviderView", () => {
     expect(uncachedView.coveredMessages.length).toBeGreaterThan(0);
   });
 
+  test("rolling folds down to half the threshold so it does not fire every turn", () => {
+    // 12 turns > threshold 10. Keeping 10 would re-trigger on the very next
+    // turn and rewrite the cached summary prefix each time; keep 5 instead.
+    const messages = conversation(12, 10);
+    const view = buildProviderView({
+      messages,
+      contextState: null,
+      config: normalizeContextOptimizerConfig(undefined),
+      cacheActive: false,
+    });
+
+    expect(view.needsRollingCompaction).toBe(true);
+    expect(view.compactionCutoffIndex).toBe(messages.findIndex((m) => m.id === "u7"));
+    expect(view.coveredMessages.at(-1)?.id).toBe("a6");
+  });
+
+  test("a continuing rolling pass folds until the hysteresis target", () => {
+    // Anchor at a4 leaves 7 user turns: below the trigger (10), above the
+    // target (5) — only a pass that already rolled keeps going.
+    const messages = conversation(12, 10);
+    const anchored = { ...contextState, anchorMessageId: "a4" };
+    const fresh = buildProviderView({
+      messages,
+      contextState: anchored,
+      config: normalizeContextOptimizerConfig(undefined),
+      cacheActive: false,
+    });
+    const continuing = buildProviderView({
+      messages,
+      contextState: anchored,
+      config: normalizeContextOptimizerConfig(undefined),
+      cacheActive: false,
+      continueRolling: true,
+    });
+
+    expect(fresh.needsRollingCompaction).toBe(false);
+    expect(continuing.needsRollingCompaction).toBe(true);
+    expect(continuing.coveredMessages.map((m) => m.id)).toEqual([
+      "u5",
+      "a5",
+      "u6",
+      "a6",
+    ]);
+  });
+
+  test("cached providers can roll without uncached Tier-1 pruning", () => {
+    // Automatic-cache models (DeepSeek, MiniMax via OpenRouter): keep the
+    // prefix byte-stable (no turn-1 pruning) but still keep history flat.
+    const messages = conversation(12, 10);
+    messages[1] = {
+      id: "a0",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-bash",
+          toolCallId: "bash-1",
+          state: "output-available",
+          input: { command: "ls -R" },
+          output: { stdout: "y".repeat(2_000) },
+        } as unknown as UIMessage["parts"][number],
+      ],
+    };
+    const view = buildProviderView({
+      messages,
+      contextState: null,
+      config: normalizeContextOptimizerConfig(undefined),
+      cacheActive: true,
+      rollingCompaction: true,
+    });
+
+    expect(view.tier1).toBeNull();
+    expect(view.needsRollingCompaction).toBe(true);
+  });
+
   test("uncached: rolling compaction respects pending interactions", () => {
     const view = buildProviderView({
       messages: conversation(12, 10),

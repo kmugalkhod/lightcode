@@ -42,19 +42,22 @@ export const contextOptimizerConfigSchema = z
     contextWindowOverride: z.number().int().min(8_000).max(10_000_000).optional(),
     summaryMaxChars: z.number().int().min(200).max(50_000).optional(),
     /**
-     * When the active provider has no prompt cache to protect (e.g. OpenRouter),
-     * prune more aggressively — the cache-warming conservatism below is pure
-     * waste there. These knobs only take effect when caching is inactive.
+     * When the active provider has no prompt cache to protect (no Anthropic
+     * breakpoints and no catalog cache-read pricing), prune more aggressively —
+     * the cache-warming conservatism below is pure waste there. These knobs
+     * only take effect when caching is inactive. Setting this to false also
+     * turns off rolling compaction.
      */
     aggressivePruneWhenUncached: z.boolean().optional(),
     uncachedPruneAtFraction: z.number().min(0.2).max(0.9).optional(),
     uncachedPruneMinOutputChars: z.number().int().min(200).max(12_000).optional(),
     uncachedQuantizeUserTurns: z.number().int().min(1).max(20).optional(),
     /**
-     * Rolling compaction for uncached sessions: once the history after the
-     * summary anchor exceeds this many user turns, the oldest turns are folded
-     * into the summary after the turn completes (off the request path), keeping
-     * the per-turn payload flat instead of waiting for context pressure.
+     * Rolling compaction (every model without Anthropic cache breakpoints):
+     * once the history after the summary anchor exceeds this many user turns,
+     * the oldest turns are folded into the summary after the turn completes
+     * (off the request path) until half this many remain, keeping the
+     * per-turn payload flat instead of waiting for context pressure.
      */
     uncachedRollingCompactionUserTurns: z
       .number()

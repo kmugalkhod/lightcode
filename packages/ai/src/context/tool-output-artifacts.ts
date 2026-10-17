@@ -18,12 +18,40 @@ export const DEFAULT_TOOL_OUTPUT_ARTIFACT_THRESHOLD_CHARACTERS =
 
 /**
  * The agent loop keeps the current turn's results readable up to this size.
- * A full read_file result (6–12k chars of content, plus JSON escaping) fits;
- * previewing it to 2.4k forced the model into dozens of narrow re-reads.
- * Truly huge outputs (minified bundles, wide greps) are still previewed, and
- * the budget fitter elides tool outputs if the window gets tight.
+ * A full read_file result (up to 24k chars of content, plus JSON escaping)
+ * fits; previewing it to 2.4k forced the model into dozens of narrow
+ * re-reads. Truly huge outputs (minified bundles, wide greps) are still
+ * previewed, and the budget fitter elides tool outputs if the window gets
+ * tight.
  */
-export const DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS = 16_000;
+export const DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS = 32_000;
+
+/**
+ * Thresholds for the agent loop's provider view. With a prompt cache, each
+ * output's view is decided once: previewing a previous turn's result when the
+ * next turn starts would rewrite history the provider already cached, so
+ * every turn shares the current-turn threshold (rolling compaction and Tier-1
+ * pruning bound the growth instead). Uncached providers re-pay every token
+ * each request, so older turns shrink to the compact base threshold.
+ */
+export function resolveToolOutputArtifactThresholds({
+  promptCacheActive,
+}: {
+  promptCacheActive: boolean;
+}): Required<
+  Pick<
+    ArtifactizeToolOutputsOptions,
+    "thresholdCharacters" | "currentTurnThresholdCharacters"
+  >
+> {
+  return {
+    thresholdCharacters: promptCacheActive
+      ? DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS
+      : DEFAULT_TOOL_OUTPUT_ARTIFACT_THRESHOLD_CHARACTERS,
+    currentTurnThresholdCharacters:
+      DEFAULT_CURRENT_TURN_TOOL_OUTPUT_THRESHOLD_CHARACTERS,
+  };
+}
 
 /** Provider history keeps a compact head/tail view of an artifact. */
 export const DEFAULT_TOOL_OUTPUT_ARTIFACT_PREVIEW_CHARACTERS = 2_400;

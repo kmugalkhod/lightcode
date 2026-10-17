@@ -33,8 +33,8 @@ describe("coding agent dynamic tool selection", () => {
     expect(tools).toContain("tool_search");
     expect(tools).toContain("git_status");
     expect(tools).toContain("read_file");
-    // Git intent enables the Git family, while unrelated specialized schemas
-    // remain out of the provider context.
+    // The Git family is core, while unrelated specialized schemas remain out
+    // of the provider context.
     expect(tools).toContain("git_diff");
     expect(tools).toContain("write_file");
     expect(tools).not.toContain("web_search");
@@ -53,7 +53,7 @@ describe("coding agent dynamic tool selection", () => {
 
     expect(tools).toContain("read_file");
     expect(tools).toContain("tool_search");
-    expect(tools).not.toContain("git_status");
+    expect(tools).not.toContain("web_search");
     expect(tools.length).toBeGreaterThan(0);
   });
 

@@ -118,6 +118,11 @@ export const codingAgentCallOptionsSchema = z.object({
   /** Pre-optimization input estimate used for compaction-savings telemetry. */
   originalInputTokens: z.number().int().nonnegative().optional(),
   /**
+   * The provider caches a repeated prompt prefix, so the per-step view must
+   * never rewrite history it already sent (see tool-output artifacts).
+   */
+  promptCacheActive: z.boolean().optional(),
+  /**
    * Server-internal cancellation used while materializing the provider-only
    * request view between agent steps. It is never serialized by a client.
    */

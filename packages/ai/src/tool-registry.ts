@@ -237,7 +237,7 @@ export const codingToolRegistry = {
     permissionMode: "read-only",
     execution: "server",
     availability: "git-workspace",
-    activation: "specialized",
+    activation: "core",
     outputPolicy: "artifact-if-large",
   },
   git_diff: {
@@ -250,7 +250,7 @@ export const codingToolRegistry = {
     permissionMode: "read-only",
     execution: "server",
     availability: "git-workspace",
-    activation: "specialized",
+    activation: "core",
     outputPolicy: "artifact-if-large",
   },
   git_log: {
@@ -263,7 +263,7 @@ export const codingToolRegistry = {
     permissionMode: "read-only",
     execution: "server",
     availability: "git-workspace",
-    activation: "specialized",
+    activation: "core",
     outputPolicy: "artifact-if-large",
   },
   git_show: {
@@ -276,7 +276,7 @@ export const codingToolRegistry = {
     permissionMode: "read-only",
     execution: "server",
     availability: "git-workspace",
-    activation: "specialized",
+    activation: "core",
     outputPolicy: "artifact-if-large",
   },
   tool_search: {

@@ -76,7 +76,6 @@ import { getSessionContextState } from "./context-state-store";
 import { maybeScheduleSessionAutoTitle } from "./session-auto-title";
 import {
   buildWorkspaceContext,
-  buildWorkspaceContextDelta,
   collectRelatedWorkspacePaths,
 } from "./workspace-context";
 import {
@@ -111,6 +110,9 @@ const fastChatMaxOutputTokens = 512;
 // round doesn't cover, the fit-to-budget clamp bounds this request and the
 // advanced anchor lets the next turn (or the post-turn rolling pass) continue.
 const MAX_COMPACTION_ROUNDS = 1;
+// The post-turn rolling pass is off the request path, so it may take a few
+// rounds to reach its hysteresis target in one go.
+const MAX_ROLLING_COMPACTION_ROUNDS = 4;
 
 // Sessions with a background rolling compaction in flight. One writer per
 // session at a time; a skipped run is retried after the next turn anyway.
@@ -393,10 +395,12 @@ export async function streamSessionChat(
   });
 
   const contextConfig = lightcodeConfigResult.config.context;
-  // Prompt caching (direct Anthropic, or OpenRouter Anthropic-family with
-  // cache_control set) needs a byte-stable prefix to hit; elsewhere there is
-  // nothing to protect, so Tier-1 may prune more aggressively.
+  // Prompt caching (Anthropic breakpoints, or automatic upstream caching that
+  // OpenRouter prices as cache reads) needs a byte-stable prefix to hit;
+  // elsewhere there is nothing to protect, so Tier-1 may prune harder.
   const cacheActive = resolvedProviderModel.supportsPromptCaching;
+  const rollingCompaction =
+    resolvedProviderModel.rollingCompaction ?? !cacheActive;
   // A hard limit learned from a prior overflow on this model, clamping an
   // optimistic catalog window down to the real serving limit.
   const endpointLimitTokens = getLearnedContextLimit(chatModelId);
@@ -420,17 +424,16 @@ export async function streamSessionChat(
     Math.max(1024, Math.floor(effectiveContextWindow / 2)),
   );
 
-  // Repository instructions are provider-call state, not chat history. Replay
-  // the source-hashed baseline on every turn; follow-ups only omit the bulky
-  // top-level directory listing. Keeping the baseline first preserves a stable
-  // prompt-cache prefix while the git/date delta is allowed to change.
-  const isFirstAssistantTurn = !validatedMessages.some(
-    (message) => message.role === "assistant",
-  );
+  // Repository instructions are provider-call state, not chat history. The
+  // block is byte-stable across turns (instructions re-read, environment
+  // snapshotted once per session) so the system prompt never breaks the
+  // provider's prompt-cache prefix.
   const relatedPaths = collectRelatedWorkspacePaths(validatedMessages);
-  const environmentContext = isFirstAssistantTurn
-    ? await buildWorkspaceContext({ cwd, sessionId, relatedPaths })
-    : await buildWorkspaceContextDelta({ cwd, sessionId, relatedPaths });
+  const environmentContext = await buildWorkspaceContext({
+    cwd,
+    sessionId,
+    relatedPaths,
+  });
   const availableSkillNames = listSkills({ cwd }).map((skill) => skill.name);
   const useFastChatPath = shouldUseFastChatPath({
     messages: providerInputMessages,
@@ -518,6 +521,7 @@ export async function streamSessionChat(
     endpointLimitTokens,
     pendingInteractionCount,
     cacheActive,
+    rollingCompaction,
     fixedInputTokens: turnAssembler.fixedInputTokens,
   });
 
@@ -555,6 +559,7 @@ export async function streamSessionChat(
           endpointLimitTokens,
           pendingInteractionCount,
           cacheActive,
+          rollingCompaction,
           fixedInputTokens: turnAssembler.fixedInputTokens,
         });
         logger.info("context_auto_compacted", {
@@ -610,6 +615,7 @@ export async function streamSessionChat(
         endpointLimitTokens,
         pendingInteractionCount: 0,
         cacheActive,
+        rollingCompaction,
         fixedInputTokens: turnAssembler.fixedInputTokens,
       });
 
@@ -638,6 +644,7 @@ export async function streamSessionChat(
         endpointLimitTokens,
         pendingInteractionCount: 0,
         cacheActive,
+        rollingCompaction,
         fixedInputTokens: turnAssembler.fixedInputTokens,
       });
 
@@ -741,11 +748,11 @@ export async function streamSessionChat(
     noteContextOverflow(sessionId);
   };
 
-  // Rolling compaction for uncached sessions runs after the turn completes so
-  // the summarizer never adds latency to the request path; the next turn picks
-  // up the advanced anchor from SessionContextState. Fire-and-forget.
+  // Rolling compaction runs after the turn completes so the summarizer never
+  // adds latency to the request path; the next turn picks up the advanced
+  // anchor from SessionContextState. Fire-and-forget.
   const maybeRunRollingCompaction = async (finishedMessages: UIMessage[]) => {
-    if (cacheActive || !contextConfig.autoCompact) {
+    if (!rollingCompaction || !contextConfig.autoCompact) {
       return;
     }
     if (rollingCompactionInFlight.has(sessionId)) {
@@ -754,39 +761,50 @@ export async function streamSessionChat(
 
     rollingCompactionInFlight.add(sessionId);
     try {
-      const latestState = await loadSessionContextStateSafe(sessionId);
-      const rollingView = buildProviderView({
-        messages: finishedMessages,
-        contextState: latestState,
-        config: contextConfig,
-        modelContextWindow: resolvedProviderModel.contextWindow,
-        reservedOutputTokens: budgetReservedOutputTokens,
-        endpointLimitTokens,
-        pendingInteractionCount: await countPendingChatInteractions(sessionId),
-        cacheActive,
-        fixedInputTokens: turnAssembler.fixedInputTokens,
-      });
-      if (!rollingView.needsRollingCompaction) {
-        return;
-      }
+      let latestState = await loadSessionContextStateSafe(sessionId);
+      const pendingInteractionCount =
+        await countPendingChatInteractions(sessionId);
+      // Fold all the way to the hysteresis target in this one pass. Each
+      // round's coverage is token-capped; stopping after a partial round
+      // would re-trigger on the next turn and change the cached prefix again.
+      for (let round = 1; round <= MAX_ROLLING_COMPACTION_ROUNDS; round += 1) {
+        const rollingView = buildProviderView({
+          messages: finishedMessages,
+          contextState: latestState,
+          config: contextConfig,
+          modelContextWindow: resolvedProviderModel.contextWindow,
+          reservedOutputTokens: budgetReservedOutputTokens,
+          endpointLimitTokens,
+          pendingInteractionCount,
+          cacheActive,
+          rollingCompaction,
+          continueRolling: round > 1,
+          fixedInputTokens: turnAssembler.fixedInputTokens,
+        });
+        if (!rollingView.needsRollingCompaction) {
+          return;
+        }
 
-      const compaction = await compactSessionContext({
-        sessionId,
-        coveredMessages: rollingView.coveredMessages,
-        previousState: latestState,
-        model: resolvedProviderModel.model,
-        modelId: chatModelId,
-        cwd,
-        config: contextConfig,
-        estimatedTokens: rollingView.estimate.tokens,
-        contextWindow: rollingView.contextWindow,
-      });
-      logger.info("context_rolling_compaction", {
-        sessionId,
-        tier: compaction.state.tier,
-        usedFallback: compaction.usedFallback,
-        coveredMessageCount: compaction.state.coveredMessageCount,
-      });
+        const compaction = await compactSessionContext({
+          sessionId,
+          coveredMessages: rollingView.coveredMessages,
+          previousState: latestState,
+          model: resolvedProviderModel.model,
+          modelId: chatModelId,
+          cwd,
+          config: contextConfig,
+          estimatedTokens: rollingView.estimate.tokens,
+          contextWindow: rollingView.contextWindow,
+        });
+        latestState = compaction.state;
+        logger.info("context_rolling_compaction", {
+          sessionId,
+          round,
+          tier: compaction.state.tier,
+          usedFallback: compaction.usedFallback,
+          coveredMessageCount: compaction.state.coveredMessageCount,
+        });
+      }
     } catch (error) {
       // Best-effort: a failed roll costs nothing — the pressure-driven inline
       // loop and the fit-to-budget clamp still bound the next request.
@@ -1083,6 +1101,7 @@ export async function streamSessionChat(
         originalInputTokens:
           estimateStructuralTokens(providerInputMessages) +
           turnAssembler.fixedInputTokens,
+        promptCacheActive: cacheActive,
         assemblyAbortSignal: requestAbortSignal,
         // Scope checkpoints and the repeat-call guard to the user turn, so an
         // approval continuation keeps grouping with the turn it belongs to.

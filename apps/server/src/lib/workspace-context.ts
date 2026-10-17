@@ -14,6 +14,7 @@ import {
   getErrorMessage,
   getLightcodeDataDir,
 } from "@lightcode/shared";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
@@ -28,8 +29,11 @@ import {
 } from "node:fs/promises";
 import { platform } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import type { UIMessage } from "ai";
 import { z } from "zod";
+
+const execFileAsync = promisify(execFile);
 
 const logger = createLogger("workspace-context");
 
@@ -40,7 +44,10 @@ const maxListedEntries = 40;
 const maxInstructionChars = 6_000;
 const maxNestedInstructionChars = 6_000;
 const maxNestedInstructionFileChars = 1_600;
-const maxBlockChars = 18_000;
+const maxRepositoryMapChars = 6_000;
+const maxRepositoryMapChildren = 32;
+const maxBlockChars = 24_000;
+const repositoryFileListTimeoutMs = 5_000;
 
 const instructionEpochSchema = z.object({
   epoch: z.number().int().positive(),
@@ -75,19 +82,28 @@ function escapeAttribute(value: string): string {
     .replaceAll(">", "&gt;");
 }
 
-function instructionEpochStatePath({
+function sessionStatePath({
+  directory,
   sessionId,
   dataDir,
 }: {
+  directory: "instruction-epochs" | "session-environment";
   sessionId: string;
   dataDir?: string;
 }): string {
   const sessionKey = createHash("sha256").update(sessionId).digest("hex");
   return path.join(
     dataDir ?? getLightcodeDataDir(),
-    "instruction-epochs",
+    directory,
     `${sessionKey}.json`,
   );
+}
+
+function instructionEpochStatePath(options: {
+  sessionId: string;
+  dataDir?: string;
+}): string {
+  return sessionStatePath({ directory: "instruction-epochs", ...options });
 }
 
 async function loadInstructionEpochs(statePath: string): Promise<InstructionEpoch[]> {
@@ -115,6 +131,14 @@ async function persistInstructionEpochs(
   statePath: string,
   epochs: readonly InstructionEpoch[],
 ): Promise<void> {
+  await writePrivateJsonFile(statePath, { epochs });
+}
+
+/** Atomic owner-only JSON write for session-local state files. */
+async function writePrivateJsonFile(
+  statePath: string,
+  value: unknown,
+): Promise<void> {
   const directory = path.dirname(statePath);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700).catch(() => undefined);
@@ -122,7 +146,7 @@ async function persistInstructionEpochs(
   try {
     await writeFile(
       temporaryPath,
-      `${JSON.stringify({ epochs }, null, 2)}\n`,
+      `${JSON.stringify(value, null, 2)}\n`,
       { encoding: "utf8", flag: "wx", mode: 0o600 },
     );
     await rename(temporaryPath, statePath);
@@ -425,10 +449,213 @@ async function buildDirectoryListing(cwd: string): Promise<string> {
   }
 }
 
-// The git summary spawns a `git status` subprocess and is rebuilt on every
-// chat request (full snapshot on turn one, delta afterwards). A short TTL
-// makes rapid-fire requests — retries, approval continuations — reuse the
-// summary while staying fresh enough to reflect the agent's own file edits.
+/**
+ * Tracked plus untracked-but-not-ignored files, relative to `cwd`. Null when
+ * `cwd` is not inside a git work tree (or git is unavailable).
+ */
+async function listRepositoryFiles(cwd: string): Promise<string[] | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+      {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: repositoryFileListTimeoutMs,
+        windowsHide: true,
+      },
+    );
+    return [...new Set(stdout.split("\0").filter(Boolean))];
+  } catch {
+    return null;
+  }
+}
+
+interface RepositoryTreeNode {
+  directories: Map<string, RepositoryTreeNode>;
+  files: string[];
+  /** Files anywhere below this directory. */
+  fileCount: number;
+}
+
+function createRepositoryTreeNode(): RepositoryTreeNode {
+  return { directories: new Map(), files: [], fileCount: 0 };
+}
+
+function compareNames(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** A folder's subfolders, capped so one huge folder cannot crowd out the map. */
+function visibleSubdirectories(node: RepositoryTreeNode): {
+  shown: Array<{ name: string; node: RepositoryTreeNode }>;
+  hiddenCount: number;
+} {
+  const all = [...node.directories.entries()]
+    .sort(([left], [right]) => compareNames(left, right))
+    .map(([name, child]) => ({ name, node: child }));
+  return {
+    shown: all.slice(0, maxRepositoryMapChildren),
+    hiddenCount: Math.max(0, all.length - maxRepositoryMapChildren),
+  };
+}
+
+function subdirectoryLines(node: RepositoryTreeNode, depth: number): string[] {
+  const indent = "  ".repeat(depth);
+  const { shown, hiddenCount } = visibleSubdirectories(node);
+  const lines = shown.map(
+    ({ name, node: child }) => `${indent}${name}/ (${child.fileCount})`,
+  );
+  if (hiddenCount > 0) {
+    lines.push(`${indent}… ${hiddenCount} more folders`);
+  }
+  return lines;
+}
+
+function fileNameLines(node: RepositoryTreeNode, depth: number): string[] {
+  const indent = "  ".repeat(depth);
+  const files = [...node.files].sort(compareNames);
+  const lines = files
+    .slice(0, maxRepositoryMapChildren)
+    .map((name) => `${indent}${name}`);
+  if (files.length > lines.length) {
+    lines.push(`${indent}… ${files.length - lines.length} more files`);
+  }
+  return lines;
+}
+
+/** Stands in for a folder's file names until (unless) the budget allows them. */
+function filePlaceholderLines(node: RepositoryTreeNode, depth: number): string[] {
+  return node.files.length > 0
+    ? [`${"  ".repeat(depth)}… ${node.files.length} files`]
+    : [];
+}
+
+function linesCost(lines: readonly string[]): number {
+  return lines.reduce((sum, line) => sum + line.length + 1, 0);
+}
+
+/**
+ * Renders a compact, deterministic file tree within `maxChars`, saving the
+ * agent the list_files/glob round trips it would otherwise spend orienting.
+ * Pass one lays out the folder skeleton breadth-first, as deep as the budget
+ * allows — folder names carry most of the navigation value. Pass two swaps in
+ * file names, shallow folders first. A folder that does not fit stays a single
+ * `name/ (N)` line.
+ */
+export function formatRepositoryMap(
+  paths: readonly string[],
+  maxChars = maxRepositoryMapChars,
+): string {
+  const root = createRepositoryTreeNode();
+  for (const filePath of paths) {
+    const segments = filePath.split("/").filter(Boolean);
+    const fileName = segments.pop();
+    if (!fileName) {
+      continue;
+    }
+    let current = root;
+    current.fileCount += 1;
+    for (const segment of segments) {
+      let child = current.directories.get(segment);
+      if (!child) {
+        child = createRepositoryTreeNode();
+        current.directories.set(segment, child);
+      }
+      child.fileCount += 1;
+      current = child;
+    }
+    current.files.push(fileName);
+  }
+
+  if (root.fileCount === 0) {
+    return "(no files)";
+  }
+
+  const order: Array<{ node: RepositoryTreeNode; depth: number }> = [
+    { node: root, depth: 0 },
+  ];
+  const expanded = new Set<RepositoryTreeNode>();
+  let used = 0;
+  for (let index = 0; index < order.length; index += 1) {
+    const { node, depth } = order[index]!;
+    const cost =
+      linesCost(subdirectoryLines(node, depth)) +
+      linesCost(filePlaceholderLines(node, depth));
+    // The root always renders; deeper folders stay collapsed when over budget.
+    if (node !== root && used + cost > maxChars) {
+      continue;
+    }
+    used += cost;
+    expanded.add(node);
+    for (const { name, node: child } of visibleSubdirectories(node).shown) {
+      // Dot-folders (.github, .agents, .vscode) are tooling config: listed,
+      // never expanded, so the budget goes to source directories.
+      if (!name.startsWith(".")) {
+        order.push({ node: child, depth: depth + 1 });
+      }
+    }
+  }
+
+  // Root files (manifests, READMEs) first, then the smallest folders: naming
+  // many small folders completely beats half-listing one huge one. The sort is
+  // stable, so equal sizes keep breadth-first order.
+  const fileCandidates = order
+    .filter(({ node }) => expanded.has(node) && node.files.length > 0)
+    .sort((left, right) =>
+      left.node === root
+        ? -1
+        : right.node === root
+          ? 1
+          : left.node.files.length - right.node.files.length,
+    );
+  const filesShown = new Set<RepositoryTreeNode>();
+  for (const { node, depth } of fileCandidates) {
+    const delta =
+      linesCost(fileNameLines(node, depth)) -
+      linesCost(filePlaceholderLines(node, depth));
+    if (used + delta > maxChars) {
+      continue;
+    }
+    used += delta;
+    filesShown.add(node);
+  }
+
+  const lines: string[] = [];
+  const render = (node: RepositoryTreeNode, depth: number) => {
+    const { shown } = visibleSubdirectories(node);
+    subdirectoryLines(node, depth).forEach((line, index) => {
+      lines.push(line);
+      const child = shown[index]?.node;
+      if (child && expanded.has(child)) {
+        render(child, depth + 1);
+      }
+    });
+    lines.push(
+      ...(filesShown.has(node)
+        ? fileNameLines(node, depth)
+        : filePlaceholderLines(node, depth)),
+    );
+  };
+  render(root, 0);
+  return lines.join("\n");
+}
+
+async function buildRepositoryOverview(cwd: string): Promise<string> {
+  const files = await listRepositoryFiles(cwd);
+  if (!files) {
+    return ["Top-level entries:", await buildDirectoryListing(cwd)].join("\n");
+  }
+  return [
+    `Repository files (${files.length}; dir/ (N) = N files inside, "…" = more not shown; use glob_search or list_files for the rest):`,
+    formatRepositoryMap(files),
+  ].join("\n");
+}
+
+// The git summary spawns a `git status` subprocess for every session snapshot
+// (and every session-less build). A short TTL makes bursts — several sessions
+// or subagents starting together — reuse it while staying fresh.
 const gitSummaryCacheTtlMs = 5_000;
 const gitSummaryCache = new Map<
   string,
@@ -547,11 +774,145 @@ export async function buildWorkspaceInstructionBaseline({
   };
 }
 
+const environmentSnapshotSchema = z.object({
+  cwd: z.string().min(1),
+  capturedAt: z.string().min(1),
+  body: z.string(),
+});
+type EnvironmentSnapshot = z.infer<typeof environmentSnapshotSchema>;
+
+// Keeps a session's snapshot stable for this process even when the disk write
+// failed; bounded so long-lived servers do not accumulate every session.
+const maxMemoizedEnvironmentSnapshots = 256;
+const environmentSnapshotMemo = new Map<string, EnvironmentSnapshot>();
+
+function memoizeEnvironmentSnapshot(
+  statePath: string,
+  snapshot: EnvironmentSnapshot,
+): EnvironmentSnapshot {
+  environmentSnapshotMemo.delete(statePath);
+  environmentSnapshotMemo.set(statePath, snapshot);
+  if (environmentSnapshotMemo.size > maxMemoizedEnvironmentSnapshots) {
+    const oldest = environmentSnapshotMemo.keys().next().value;
+    if (oldest !== undefined) {
+      environmentSnapshotMemo.delete(oldest);
+    }
+  }
+  return snapshot;
+}
+
+/** Test helper: forget in-process snapshots, as a server restart would. */
+export function resetEnvironmentSnapshotMemo(): void {
+  environmentSnapshotMemo.clear();
+}
+
+async function captureEnvironmentSnapshot(
+  cwd: string,
+): Promise<EnvironmentSnapshot> {
+  const [overview, git] = await Promise.all([
+    buildRepositoryOverview(cwd),
+    buildGitSummary(cwd),
+  ]);
+  const capturedAt = new Date().toISOString();
+  return {
+    cwd,
+    capturedAt,
+    body: [
+      `Working directory: ${cwd}`,
+      `Platform: ${describePlatform()}`,
+      `Date: ${capturedAt.slice(0, 10)} (session start)`,
+      "",
+      "Git (snapshot from session start; call git_status for the current state):",
+      git,
+      "",
+      overview,
+    ].join("\n"),
+  };
+}
+
+async function loadEnvironmentSnapshot(
+  statePath: string,
+  cwd: string,
+): Promise<EnvironmentSnapshot | null> {
+  const memoized = environmentSnapshotMemo.get(statePath);
+  if (memoized?.cwd === cwd) {
+    return memoized;
+  }
+
+  try {
+    const parsed = environmentSnapshotSchema.safeParse(
+      JSON.parse(await readFile(statePath, "utf8")),
+    );
+    if (parsed.success && parsed.data.cwd === cwd) {
+      return memoizeEnvironmentSnapshot(statePath, parsed.data);
+    }
+    if (!parsed.success) {
+      logger.warn("workspace_environment_snapshot_invalid", { statePath });
+    }
+  } catch (error) {
+    const code = isRecord(error) ? Reflect.get(error, "code") : undefined;
+    if (code !== "ENOENT") {
+      logger.warn("workspace_environment_snapshot_load_failed", {
+        statePath,
+        error: getErrorMessage(error),
+      });
+    }
+  }
+  return null;
+}
+
 /**
- * Builds a compact `<environment>` block describing the workspace the chat is
- * running in, so the agent knows the repo it is operating on and reads files
- * from it instead of asking the user to paste code. Best-effort and bounded in
- * size; never throws.
+ * The volatile half of the environment (git state, listing, date) is captured
+ * once per session and replayed verbatim. It sits in the system prompt, ahead
+ * of the whole conversation, so refreshing it every turn would invalidate the
+ * provider's cached prefix for the entire history on every request.
+ */
+async function resolveEnvironmentSnapshot({
+  cwd,
+  sessionId,
+  dataDir,
+}: {
+  cwd: string;
+  sessionId?: string;
+  dataDir?: string;
+}): Promise<EnvironmentSnapshot> {
+  if (!sessionId) {
+    return captureEnvironmentSnapshot(cwd);
+  }
+
+  const statePath = sessionStatePath({
+    directory: "session-environment",
+    sessionId,
+    dataDir,
+  });
+  const existing = await loadEnvironmentSnapshot(statePath, cwd);
+  if (existing) {
+    return existing;
+  }
+
+  const snapshot = memoizeEnvironmentSnapshot(
+    statePath,
+    await captureEnvironmentSnapshot(cwd),
+  );
+  try {
+    await writePrivateJsonFile(statePath, snapshot);
+  } catch (error) {
+    logger.warn("workspace_environment_snapshot_persist_failed", {
+      statePath,
+      error: getErrorMessage(error),
+    });
+  }
+  return snapshot;
+}
+
+/**
+ * Builds the workspace block appended to the system prompt: the root
+ * instruction baseline, lazily discovered nested instructions, and an
+ * `<environment>` section, so the agent knows the repo it is operating on and
+ * reads files from it instead of asking the user to paste code.
+ *
+ * Byte-stable across turns of a session unless instruction or skill files
+ * change. Best-effort and bounded in size; never throws.
  */
 export async function buildWorkspaceContext({
   cwd,
@@ -559,7 +920,7 @@ export async function buildWorkspaceContext({
   relatedPaths,
   dataDir,
 }: NestedWorkspaceInstructionOptions): Promise<string> {
-  const [baseline, nestedInstructions, listing, git] = await Promise.all([
+  const [baseline, nestedInstructions, snapshot] = await Promise.all([
     buildWorkspaceInstructionBaseline({ cwd }),
     buildNestedWorkspaceInstructionBlock({
       cwd,
@@ -567,26 +928,16 @@ export async function buildWorkspaceContext({
       relatedPaths,
       dataDir,
     }),
-    buildDirectoryListing(cwd),
-    buildGitSummary(cwd),
+    resolveEnvironmentSnapshot({ cwd, sessionId, dataDir }),
   ]);
   const skills = buildAvailableSkills(cwd);
 
-  const today = new Date().toISOString().slice(0, 10);
   const parts = [
     baseline.block,
     nestedInstructions ? `\n${nestedInstructions}` : "",
     "",
     "<environment>",
-    `Working directory: ${cwd}`,
-    `Platform: ${describePlatform()}`,
-    `Date: ${today}`,
-    "",
-    "Git:",
-    git,
-    "",
-    "Top-level entries:",
-    listing,
+    snapshot.body,
     skills ? `\n${skills}` : "",
     "</environment>",
   ];
@@ -595,45 +946,4 @@ export async function buildWorkspaceContext({
   return block.length > maxBlockChars
     ? `${block.slice(0, maxBlockChars)}\n… (environment truncated)\n</environment>`
     : block;
-}
-
-/**
- * Compact per-turn refresh. The source-hashed instruction baseline is replayed
- * on every stateless provider request; only the non-authoritative directory
- * listing is omitted after turn one.
- */
-export async function buildWorkspaceContextDelta({
-  cwd,
-  sessionId,
-  relatedPaths,
-  dataDir,
-}: NestedWorkspaceInstructionOptions): Promise<string> {
-  const [baseline, nestedInstructions, git] = await Promise.all([
-    buildWorkspaceInstructionBaseline({ cwd }),
-    buildNestedWorkspaceInstructionBlock({
-      cwd,
-      sessionId,
-      relatedPaths,
-      dataDir,
-    }),
-    buildGitSummary(cwd),
-  ]);
-  const skills = buildAvailableSkills(cwd);
-
-  const today = new Date().toISOString().slice(0, 10);
-  return [
-    baseline.block,
-    nestedInstructions ? `\n${nestedInstructions}` : "",
-    "",
-    "<environment>",
-    `Working directory: ${cwd}`,
-    `Platform: ${describePlatform()}`,
-    `Date: ${today}`,
-    "(Top-level listing is available through list_files; current git state follows.)",
-    "",
-    "Git:",
-    git,
-    skills ? `\n${skills}` : "",
-    "</environment>",
-  ].join("\n");
 }

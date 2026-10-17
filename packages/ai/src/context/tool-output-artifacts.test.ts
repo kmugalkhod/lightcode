@@ -7,6 +7,7 @@ import {
   artifactizeLargeToolOutputs,
   getToolOutputArtifactPath,
   readToolOutputArtifact,
+  resolveToolOutputArtifactThresholds,
   serializeToolResultOutput,
   toolOutputArtifactExists,
 } from "./tool-output-artifacts";
@@ -228,6 +229,24 @@ describe("tool-output artifacts", () => {
     // Oversized output is still previewed even in the current turn.
     expect(JSON.stringify(resultOutput(result.messages[4]))).toContain("characters omitted");
     expect(result.artifactizedOutputs).toBe(2);
+  });
+
+  test("cached providers keep an older turn's result exactly as it was first sent", async () => {
+    const dataDir = await tempDataDir();
+    const fullRead = toolResultMessage({ type: "text", value: "x".repeat(10_000) }, "read");
+    const turnOne: ModelMessage[] = [{ role: "user", content: "first" }, fullRead];
+    const turnTwo: ModelMessage[] = [...turnOne, { role: "user", content: "second" }];
+
+    const cached = resolveToolOutputArtifactThresholds({ promptCacheActive: true });
+    const sentDuringTurnOne = await artifactizeLargeToolOutputs(turnOne, { dataDir, ...cached });
+    const sentDuringTurnTwo = await artifactizeLargeToolOutputs(turnTwo, { dataDir, ...cached });
+    // Byte-identical history keeps the provider's cached prefix valid.
+    expect(sentDuringTurnTwo.messages[1]).toEqual(sentDuringTurnOne.messages[1]);
+    expect(sentDuringTurnTwo.messages[1]).toBe(fullRead);
+
+    const uncached = resolveToolOutputArtifactThresholds({ promptCacheActive: false });
+    const uncachedTurnTwo = await artifactizeLargeToolOutputs(turnTwo, { dataDir, ...uncached });
+    expect(JSON.stringify(resultOutput(uncachedTurnTwo.messages[1]))).toContain("characters omitted");
   });
 
   test("without a current-turn threshold every result uses the base threshold", async () => {

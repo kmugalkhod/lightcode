@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   buildNestedWorkspaceInstructionBlock,
   buildWorkspaceContext,
-  buildWorkspaceContextDelta,
   buildWorkspaceInstructionBaseline,
   collectRelatedWorkspacePaths,
   formatAvailableSkills,
+  formatRepositoryMap,
+  resetEnvironmentSnapshotMemo,
 } from "./workspace-context";
 import type { UIMessage } from "ai";
 
@@ -39,7 +41,7 @@ describe("buildWorkspaceContext", () => {
     const block = await buildWorkspaceContext({ cwd: dir });
 
     expect(block).toContain("truncated");
-    expect(block.length).toBeLessThanOrEqual(18_200);
+    expect(block.length).toBeLessThanOrEqual(24_200);
   });
 
   test("never throws for a missing directory", async () => {
@@ -67,35 +69,155 @@ describe("buildWorkspaceContext", () => {
   });
 });
 
-describe("buildWorkspaceContextDelta", () => {
-  test("replays instructions and keeps cwd/git while dropping the listing", async () => {
-    const dir = await tempDir();
-    await writeFile(
-      path.join(dir, "AGENTS.md"),
-      `Always run bun test.\n${"Project conventions. ".repeat(50)}`,
-    );
-    await mkdir(path.join(dir, "src"));
-
-    const [full, delta] = await Promise.all([
-      buildWorkspaceContext({ cwd: dir }),
-      buildWorkspaceContextDelta({ cwd: dir }),
+describe("formatRepositoryMap", () => {
+  test("renders folders before files with recursive file counts", () => {
+    const map = formatRepositoryMap([
+      "README.md",
+      "src/index.ts",
+      "src/lib/a.ts",
+      "src/lib/b.ts",
     ]);
 
-    expect(delta).toContain("<environment>");
-    expect(delta).toContain(`Working directory: ${dir}`);
-    expect(delta).toContain("Git:");
-    expect(delta).not.toContain("Top-level entries:");
-    expect(delta).toContain("Always run bun test.");
-    expect(delta).toContain('source="AGENTS.md"');
-    expect(full).toContain("Top-level entries:");
-    expect(delta.trimEnd().endsWith("</environment>")).toBe(true);
+    expect(map.split("\n")).toEqual([
+      "src/ (3)",
+      "  lib/ (2)",
+      "    a.ts",
+      "    b.ts",
+      "  index.ts",
+      "README.md",
+    ]);
   });
 
-  test("never throws for a missing directory", async () => {
-    const block = await buildWorkspaceContextDelta({
-      cwd: path.join(tmpdir(), "lc-does-not-exist-xyz"),
+  test("stays within budget, keeping the folder skeleton over file names", () => {
+    const paths: string[] = [];
+    for (let pkg = 0; pkg < 20; pkg += 1) {
+      for (let file = 0; file < 200; file += 1) {
+        paths.push(`packages/pkg-${pkg}/src/deep/module-${file}.ts`);
+      }
+    }
+
+    const map = formatRepositoryMap(paths, 1_500);
+
+    expect(map.length).toBeLessThanOrEqual(1_500);
+    expect(map).toContain("pkg-19/ (200)");
+    // File names give way first: a collapsed folder still states its size.
+    expect(map).toContain("… 200 files");
+    expect(map).not.toContain("module-199.ts");
+  });
+
+  test("lists dot-folders collapsed and caps wide folders", () => {
+    const paths = [
+      ".github/workflows/ci.yml",
+      ...Array.from({ length: 40 }, (_, index) => `wide/file-${String(index).padStart(2, "0")}.ts`),
+    ];
+
+    const map = formatRepositoryMap(paths);
+
+    expect(map).toContain(".github/ (1)");
+    expect(map).not.toContain("ci.yml");
+    expect(map).toContain("… 8 more files");
+  });
+});
+
+describe("buildWorkspaceContext session snapshot", () => {
+  test("maps the repository's files for git workspaces", async () => {
+    const dir = await tempDir();
+    await mkdir(path.join(dir, "src"));
+    await writeFile(path.join(dir, "src", "index.ts"), "export {};");
+    await writeFile(path.join(dir, ".gitignore"), "dist/\n");
+    await mkdir(path.join(dir, "dist"));
+    await writeFile(path.join(dir, "dist", "bundle.js"), "");
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+
+    const block = await buildWorkspaceContext({ cwd: dir });
+
+    expect(block).toContain("Repository files (2;");
+    expect(block).toContain("src/ (1)");
+    expect(block).toContain("  index.ts");
+    // Ignored output never reaches the map.
+    expect(block).not.toContain("bundle.js");
+  });
+
+  test("replays the session's environment verbatim across turns", async () => {
+    const dir = await tempDir();
+    const dataDir = await tempDir();
+    await writeFile(path.join(dir, "AGENTS.md"), "Always run bun test.");
+    await mkdir(path.join(dir, "src"));
+
+    const first = await buildWorkspaceContext({
+      cwd: dir,
+      sessionId: "session-stable",
+      dataDir,
     });
-    expect(block).toContain("<environment>");
+    // Workspace changes mid-session must not rewrite the cached prompt prefix.
+    await writeFile(path.join(dir, "added-later.ts"), "export {};");
+    const second = await buildWorkspaceContext({
+      cwd: dir,
+      sessionId: "session-stable",
+      dataDir,
+    });
+
+    expect(second).toBe(first);
+    expect(second).toContain("Top-level entries:");
+    expect(second).not.toContain("added-later.ts");
+  });
+
+  test("survives a server restart through the persisted snapshot", async () => {
+    const dir = await tempDir();
+    const dataDir = await tempDir();
+    const first = await buildWorkspaceContext({
+      cwd: dir,
+      sessionId: "session-restart",
+      dataDir,
+    });
+    await writeFile(path.join(dir, "added-later.ts"), "export {};");
+    resetEnvironmentSnapshotMemo();
+
+    // After a restart the persisted file, not the in-process memo, must
+    // reproduce the block byte-for-byte; a new session gets its own snapshot.
+    const other = await buildWorkspaceContext({
+      cwd: dir,
+      sessionId: "session-other",
+      dataDir,
+    });
+    const again = await buildWorkspaceContext({
+      cwd: dir,
+      sessionId: "session-restart",
+      dataDir,
+    });
+
+    expect(again).toBe(first);
+    expect(other).toContain("added-later.ts");
+  });
+
+  test("still refreshes root instructions within a session", async () => {
+    const dir = await tempDir();
+    const dataDir = await tempDir();
+    await writeFile(path.join(dir, "AGENTS.md"), "Use Bun.");
+    const first = await buildWorkspaceContext({
+      cwd: dir,
+      sessionId: "session-instructions",
+      dataDir,
+    });
+    await writeFile(path.join(dir, "AGENTS.md"), "Use Bun and run tests.");
+    const second = await buildWorkspaceContext({
+      cwd: dir,
+      sessionId: "session-instructions",
+      dataDir,
+    });
+
+    expect(first).toContain("Use Bun.");
+    expect(second).toContain("Use Bun and run tests.");
+  });
+
+  test("session-less builds reflect the current workspace", async () => {
+    const dir = await tempDir();
+    await buildWorkspaceContext({ cwd: dir });
+    await writeFile(path.join(dir, "added-later.ts"), "export {};");
+
+    expect(await buildWorkspaceContext({ cwd: dir })).toContain(
+      "added-later.ts",
+    );
   });
 });
 

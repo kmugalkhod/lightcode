@@ -19,11 +19,12 @@ describe("selectCodingAgentIntentTools", () => {
     expect(tools("thanks")).toEqual([]);
   });
 
-  test("keyword-free build tasks get compact core tools including edits and bash", () => {
+  test("keyword-free build tasks get compact core tools including edits, bash, and git", () => {
     for (const phrase of [
       "continue",
       "fix the failing test",
       "design a multiplayer system",
+      "review my changes",
     ]) {
       const selected = tools(phrase);
       expect(selected).toContain("read_file");
@@ -31,10 +32,65 @@ describe("selectCodingAgentIntentTools", () => {
       expect(selected).toContain("write_file");
       expect(selected).toContain("edit_file");
       expect(selected).toContain("bash");
-      expect(selected).not.toContain("git_status");
+      expect(selected).toContain("git_diff");
       expect(selected).not.toContain("web_search");
+      expect(selected).not.toContain("list_mcp_resources");
       expect(selected).toContain("skill");
     }
+  });
+
+  test("a casual follow-up to real work keeps the agent's tools", () => {
+    const selected = selectCodingAgentIntentTools({
+      mode: "build",
+      prompt: "",
+      messages: [
+        { role: "user", parts: [{ type: "text", text: "fix the failing test" }] },
+        { role: "assistant", parts: [{ type: "text", text: "Apply the fix?" }] },
+        { role: "user", parts: [{ type: "text", text: "yes" }] },
+      ],
+    });
+
+    expect(selected).toContain("edit_file");
+    expect(selected).toContain("bash");
+  });
+
+  test("the tool grammar stays identical across a session's turns", () => {
+    const history: Array<{ role: string; parts: Array<{ type: string; text: string }> }> = [];
+    const perTurn: string[][] = [];
+    for (const text of [
+      "use the MCP server resources for this task",
+      "now fix the bug in auth",
+      "ok",
+      "commit it",
+    ]) {
+      history.push({ role: "user", parts: [{ type: "text", text }] });
+      perTurn.push(
+        selectCodingAgentIntentTools({ mode: "build", prompt: "", messages: history }),
+      );
+      history.push({ role: "assistant", parts: [{ type: "text", text: "done" }] });
+    }
+
+    // Any flip would be a full prompt-cache miss on the whole history.
+    for (const selection of perTurn) {
+      expect(selection).toEqual(perTurn[0]!);
+    }
+    expect(perTurn[0]).toContain("call_mcp_tool");
+  });
+
+  test("web tools stay scoped to the latest request", () => {
+    const selected = selectCodingAgentIntentTools({
+      mode: "build",
+      prompt: "",
+      messages: [
+        { role: "user", parts: [{ type: "text", text: "search the web for bun docs" }] },
+        { role: "assistant", parts: [{ type: "text", text: "Found them." }] },
+        { role: "user", parts: [{ type: "text", text: "now update the config" }] },
+      ],
+    });
+
+    // Provider search is approved one turn at a time.
+    expect(selected).not.toContain("web_search");
+    expect(selected).toContain("edit_file");
   });
 
   test("plan core stays read-only and retains interactive questions", () => {
