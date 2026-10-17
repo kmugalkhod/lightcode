@@ -136,8 +136,12 @@ const externalNames = Object.keys(externalDependencies).flatMap((name) => [
   `${name}/*`,
 ]);
 
-rmSync(distDir, { recursive: true, force: true });
+// Empty dist/ rather than deleting it: on Windows a shell or editor sitting
+// in the folder makes removing the directory itself fail with EBUSY.
 mkdirSync(distDir, { recursive: true });
+for (const entry of readdirSync(distDir)) {
+  rmSync(path.join(distDir, entry), { recursive: true, force: true });
+}
 
 await buildEntry({
   entry: "apps/server/src/index.ts",
