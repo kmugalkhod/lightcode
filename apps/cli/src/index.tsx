@@ -18,7 +18,7 @@ if (cliArgs.includes("--help") || cliArgs.includes("-h")) {
 
 const webMode = cliArgs[0] === "web" || cliArgs.includes("--web");
 if (webMode) {
-  const { startAuthenticatedWebServer } = await import("./lib/server-launcher");
+  const { startAuthenticatedWebServer, stopServerProcess } = await import("./lib/server-launcher");
   const { buildWebAppUrl, openWebApp } = await import("./lib/web-launcher");
   const webLaunch = await startAuthenticatedWebServer();
 
@@ -43,7 +43,7 @@ if (webMode) {
   const ownedProcess = webLaunch.ownedProcess;
   const stopWebServer = () => {
     try {
-      ownedProcess.kill();
+      stopServerProcess(ownedProcess);
     } catch {
       // It may already have stopped.
     }
@@ -54,7 +54,7 @@ if (webMode) {
   process.exit(exitCode);
 }
 
-const { ensureServerRunning } = await import("./lib/server-launcher");
+const { ensureServerRunning, stopServerProcess } = await import("./lib/server-launcher");
 const serverLaunch = await ensureServerRunning();
 
 if (serverLaunch.error) {
@@ -89,7 +89,7 @@ if (serverLaunch.ownedProcess) {
   const ownedProcess = serverLaunch.ownedProcess;
   const killOwnedServer = () => {
     try {
-      ownedProcess.kill();
+      stopServerProcess(ownedProcess);
     } catch {
       // The server may already be gone.
     }

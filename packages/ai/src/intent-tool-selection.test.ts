@@ -136,6 +136,18 @@ describe("selectCodingAgentIntentTools", () => {
     expect(plan).not.toContain("call_mcp_tool");
   });
 
+  test("configured MCP servers offer their tools without the user saying MCP", () => {
+    const messages = [{ role: "user", parts: [{ type: "text", text: "look up the docs for this library" }] }];
+    const withServers = selectCodingAgentIntentTools({ mode: "build", prompt: "", messages, mcpServersConfigured: true });
+    expect(withServers).toContain("list_mcp_tools");
+    expect(withServers).toContain("call_mcp_tool");
+    expect(selectCodingAgentIntentTools({ mode: "build", prompt: "", messages })).not.toContain("list_mcp_tools");
+    // Chit-chat still gets the tool-less fast path.
+    expect(
+      selectCodingAgentIntentTools({ mode: "build", prompt: "", messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }], mcpServersConfigured: true }),
+    ).toEqual([]);
+  });
+
   test("skill intent supports explicit wording and known skill names", () => {
     expect(tools("load the ai-sdk skill")).toContain("skill");
 

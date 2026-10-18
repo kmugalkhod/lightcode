@@ -1,6 +1,7 @@
 import {
   createWorkspaceContext,
   executeGitStatus,
+  listEnabledMcpServerNames,
   listSkills,
   type SkillSummary,
 } from "@lightcode/ai/runtime";
@@ -416,6 +417,23 @@ function buildAvailableSkills(cwd: string): string {
     return formatAvailableSkills(listSkills({ cwd }));
   } catch (error) {
     logger.warn("workspace_skills_failed", { cwd, error: getErrorMessage(error) });
+    return "";
+  }
+}
+
+/** Names only: listing their tools here would start every server on every turn. */
+export function formatAvailableMcpServers(names: readonly string[]): string {
+  if (names.length === 0) {
+    return "";
+  }
+  return `MCP servers: ${names.join(", ")} — list their tools with list_mcp_tools, then call one with call_mcp_tool.`;
+}
+
+function buildAvailableMcpServers(cwd: string): string {
+  try {
+    return formatAvailableMcpServers(listEnabledMcpServerNames(cwd));
+  } catch (error) {
+    logger.warn("workspace_mcp_failed", { cwd, error: getErrorMessage(error) });
     return "";
   }
 }
@@ -931,6 +949,7 @@ export async function buildWorkspaceContext({
     resolveEnvironmentSnapshot({ cwd, sessionId, dataDir }),
   ]);
   const skills = buildAvailableSkills(cwd);
+  const mcpServers = buildAvailableMcpServers(cwd);
 
   const parts = [
     baseline.block,
@@ -939,6 +958,7 @@ export async function buildWorkspaceContext({
     "<environment>",
     snapshot.body,
     skills ? `\n${skills}` : "",
+    mcpServers ? `\n${mcpServers}` : "",
     "</environment>",
   ];
 

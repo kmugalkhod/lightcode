@@ -78,12 +78,18 @@ export const extensionRoutes = new Hono()
     const server = mcpServerManager.inspectServer(name);
     return server ? c.json({ server }) : c.json({ error: "MCP server not found." }, 404);
   })
-  .post("/mcp/servers/:name/start", zValidator("param", mcpServerParamsSchema), (c) => {
+  .post("/mcp/servers/:name/start", zValidator("param", mcpServerParamsSchema), async (c) => {
     const { name } = c.req.valid("param");
-    return c.json({ server: mcpServerManager.startServer(name) });
+    if (!mcpServerManager.inspectServer(name)) {
+      return c.json({ error: "MCP server not found." }, 404);
+    }
+    return c.json({ server: await mcpServerManager.startServer(name) });
   })
-  .post("/mcp/servers/:name/stop", zValidator("param", mcpServerParamsSchema), (c) => {
+  .post("/mcp/servers/:name/stop", zValidator("param", mcpServerParamsSchema), async (c) => {
     const { name } = c.req.valid("param");
-    return c.json({ server: mcpServerManager.stopServer(name) });
+    if (!mcpServerManager.inspectServer(name)) {
+      return c.json({ error: "MCP server not found." }, 404);
+    }
+    return c.json({ server: await mcpServerManager.stopServer(name) });
   })
   .get("/plugins", (c) => c.json({ plugins: listPlugins({ cwd: process.cwd() }) }));

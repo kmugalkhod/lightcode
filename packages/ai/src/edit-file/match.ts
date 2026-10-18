@@ -149,7 +149,7 @@ function applyRanges(
   }
   if (!replaceAll && ranges.length > 1) {
     throw new EditMatchError(
-      `The search text matches ${ranges.length} places. Add surrounding lines to make it unique, or pass replaceAll: true to change every occurrence.`,
+      `The search text matches ${ranges.length} places. Add surrounding lines to make it unique, or pass allMatches: true to change every occurrence.`,
     );
   }
   const targetRanges = replaceAll ? ranges : [ranges[0]];

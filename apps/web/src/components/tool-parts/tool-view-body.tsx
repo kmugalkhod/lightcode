@@ -1,4 +1,4 @@
-import type { ToolView } from "./tool-view";
+import { commandFailed, type ToolView } from "./tool-view";
 
 const maximumDiffLines = 400;
 const maximumOutputChars = 6_000;
@@ -56,12 +56,12 @@ export function ToolViewBody({ view }: { view: ToolView }) {
           {view.command}
         </pre>
         {output ? (
-          <pre className={view.exitCode === 0 ? "command-output" : "command-output failed"}>
+          <pre className={commandFailed(view) ? "command-output failed" : "command-output"}>
             {clip(output)}
             {view.truncated ? "\n[output truncated]" : ""}
           </pre>
         ) : (
-          <span className="tool-view-note">No output</span>
+          <span className="tool-view-note">{view.note ?? "No output"}</span>
         )}
       </div>
     );

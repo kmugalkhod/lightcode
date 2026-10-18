@@ -481,7 +481,10 @@ function mergeConfig(...configs: LightcodeConfig[]): LightcodeConfig {
       ...config,
       permissions: config.permissions ?? mergedConfig.permissions,
       sandbox: config.sandbox ?? mergedConfig.sandbox,
-      mcp: config.mcp ?? mergedConfig.mcp,
+      // Project servers join the user's; on a name clash the project wins.
+      mcp: config.mcp
+        ? { servers: { ...mergedConfig.mcp?.servers, ...config.mcp.servers } }
+        : mergedConfig.mcp,
       context: config.context
         ? {
             ...mergedConfig.context,

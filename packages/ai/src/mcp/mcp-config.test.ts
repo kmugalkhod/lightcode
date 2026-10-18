@@ -20,7 +20,7 @@ describe("mcp config and lifecycle", () => {
         transport: "stdio",
         enabled: true,
         state: "stopped",
-        command: "node",
+        command: "node server.js",
         pid: null,
         error: null,
       },

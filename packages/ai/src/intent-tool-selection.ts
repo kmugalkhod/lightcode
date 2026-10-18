@@ -21,6 +21,7 @@ const webToolNames = [
   "web_search",
 ] as const satisfies readonly CodingAgentToolName[];
 const mcpToolNames = [
+  "list_mcp_tools",
   "list_mcp_resources",
   "read_mcp_resource",
   "call_mcp_tool",
@@ -43,6 +44,8 @@ const providerToolPriority = [
   "write_file",
   "edit_file",
   "bash",
+  "bash_output",
+  "bash_stop",
   "tool_search",
   "request_user_input",
   "todo_write",
@@ -51,6 +54,7 @@ const providerToolPriority = [
   "git_log",
   "git_show",
   "skill",
+  "list_mcp_tools",
   "list_mcp_resources",
   "read_mcp_resource",
   "call_mcp_tool",
@@ -166,11 +170,14 @@ export function selectCodingAgentIntentTools({
   prompt,
   messages,
   availableSkillNames = [],
+  mcpServersConfigured = false,
 }: {
   mode: CodingAgentMode;
   prompt: unknown;
   messages: unknown;
   availableSkillNames?: readonly string[];
+  /** Configured MCP servers make their tools part of every real task. */
+  mcpServersConfigured?: boolean;
 }): CodingAgentToolName[] {
   const userTexts = getUserTexts(messages, prompt);
 
@@ -194,7 +201,7 @@ export function selectCodingAgentIntentTools({
   if (webIntentPattern.test(latestText)) {
     addTools(selected, webToolNames);
   }
-  if (userTexts.some((text) => mcpIntentPattern.test(text))) {
+  if (mcpServersConfigured || userTexts.some((text) => mcpIntentPattern.test(text))) {
     addTools(selected, mcpToolNames);
   }
   if (

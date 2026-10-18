@@ -6,6 +6,7 @@ import {
   countCompletedWork,
   isRecoverableChatErrorMessage,
   normalizeChatErrorMessage,
+  reconcilePendingUserPrompts,
   scanRunCursorText,
   shouldMonitorChatResponseBody,
   sanitizeMessagesForRetry,
@@ -362,5 +363,44 @@ describe("structured chat errors", () => {
     expect(normalized).toContain("HTTP 400");
     expect(normalized).toContain("tool_result");
     expect(normalized).not.toContain("LIGHTCODE_ERROR");
+  });
+});
+
+describe("reconcilePendingUserPrompts", () => {
+  const prompt = (toolCallId: string) => ({
+    toolCallId,
+    question: `Question ${toolCallId}?`,
+    options: [],
+    allowCustomResponse: true,
+  });
+  const askingAssistant = (toolCallId: string, state: string, extra: Record<string, unknown> = {}) =>
+    ({
+      id: `a-${toolCallId}`,
+      role: "assistant",
+      parts: [
+        { type: "text", text: "One question first.", state: "done" },
+        { type: "tool-request_user_input", toolCallId, state, input: { question: "Which theme?" }, ...extra },
+      ],
+    }) as unknown as UIMessage;
+
+  test("keeps a shown question whose checkpoint has not landed yet", () => {
+    // A run that ends on request_user_input re-syncs history right away.
+    const messages = [userMessage(), askingAssistant("call-q", "input-available")];
+    expect(reconcilePendingUserPrompts([], [prompt("call-q")], messages)).toEqual([prompt("call-q")]);
+  });
+
+  test("drops a shown question once its tool call has an answer", () => {
+    const messages = [
+      userMessage(),
+      askingAssistant("call-q", "output-available", { output: { answer: "Dark", source: "custom" } }),
+    ];
+    expect(reconcilePendingUserPrompts([], [prompt("call-q")], messages)).toEqual([]);
+  });
+
+  test("restored questions lead and are not duplicated", () => {
+    const messages = [userMessage(), askingAssistant("call-q", "input-available")];
+    const restored = [prompt("call-q")];
+    expect(reconcilePendingUserPrompts(restored, [prompt("call-q")], messages)).toBe(restored);
+    expect(reconcilePendingUserPrompts(restored, [], [userMessage()])).toBe(restored);
   });
 });

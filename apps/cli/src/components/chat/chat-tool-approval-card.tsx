@@ -54,8 +54,10 @@ function getApprovalDescription(approval: PendingToolApproval): string {
   }
 
   if (approval.toolName === "edit_file") {
-    const replaceAll = Reflect.get(approval.input, "replaceAll") === true;
-    return replaceAll ? "Replace all matching text." : "Replace the first matching text.";
+    const allMatches =
+      Reflect.get(approval.input, "allMatches") === true ||
+      Reflect.get(approval.input, "replaceAll") === true;
+    return allMatches ? "Replace all matching text." : "Replace the first matching text.";
   }
 
   if (approval.toolName === "write_file") {

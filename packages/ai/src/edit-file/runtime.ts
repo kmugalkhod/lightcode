@@ -37,7 +37,7 @@ export async function executeEditFile(
     originalContent,
     parsedInput.search,
     parsedInput.replace,
-    parsedInput.replaceAll,
+    parsedInput.allMatches || parsedInput.replaceAll === true,
   );
 
   if (editContext.sessionId && editContext.turnKey) {

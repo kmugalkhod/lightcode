@@ -7,7 +7,7 @@ import {
   type ProjectBrowserNotice,
 } from "./components/project-browser";
 import { PickerPendingBanner } from "./components/picker-pending-banner";
-import { SessionRail } from "./components/session-rail";
+import { recentProjectForSession, SessionRail } from "./components/session-rail";
 import { TopBar } from "./components/top-bar";
 import { WorkspaceRibbon } from "./components/workspace-ribbon";
 import { ModelPicker } from "./components/model-picker";
@@ -334,6 +334,12 @@ export function App() {
   function beginNewSession() {
     setIsRunning(false);
     if (!workspace) {
+      // A fresh tab has no open project yet: start in the open session's folder when it is a known recent project.
+      const sessionProject = recentProjectForSession(activeSession, recentProjects);
+      if (sessionProject) {
+        void openRecentProject(sessionProject);
+        return;
+      }
       openProjectBrowser();
       return;
     }

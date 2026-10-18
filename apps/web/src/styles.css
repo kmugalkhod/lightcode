@@ -2669,6 +2669,39 @@ input:disabled {
   flex-wrap: wrap;
 }
 
+.prompt-options.described {
+  display: grid;
+  gap: 6px;
+}
+
+.prompt-choice {
+  display: grid;
+  gap: 2px;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  padding: 8px 12px;
+  color: var(--text);
+  text-align: left;
+  transition: background-color 140ms ease-out, border-color 140ms ease-out;
+}
+
+.prompt-choice:hover {
+  border-color: var(--border-strong);
+  background: var(--elevated);
+}
+
+.prompt-choice-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.prompt-choice-description {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .prompt-dock {
   display: grid;
   gap: 10px;

@@ -13,8 +13,10 @@ import { grepInputSchema, grepOutputSchema } from "./schema";
 
 const execFileAsync = promisify(execFile);
 type GrepInput = z.input<typeof grepInputSchema>;
+type ParsedGrepInput = z.infer<typeof grepInputSchema>;
 type GrepOutput = z.infer<typeof grepOutputSchema>;
 type GrepMatch = GrepOutput["matches"][number];
+type GrepFile = NonNullable<GrepOutput["files"]>[number];
 
 const fallbackIgnoredDirectories = new Set([
   ".git",
@@ -28,6 +30,18 @@ const fallbackIgnoredDirectories = new Set([
   "target",
 ]);
 const maxFallbackFileBytes = 1024 * 1024;
+/** Files read at once by the fallback search. */
+const fallbackReadConcurrency = 32;
+/** Minified bundles make single "lines" of megabytes; keep each one readable. */
+const maxLineChars = 1_000;
+const rgMaxBuffer = 32 * 1024 * 1024;
+
+interface SearchResult {
+  matches: GrepMatch[];
+  files?: GrepFile[];
+  totalMatches: number;
+  truncated: boolean;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -47,115 +61,204 @@ function getNumberProperty(record: Record<string, unknown>, key: string): number
   return typeof value === "number" ? value : undefined;
 }
 
-function parseMatchEvent(
-  line: string,
-): {
-  rawPath: string;
-  lineText: string;
-  lineNumber: number;
-  firstSubmatchStart: number;
-} | null {
-  let parsedLine: unknown;
+function clipLine(line: string): string {
+  const withoutNewline = line.replace(/\r?\n$/, "");
+  return withoutNewline.length > maxLineChars
+    ? `${withoutNewline.slice(0, maxLineChars)}… [line truncated]`
+    : withoutNewline;
+}
+
+function relativeOrNull(absolutePath: string, workspaceContext: WorkspaceContext): string | null {
   try {
-    parsedLine = JSON.parse(line);
+    return toWorkspaceRelativePath(absolutePath, workspaceContext);
   } catch {
     return null;
   }
+}
 
-  if (!isRecord(parsedLine) || parsedLine.type !== "match") {
-    return null;
+/** Lines around `lineNumber` that a reader of `lines` (1-based) has. */
+function contextAround(
+  lineAt: (lineNumber: number) => string | undefined,
+  lineNumber: number,
+  context: number,
+): Pick<GrepMatch, "before" | "after"> {
+  if (context <= 0) return {};
+  const before: string[] = [];
+  for (let current = Math.max(1, lineNumber - context); current < lineNumber; current += 1) {
+    const text = lineAt(current);
+    if (text !== undefined) before.push(clipLine(text));
   }
-
-  const data = toRecord(parsedLine.data);
-  const pathNode = toRecord(data.path);
-  const linesNode = toRecord(data.lines);
-  const rawPath = getStringProperty(pathNode, "text");
-  const lineText = getStringProperty(linesNode, "text");
-  const lineNumber = getNumberProperty(data, "line_number");
-
-  if (!rawPath || lineText === undefined || lineNumber === undefined) {
-    return null;
+  const after: string[] = [];
+  for (let current = lineNumber + 1; current <= lineNumber + context; current += 1) {
+    const text = lineAt(current);
+    if (text === undefined) break;
+    after.push(clipLine(text));
   }
+  return { before, after };
+}
 
-  const submatches = Array.isArray(data.submatches) ? data.submatches : [];
-  const firstSubmatch = submatches.length > 0 ? toRecord(submatches[0]) : null;
-  const firstSubmatchStart = firstSubmatch ? getNumberProperty(firstSubmatch, "start") ?? 0 : 0;
+function sortFiles(files: GrepFile[]): GrepFile[] {
+  return files.sort((left, right) => right.count - left.count || left.path.localeCompare(right.path));
+}
 
+function filesResult(files: GrepFile[], maxResults: number): SearchResult {
+  const sorted = sortFiles(files);
   return {
-    rawPath,
-    lineText,
-    lineNumber,
-    firstSubmatchStart,
+    matches: [],
+    files: sorted.slice(0, maxResults),
+    totalMatches: sorted.reduce((total, file) => total + file.count, 0),
+    truncated: sorted.length > maxResults,
   };
 }
 
-function parseRgMatches(
-  stdout: string,
-  maxResults: number,
+// ---------------------------------------------------------------- ripgrep
+
+function ripgrepArgs(parsedInput: ParsedGrepInput): string[] {
+  const args = ["--color", "never"];
+  if (!parsedInput.caseSensitive) args.push("--ignore-case");
+  if (!parsedInput.isRegex) args.push("--fixed-strings");
+  if (parsedInput.glob) args.push("--glob", parsedInput.glob);
+  return args;
+}
+
+/** Null when ripgrep is not installed; the caller then uses the fallback. */
+async function runRipgrep(args: string[], cwd: string): Promise<string | null> {
+  try {
+    const result = await execFileAsync("rg", args, { cwd, maxBuffer: rgMaxBuffer, windowsHide: true });
+    return result.stdout;
+  } catch (error) {
+    const errorRecord = toRecord(error);
+    if (errorRecord.code === 1) {
+      // Exit code 1: nothing matched.
+      return getStringProperty(errorRecord, "stdout") ?? "";
+    }
+    if (errorRecord.code === "ENOENT") {
+      return null;
+    }
+    const stderr = getStringProperty(errorRecord, "stderr")?.trim();
+    throw new Error(stderr || getStringProperty(errorRecord, "message") || "Failed to execute grep.");
+  }
+}
+
+async function searchWithRipgrep(
+  searchRootPath: string,
+  parsedInput: ParsedGrepInput,
   workspaceContext: WorkspaceContext,
-): GrepOutput["matches"] {
-  const matches: Array<{ path: string; lineNumber: number; column: number; line: string }> = [];
-  const lines = stdout.split(/\r?\n/);
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
+): Promise<SearchResult | null> {
+  if (parsedInput.outputMode === "files") {
+    // --null separates the path from its count, so Windows drive colons are safe.
+    const stdout = await runRipgrep(
+      [...ripgrepArgs(parsedInput), "--count", "--with-filename", "--null", "--", parsedInput.query, searchRootPath],
+      workspaceContext.root,
+    );
+    if (stdout === null) return null;
+    const files: GrepFile[] = [];
+    for (const line of stdout.split(/\r?\n/)) {
+      const separator = line.indexOf("\0");
+      if (separator <= 0) continue;
+      const rawPath = line.slice(0, separator);
+      const count = Number(line.slice(separator + 1));
+      const relativePath = relativeOrNull(path.resolve(workspaceContext.root, rawPath), workspaceContext);
+      if (relativePath && Number.isInteger(count) && count > 0) files.push({ path: relativePath, count });
     }
+    return filesResult(files, parsedInput.maxResults);
+  }
 
-    const event = parseMatchEvent(trimmed);
-    if (!event) {
-      continue;
-    }
+  const args = [...ripgrepArgs(parsedInput), "--json", "--line-number", "--column"];
+  if (parsedInput.context > 0) args.push("--context", String(parsedInput.context));
+  const stdout = await runRipgrep([...args, "--", parsedInput.query, searchRootPath], workspaceContext.root);
+  if (stdout === null) return null;
 
-    const absolutePath = path.isAbsolute(event.rawPath)
-      ? event.rawPath
-      : path.resolve(workspaceContext.root, event.rawPath);
-    let relativePath: string;
+  // Context and match lines per file, so each match can pick up its neighbours.
+  const linesByFile = new Map<string, Map<number, string>>();
+  const found: Array<{ rawPath: string; lineNumber: number; column: number; line: string }> = [];
+  let totalMatches = 0;
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    if (!rawLine.trim()) continue;
+    let event: unknown;
     try {
-      relativePath = toWorkspaceRelativePath(absolutePath, workspaceContext);
+      event = JSON.parse(rawLine);
     } catch {
       continue;
     }
+    if (!isRecord(event) || (event.type !== "match" && event.type !== "context")) continue;
+    const data = toRecord(event.data);
+    const rawPath = getStringProperty(toRecord(data.path), "text");
+    const lineText = getStringProperty(toRecord(data.lines), "text");
+    const lineNumber = getNumberProperty(data, "line_number");
+    if (!rawPath || lineText === undefined || lineNumber === undefined) continue;
 
-    const column = event.firstSubmatchStart + 1;
+    let fileLines = linesByFile.get(rawPath);
+    if (!fileLines) {
+      fileLines = new Map();
+      linesByFile.set(rawPath, fileLines);
+    }
+    fileLines.set(lineNumber, lineText);
+
+    if (event.type === "match") {
+      totalMatches += 1;
+      if (found.length < parsedInput.maxResults) {
+        const submatches = Array.isArray(data.submatches) ? data.submatches : [];
+        const start = submatches.length > 0 ? (getNumberProperty(toRecord(submatches[0]), "start") ?? 0) : 0;
+        found.push({ rawPath, lineNumber, column: start + 1, line: lineText });
+      }
+    }
+  }
+
+  const matches: GrepMatch[] = [];
+  for (const match of found) {
+    const relativePath = relativeOrNull(path.resolve(workspaceContext.root, match.rawPath), workspaceContext);
+    if (!relativePath) continue;
+    const fileLines = linesByFile.get(match.rawPath);
     matches.push({
       path: relativePath,
-      lineNumber: event.lineNumber,
-      column,
-      line: event.lineText.replace(/\r?\n$/, ""),
+      lineNumber: match.lineNumber,
+      column: match.column,
+      line: clipLine(match.line),
+      ...contextAround((lineNumber) => fileLines?.get(lineNumber), match.lineNumber, parsedInput.context),
     });
-
-    if (matches.length >= maxResults) {
-      break;
-    }
   }
-
-  return matches;
+  return { matches, totalMatches, truncated: totalMatches > matches.length };
 }
 
-function getFirstMatchColumn(
-  line: string,
-  query: string,
-  isRegex: boolean,
-  caseSensitive: boolean,
-): number | null {
-  if (isRegex) {
-    let matcher: RegExp;
-    try {
-      matcher = new RegExp(query, caseSensitive ? "" : "i");
-    } catch (error) {
-      throw new Error(error instanceof Error ? error.message : "Invalid regular expression.");
-    }
+// --------------------------------------------------------------- fallback
 
-    const match = matcher.exec(line);
-    return match ? match.index + 1 : null;
+/**
+ * Files git would show (tracked plus untracked, minus .gitignore'd), the same
+ * set ripgrep searches. Null outside a git work tree or without git.
+ */
+async function listGitFiles(searchRootPath: string): Promise<string[] | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."],
+      { cwd: searchRootPath, maxBuffer: 64 * 1024 * 1024, windowsHide: true },
+    );
+    return [...new Set(stdout.split("\0").filter(Boolean))]
+      .filter((file) => !file.split("/").some((part) => fallbackIgnoredDirectories.has(part)))
+      .map((file) => path.join(searchRootPath, file));
+  } catch {
+    return null;
   }
+}
 
-  const haystack = caseSensitive ? line : line.toLowerCase();
-  const needle = caseSensitive ? query : query.toLowerCase();
-  const index = haystack.indexOf(needle);
-  return index >= 0 ? index + 1 : null;
+async function walkFiles(searchRootPath: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(searchRootPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const nested = await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = path.join(searchRootPath, entry.name);
+      if (entry.isDirectory()) {
+        return fallbackIgnoredDirectories.has(entry.name) ? [] : walkFiles(entryPath);
+      }
+      return entry.isFile() ? [entryPath] : [];
+    }),
+  );
+  return nested.flat();
 }
 
 async function collectSearchFiles(searchRootPath: string): Promise<string[]> {
@@ -165,115 +268,112 @@ async function collectSearchFiles(searchRootPath: string): Promise<string[]> {
   } catch {
     return [];
   }
-
-  if (searchRootStat.isFile()) {
-    return [searchRootPath];
-  }
-
-  if (!searchRootStat.isDirectory()) {
-    return [];
-  }
-
-  const files: string[] = [];
-  let entries;
-  try {
-    entries = await readdir(searchRootPath, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (entry.isDirectory() && fallbackIgnoredDirectories.has(entry.name)) {
-      continue;
-    }
-
-    const entryPath = path.join(searchRootPath, entry.name);
-
-    if (entry.isDirectory()) {
-      files.push(...(await collectSearchFiles(entryPath)));
-      continue;
-    }
-
-    if (entry.isFile()) {
-      files.push(entryPath);
-    }
-  }
-
-  return files;
+  if (searchRootStat.isFile()) return [searchRootPath];
+  if (!searchRootStat.isDirectory()) return [];
+  // Git lists nothing for a folder it ignores; one asked for by name is still searched.
+  const gitFiles = await listGitFiles(searchRootPath);
+  const files = gitFiles && gitFiles.length > 0 ? gitFiles : await walkFiles(searchRootPath);
+  return files.sort((left, right) => left.localeCompare(right));
 }
 
-async function searchFileWithFallback(
-  filePath: string,
-  parsedInput: z.infer<typeof grepInputSchema>,
-  matches: GrepMatch[],
-  workspaceContext: WorkspaceContext,
-): Promise<boolean> {
-  const fileStat = await stat(filePath);
-  if (fileStat.size > maxFallbackFileBytes) {
-    return false;
-  }
-
-  let content: string;
-  try {
-    content = await readFile(filePath, "utf8");
-  } catch {
-    return false;
-  }
-
-  if (content.includes("\0")) {
-    return false;
-  }
-
-  const lines = content.split(/\r?\n/);
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const column = getFirstMatchColumn(
-      line,
-      parsedInput.query,
-      parsedInput.isRegex,
-      parsedInput.caseSensitive,
-    );
-
-    if (column === null) {
-      continue;
-    }
-
-    matches.push({
-      path: toWorkspaceRelativePath(filePath, workspaceContext),
-      lineNumber: index + 1,
-      column,
-      line,
-    });
-
-    if (matches.length >= parsedInput.maxResults) {
-      return true;
-    }
-  }
-
-  return false;
+/**
+ * ripgrep-style glob test: a pattern without "/" matches the file name at any
+ * depth, one with "/" matches the path under the search root; "!" negates.
+ */
+export function createGlobFilter(glob: string | undefined): (relativePath: string) => boolean {
+  if (!glob) return () => true;
+  const negated = glob.startsWith("!");
+  const pattern = negated ? glob.slice(1) : glob;
+  const matcher = new Bun.Glob(pattern);
+  const byName = !pattern.includes("/");
+  return (relativePath) => {
+    const normalized = relativePath.replaceAll("\\", "/");
+    const subject = byName ? normalized.slice(normalized.lastIndexOf("/") + 1) : normalized;
+    return matcher.match(subject) !== negated;
+  };
 }
 
-async function grepWithFallback(
+function createLineMatcher(parsedInput: ParsedGrepInput): (line: string) => number | null {
+  if (parsedInput.isRegex) {
+    let matcher: RegExp;
+    try {
+      matcher = new RegExp(parsedInput.query, parsedInput.caseSensitive ? "" : "i");
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : "Invalid regular expression.");
+    }
+    return (line) => {
+      const match = matcher.exec(line);
+      return match ? match.index + 1 : null;
+    };
+  }
+  const needle = parsedInput.caseSensitive ? parsedInput.query : parsedInput.query.toLowerCase();
+  return (line) => {
+    const index = (parsedInput.caseSensitive ? line : line.toLowerCase()).indexOf(needle);
+    return index >= 0 ? index + 1 : null;
+  };
+}
+
+async function readSearchableLines(filePath: string): Promise<string[] | null> {
+  try {
+    const fileStat = await stat(filePath);
+    if (!fileStat.isFile() || fileStat.size > maxFallbackFileBytes) return null;
+    const content = await readFile(filePath, "utf8");
+    return content.includes("\0") ? null : content.split(/\r?\n/);
+  } catch {
+    return null;
+  }
+}
+
+async function searchWithFallback(
   searchRootPath: string,
-  parsedInput: z.infer<typeof grepInputSchema>,
+  parsedInput: ParsedGrepInput,
   workspaceContext: WorkspaceContext,
-): Promise<GrepOutput["matches"]> {
-  const matches: GrepMatch[] = [];
-  const files = await collectSearchFiles(searchRootPath);
+): Promise<SearchResult> {
+  const matchLine = createLineMatcher(parsedInput);
+  const globFilter = createGlobFilter(parsedInput.glob);
+  const searchRootIsFile = (await stat(searchRootPath).catch(() => null))?.isFile() ?? false;
+  const files = (await collectSearchFiles(searchRootPath)).filter(
+    (filePath) => searchRootIsFile || globFilter(path.relative(searchRootPath, filePath)),
+  );
 
-  for (const filePath of files) {
-    const reachedLimit = await searchFileWithFallback(
-      filePath,
-      parsedInput,
-      matches,
-      workspaceContext,
-    );
-    if (reachedLimit) {
-      break;
+  const matches: GrepMatch[] = [];
+  const counts: GrepFile[] = [];
+  let totalMatches = 0;
+  for (let start = 0; start < files.length; start += fallbackReadConcurrency) {
+    const batch = files.slice(start, start + fallbackReadConcurrency);
+    const contents = await Promise.all(batch.map((filePath) => readSearchableLines(filePath)));
+    for (const [index, lines] of contents.entries()) {
+      if (!lines) continue;
+      const relativePath = relativeOrNull(batch[index]!, workspaceContext);
+      if (!relativePath) continue;
+      let fileCount = 0;
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        const column = matchLine(lines[lineIndex]!);
+        if (column === null) continue;
+        fileCount += 1;
+        totalMatches += 1;
+        if (parsedInput.outputMode === "content" && matches.length < parsedInput.maxResults) {
+          matches.push({
+            path: relativePath,
+            lineNumber: lineIndex + 1,
+            column,
+            line: clipLine(lines[lineIndex]!),
+            ...contextAround((lineNumber) => lines[lineNumber - 1], lineIndex + 1, parsedInput.context),
+          });
+        }
+      }
+      if (fileCount > 0) counts.push({ path: relativePath, count: fileCount });
+    }
+    // Content mode stops once the page is full; files mode counts everything.
+    if (parsedInput.outputMode === "content" && matches.length >= parsedInput.maxResults) {
+      const filesLeft = start + fallbackReadConcurrency < files.length;
+      return { matches, totalMatches, truncated: filesLeft || totalMatches > matches.length };
     }
   }
 
-  return matches;
+  return parsedInput.outputMode === "files"
+    ? filesResult(counts, parsedInput.maxResults)
+    : { matches, totalMatches, truncated: totalMatches > matches.length };
 }
 
 export async function executeGrep(
@@ -284,62 +384,13 @@ export async function executeGrep(
   const searchRootPath = resolveWithinWorkspace(parsedInput.path, {
     context: workspaceContext,
   });
-  const relativeSearchRootPath = toWorkspaceRelativePath(
-    searchRootPath,
-    workspaceContext,
-  );
-
-  const args = ["--json", "--line-number", "--column", "--no-heading", "--color", "never"];
-
-  if (!parsedInput.caseSensitive) {
-    args.push("--ignore-case");
-  }
-
-  if (!parsedInput.isRegex) {
-    args.push("--fixed-strings");
-  }
-
-  args.push(parsedInput.query, searchRootPath);
-
-  let stdout = "";
-
-  try {
-    const result = await execFileAsync("rg", args, {
-      cwd: workspaceContext.root,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    stdout = result.stdout;
-  } catch (error) {
-    const errorRecord = toRecord(error);
-    const errorCode = errorRecord.code;
-    if (errorCode === 1) {
-      const errorStdout = getStringProperty(errorRecord, "stdout");
-      stdout = errorStdout ?? "";
-    } else if (errorCode === "ENOENT") {
-      const matches = await grepWithFallback(
-        searchRootPath,
-        parsedInput,
-        workspaceContext,
-      );
-      return grepOutputSchema.parse({
-        query: parsedInput.query,
-        path: relativeSearchRootPath,
-        matches,
-        totalMatches: matches.length,
-        truncated: matches.length >= parsedInput.maxResults,
-      });
-    } else {
-      throw new Error(getStringProperty(errorRecord, "message") ?? "Failed to execute grep.");
-    }
-  }
-
-  const matches = parseRgMatches(stdout, parsedInput.maxResults, workspaceContext);
+  const result =
+    (await searchWithRipgrep(searchRootPath, parsedInput, workspaceContext)) ??
+    (await searchWithFallback(searchRootPath, parsedInput, workspaceContext));
 
   return grepOutputSchema.parse({
     query: parsedInput.query,
-    path: relativeSearchRootPath,
-    matches,
-    totalMatches: matches.length,
-    truncated: matches.length >= parsedInput.maxResults,
+    path: toWorkspaceRelativePath(searchRootPath, workspaceContext),
+    ...result,
   });
 }

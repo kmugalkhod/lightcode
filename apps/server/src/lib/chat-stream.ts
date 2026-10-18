@@ -7,7 +7,9 @@ import {
   estimateModelMessageTokens,
   estimateStructuralTokens,
   formatChatStreamError,
+  formatToolErrorText,
   lightcodeConfigDefaults,
+  listEnabledMcpServerNames,
   listSkills,
   normalizeProviderMessages,
   ProviderTurnAssembler,
@@ -188,6 +190,16 @@ export function shouldUseFastChatPath({
     messages,
     availableSkillNames,
   }).length === 0;
+}
+
+/** A broken settings file must not break chat; MCP tools just stay off. */
+function readEnabledMcpServers(cwd: string): string[] {
+  try {
+    return listEnabledMcpServerNames(cwd);
+  } catch (error) {
+    logger.warn("mcp_config_failed", { cwd, error: getErrorMessage(error) });
+    return [];
+  }
 }
 
 async function countPendingChatInteractions(sessionId: string) {
@@ -435,6 +447,7 @@ export async function streamSessionChat(
     relatedPaths,
   });
   const availableSkillNames = listSkills({ cwd }).map((skill) => skill.name);
+  const mcpServers = readEnabledMcpServers(cwd);
   const useFastChatPath = shouldUseFastChatPath({
     messages: providerInputMessages,
     mode,
@@ -451,6 +464,7 @@ export async function streamSessionChat(
     permissionRules,
     sandbox,
     environmentContext,
+    mcpServers,
     assemblyAbortSignal: requestAbortSignal,
   };
   const agentCallSettings = resolveCodingAgentCallSettings({
@@ -1062,6 +1076,14 @@ export async function streamSessionChat(
     // the step would duplicate part ids. The structured envelope below lets
     // the client decide between a sanitized retry and surfacing the error.
     const mapStreamError = (error: unknown) => {
+      // The UI stream reports tool failures here too. Those are tool results
+      // the model reacts to, not failed streams: keep them readable and out of
+      // the failure counters and the client's retry envelope.
+      const toolErrorText = formatToolErrorText(error);
+      if (toolErrorText !== null) {
+        return toolErrorText;
+      }
+
       const classified = classifyChatError(error);
 
       if (classified.kind === "context_overflow") {
@@ -1095,6 +1117,7 @@ export async function streamSessionChat(
         permissionRules,
         sandbox,
         environmentContext,
+        mcpServers,
         maxOutputTokens: requestMaxOutputTokens,
         contextWindow: view.contextWindow,
         preserveRecentTokens: view.preserveRecentTokens,

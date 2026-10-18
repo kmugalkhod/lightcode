@@ -57,6 +57,8 @@ function getToolTarget(input: unknown) {
     Reflect.get(input, "pattern"),
     Reflect.get(input, "revision"),
     Reflect.get(input, "url"),
+    Reflect.get(input, "jobId"),
+    Reflect.get(input, "toolName"),
     Reflect.get(input, "description"),
   ];
 
@@ -201,6 +203,11 @@ function summarizeToolOutput(part: AnyToolPart): { text: string; isError?: boole
 
   const keys = Object.keys(output).filter((k) => k !== "error");
   const hasError = Boolean(Reflect.get(output, "error"));
+
+  if (keys.includes("files") && Reflect.get(output, "files") instanceof Array) {
+    const count = (Reflect.get(output, "files") as unknown[]).length;
+    return { text: `Found ${count} file${count === 1 ? "" : "s"}`, isError: hasError };
+  }
 
   if (keys.includes("matches") && Reflect.get(output, "matches") instanceof Array) {
     const count = (Reflect.get(output, "matches") as unknown[]).length;

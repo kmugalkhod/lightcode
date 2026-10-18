@@ -8,7 +8,11 @@ import {
 import type { CodingAgentMode } from "./coding-agent-modes";
 import { parseCodingToolInput } from "./tool-input";
 import { assertNotRepeatingToolCall } from "./tool-call-repeat-guard";
-import { executeBash } from "./bash/runtime";
+import {
+  executeBash,
+  executeBashOutput,
+  executeBashStop,
+} from "./bash/runtime";
 import { executeEditFile } from "./edit-file/runtime";
 import { executeGrep } from "./grep/runtime";
 import { executeGlobSearch } from "./glob-search/runtime";
@@ -25,6 +29,7 @@ import { executeToolSearch } from "./tool-search/runtime";
 import { loadSkill } from "./skills/runtime";
 import {
   executeCallMcpTool,
+  executeListMcpTools,
   executeListMcpResources,
   executeReadMcpResource,
 } from "./mcp/runtime";
@@ -136,11 +141,14 @@ const codingToolRuntimes: {
     executeGitShow(input, workspaceContext),
   tool_search: (input) => executeToolSearch(input),
   skill: (input, { options }) => loadSkill(input, { cwd: options?.cwd }),
+  list_mcp_tools: (input, { options }) =>
+    executeListMcpTools(input, { cwd: options?.cwd, abortSignal: options?.abortSignal }),
   list_mcp_resources: (input, { options }) =>
-    executeListMcpResources(input, options?.cwd),
+    executeListMcpResources(input, { cwd: options?.cwd, abortSignal: options?.abortSignal }),
   read_mcp_resource: (input, { options }) =>
-    executeReadMcpResource(input, options?.cwd),
-  call_mcp_tool: (input, { options }) => executeCallMcpTool(input, options?.cwd),
+    executeReadMcpResource(input, { cwd: options?.cwd, abortSignal: options?.abortSignal }),
+  call_mcp_tool: (input, { options }) =>
+    executeCallMcpTool(input, { cwd: options?.cwd, abortSignal: options?.abortSignal }),
   request_user_input: () => {
     throw new Error(
       'Tool "request_user_input" requires interactive UI handling and cannot run in runtime-registry.',
@@ -163,8 +171,18 @@ const codingToolRuntimes: {
     }),
   bash: (input, { workspaceContext, options }) => {
     assertSandboxSupport(options);
-    return executeBash(input, workspaceContext, options?.abortSignal);
+    return executeBash(input, workspaceContext, {
+      abortSignal: options?.abortSignal,
+      sessionId: options?.sessionId,
+    });
   },
+  bash_output: (input, { options }) =>
+    executeBashOutput(input, {
+      abortSignal: options?.abortSignal,
+      sessionId: options?.sessionId,
+    }),
+  bash_stop: (input, { options }) =>
+    executeBashStop(input, { sessionId: options?.sessionId }),
   web_fetch: (input, { options }) =>
     executeWebFetch(input, { signal: options?.abortSignal }),
   web_search: (input, { options }) =>

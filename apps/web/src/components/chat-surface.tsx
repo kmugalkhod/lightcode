@@ -398,22 +398,30 @@ function PromptDock({
   onRespond: (response: { toolCallId: string; answer: string; source: "option" | "custom" }) => void;
 }) {
   const [customAnswer, setCustomAnswer] = useState("");
+  // Choices that explain themselves read as a list; bare labels stay compact.
+  const described = prompt.options.some((option) => option.description);
   return (
     <section className="prompt-dock" aria-label="Question from Lightcode">
       <div>
         <strong>{prompt.header ?? "Lightcode needs your input"}</strong>
         <p>{prompt.question}</p>
       </div>
-      <div className="prompt-options">
+      <div className={described ? "prompt-options described" : "prompt-options"}>
         {prompt.options.map((option) => (
           <button
-            className="secondary-button"
+            className={described ? "prompt-choice" : "secondary-button"}
             type="button"
             key={option.label}
-            title={option.description}
             onClick={() => onRespond({ toolCallId: prompt.toolCallId, answer: option.label, source: "option" })}
           >
-            {option.label}
+            {described ? (
+              <>
+                <span className="prompt-choice-label">{option.label}</span>
+                {option.description ? <span className="prompt-choice-description">{option.description}</span> : null}
+              </>
+            ) : (
+              option.label
+            )}
           </button>
         ))}
       </div>

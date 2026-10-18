@@ -32,6 +32,7 @@ import {
   codingToolPermissionRequirements,
   codingToolProviderInputSchemas,
   codingToolRegistry,
+  isStrictCodingTool,
   type CodingToolName,
 } from "./tool-registry";
 import {
@@ -104,6 +105,8 @@ export const codingAgentCallOptionsSchema = z.object({
   sandbox: sandboxConfigSchema.optional(),
   /** Per-turn workspace/environment block appended to the system prompt. */
   environmentContext: z.string().optional(),
+  /** Enabled MCP servers for this workspace; their tools join every real task. */
+  mcpServers: z.array(z.string()).optional(),
   /**
    * Per-request output ceiling. The agent-level maxOutputTokens is a static
    * per-model cap; some endpoints (OpenRouter minimax) serve a smaller total
@@ -408,6 +411,7 @@ export function collectToolSchemaPreflight() {
       toolName,
       inputSchemaType: getJsonSchemaType(jsonSchema),
       optionalPropertyCount,
+      strict: isStrictCodingTool(toolName as CodingToolName),
     };
   });
 
@@ -429,21 +433,24 @@ export function assertProviderToolSchemaBudget(
       );
     }
 
-    if (entry.optionalPropertyCount > maxOptionalProperties) {
+    if (entry.strict && entry.optionalPropertyCount > maxOptionalProperties) {
       throw new Error(
         `Tool "${entry.toolName}" has ${entry.optionalPropertyCount} optional top-level properties (max ${maxOptionalProperties}).`
       );
     }
   }
 
+  // The provider budget spans every strict tool in one request; non-strict
+  // tools are validated by the runtime schema instead and do not count.
   for (const [mode, definition] of Object.entries(codingAgentModes)) {
     const optionalPropertyCount = definition.activeTools.reduce((count, toolName) => {
-      return count + (entryByToolName.get(toolName)?.optionalPropertyCount ?? 0);
+      const entry = entryByToolName.get(toolName);
+      return count + (entry?.strict ? entry.optionalPropertyCount : 0);
     }, 0);
 
     if (optionalPropertyCount > maxOptionalProperties) {
       throw new Error(
-        `Mode "${mode}" active tool schemas have ${optionalPropertyCount} optional properties total (max ${maxOptionalProperties}).`
+        `Mode "${mode}" strict tool schemas have ${optionalPropertyCount} optional properties total (max ${maxOptionalProperties}).`
       );
     }
   }

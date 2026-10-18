@@ -26,6 +26,34 @@ export interface WebServerLaunchResult extends ServerLaunchResult {
 
 let currentOwnedProcess: ReturnType<typeof Bun.spawn> | null = null;
 
+/**
+ * Stops a server this CLI started. On Windows a plain kill terminates only the
+ * server, without its exit handlers, so background bash jobs it started would
+ * keep running; taskkill /T takes the whole tree. Elsewhere SIGTERM lets the
+ * server shut down and stop its jobs itself. Synchronous for exit handlers.
+ */
+export function stopServerProcess(serverProcess: ReturnType<typeof Bun.spawn>): void {
+  if (serverProcess.exitCode !== null) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    try {
+      const result = Bun.spawnSync(["taskkill", "/pid", String(serverProcess.pid), "/T", "/F"], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      if (result.exitCode === 0) {
+        return;
+      }
+    } catch {
+      // Fall back to a plain kill below.
+    }
+  }
+
+  serverProcess.kill();
+}
+
 export function getOwnedServerProcess(): ReturnType<typeof Bun.spawn> | null {
   return currentOwnedProcess;
 }
@@ -41,7 +69,7 @@ export async function restartOwnedServer(): Promise<boolean> {
   }
 
   try {
-    currentOwnedProcess.kill();
+    stopServerProcess(currentOwnedProcess);
     await currentOwnedProcess.exited;
   } catch {
     // Already exited.

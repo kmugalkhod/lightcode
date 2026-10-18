@@ -1,79 +1,153 @@
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { z } from "zod";
+import { DEFAULT_TOOL_TEXT_OUTPUT_CHARS } from "../constants";
 import {
   getDefaultWorkspaceContext,
   type WorkspaceContext,
 } from "../common/resolve-within-workspace";
 import { truncateText } from "../common/output-utils";
-import { bashInputSchema, bashOutputSchema } from "./schema";
+import {
+  readBackgroundJob,
+  startBackgroundJob,
+  stopBackgroundJob,
+} from "./background-jobs";
+import {
+  HeadTailOutput,
+  killProcessTree,
+  spawnShellCommand,
+  waitForExit,
+} from "./process";
+import {
+  backgroundJobReportSchema,
+  bashInputSchema,
+  bashOutputSchema,
+  bashOutputToolInputSchema,
+  bashStopToolInputSchema,
+  type BackgroundJobReport,
+} from "./schema";
 
-const execAsync = promisify(exec);
 type BashInput = z.input<typeof bashInputSchema>;
 type BashOutput = z.infer<typeof bashOutputSchema>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+/** Output kept per stream before the middle is dropped (then truncated to maxOutputChars). */
+const capturedOutputHalfLimit = 256_000;
+
+export interface BashRuntimeOptions {
+  abortSignal?: AbortSignal;
+  /** Scopes background jobs to the chat session that started them. */
+  sessionId?: string;
 }
 
-function toRecord(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {};
+function stderrLimit(maxOutputChars: number) {
+  return Math.max(2000, Math.floor(maxOutputChars / 4));
 }
 
-function getStringProperty(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" ? value : undefined;
-}
-
-function getNumericExitCode(record: Record<string, unknown>): number {
-  const value = record.code;
-  return typeof value === "number" ? value : 1;
+function formatDuration(ms: number) {
+  return ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.round(ms / 1000)}s`;
 }
 
 export async function executeBash(
   input: BashInput,
   workspaceContext: WorkspaceContext = getDefaultWorkspaceContext(),
-  abortSignal?: AbortSignal,
+  { abortSignal, sessionId }: BashRuntimeOptions = {},
 ): Promise<BashOutput> {
   const parsedInput = bashInputSchema.parse(input);
+  const cwd = workspaceContext.root;
 
-  try {
-    const result = await execAsync(parsedInput.command, {
-      cwd: workspaceContext.root,
-      timeout: parsedInput.timeoutMs,
-      maxBuffer: 10 * 1024 * 1024,
-      windowsHide: true,
-      signal: abortSignal,
+  if (parsedInput.runInBackground) {
+    const { jobId } = startBackgroundJob({
+      command: parsedInput.command,
+      cwd,
+      sessionKey: sessionId ?? "",
     });
-
-    const stdoutTruncated = truncateText(result.stdout, parsedInput.maxOutputChars);
-    const stderrTruncated = truncateText(result.stderr, Math.max(2000, Math.floor(parsedInput.maxOutputChars / 4)));
-
     return bashOutputSchema.parse({
       command: parsedInput.command,
-      cwd: workspaceContext.root,
-      stdout: stdoutTruncated.text,
-      stderr: stderrTruncated.text,
-      exitCode: 0,
-      truncated: stdoutTruncated.truncated || stderrTruncated.truncated,
-    });
-  } catch (error) {
-    const errorRecord = toRecord(error);
-    const stdout = getStringProperty(errorRecord, "stdout") ?? "";
-    const stderr =
-      getStringProperty(errorRecord, "stderr") ??
-      getStringProperty(errorRecord, "message") ??
-      "Command failed.";
-    const stdoutTruncated = truncateText(stdout, parsedInput.maxOutputChars);
-    const stderrTruncated = truncateText(stderr, Math.max(2000, Math.floor(parsedInput.maxOutputChars / 4)));
-
-    return bashOutputSchema.parse({
-      command: parsedInput.command,
-      cwd: workspaceContext.root,
-      stdout: stdoutTruncated.text,
-      stderr: stderrTruncated.text,
-      exitCode: getNumericExitCode(errorRecord),
-      truncated: stdoutTruncated.truncated || stderrTruncated.truncated,
+      cwd,
+      stdout: "",
+      stderr: "",
+      exitCode: null,
+      truncated: false,
+      backgroundJobId: jobId,
+      message: `Started in the background as ${jobId}. Read its output with bash_output and stop it with bash_stop.`,
     });
   }
+
+  abortSignal?.throwIfAborted();
+  const child = spawnShellCommand(parsedInput.command, cwd);
+  const stdout = new HeadTailOutput(capturedOutputHalfLimit);
+  const stderr = new HeadTailOutput(capturedOutputHalfLimit);
+  child.stdout?.on("data", (chunk: string) => stdout.append(chunk));
+  child.stderr?.on("data", (chunk: string) => stderr.append(chunk));
+  child.once("error", (error) => stderr.append(`${error.message}\n`));
+
+  let timedOut = false;
+  let cancelled = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    killProcessTree(child);
+  }, parsedInput.timeoutMs);
+  const cancel = () => {
+    cancelled = true;
+    killProcessTree(child);
+  };
+  abortSignal?.addEventListener("abort", cancel, { once: true });
+
+  const code = await waitForExit(child);
+  clearTimeout(timeout);
+  abortSignal?.removeEventListener("abort", cancel);
+
+  if (timedOut) {
+    stderr.append(
+      `\nCommand timed out after ${formatDuration(parsedInput.timeoutMs)} and was stopped. ` +
+        "Re-run it with a larger timeoutMs (max 600000), or with runInBackground: true if it keeps running (dev servers, watchers).",
+    );
+  } else if (cancelled) {
+    stderr.append("\nCommand was cancelled.");
+  }
+
+  const stdoutTruncated = truncateText(stdout.toString(), parsedInput.maxOutputChars);
+  const stderrTruncated = truncateText(stderr.toString(), stderrLimit(parsedInput.maxOutputChars));
+  // A killed command never reports success, even if its shell exited 0.
+  const exitCode = code ?? 1;
+
+  return bashOutputSchema.parse({
+    command: parsedInput.command,
+    cwd,
+    stdout: stdoutTruncated.text,
+    stderr: stderrTruncated.text,
+    exitCode: (timedOut || cancelled) && exitCode === 0 ? 1 : exitCode,
+    truncated: stdoutTruncated.truncated || stderrTruncated.truncated,
+    ...(timedOut ? { timedOut: true } : {}),
+  });
 }
+
+export async function executeBashOutput(
+  input: z.input<typeof bashOutputToolInputSchema>,
+  { abortSignal, sessionId }: BashRuntimeOptions = {},
+): Promise<BackgroundJobReport> {
+  const parsedInput = bashOutputToolInputSchema.parse(input);
+  return backgroundJobReportSchema.parse(
+    await readBackgroundJob({
+      jobId: parsedInput.jobId,
+      sessionKey: sessionId ?? "",
+      waitMs: parsedInput.waitMs,
+      maxOutputChars: parsedInput.maxOutputChars,
+      abortSignal,
+    }),
+  );
+}
+
+export async function executeBashStop(
+  input: z.input<typeof bashStopToolInputSchema>,
+  { sessionId }: BashRuntimeOptions = {},
+): Promise<BackgroundJobReport> {
+  const parsedInput = bashStopToolInputSchema.parse(input);
+  return backgroundJobReportSchema.parse(
+    await stopBackgroundJob({
+      jobId: parsedInput.jobId,
+      sessionKey: sessionId ?? "",
+      maxOutputChars: DEFAULT_TOOL_TEXT_OUTPUT_CHARS,
+    }),
+  );
+}
+
+export { stopAllBackgroundJobs } from "./background-jobs";

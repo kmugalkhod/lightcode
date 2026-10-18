@@ -336,6 +336,14 @@ function getStringInputProperty(input: CodingToolInput, key: string): string | n
 }
 
 function summarizeToolCall(toolName: CodingToolName, input: CodingToolInput): string {
+  if (toolName === "call_mcp_tool") {
+    const server = getStringInputProperty(input, "server");
+    const mcpTool = getStringInputProperty(input, "toolName");
+    if (server && mcpTool) {
+      return `MCP ${server}/${mcpTool} ${toSingleLinePreview(Reflect.get(input, "arguments") ?? {})}`.trim();
+    }
+  }
+
   const target =
     getStringInputProperty(input, "path") ??
     getStringInputProperty(input, "command") ??
@@ -660,6 +668,44 @@ function restorePendingUserPrompt(
     allowCustomResponse: payloadResult.data.allowCustomResponse,
     placeholder: payloadResult.data.placeholder,
   };
+}
+
+/**
+ * Questions still pending after a canonical history reload. The interaction
+ * store is authoritative, but a run that ends on request_user_input re-syncs
+ * while its question may still be checkpointing, so a question already shown
+ * stays while its tool call waits for an answer.
+ */
+export function reconcilePendingUserPrompts(
+  restored: PendingUserPrompt[],
+  current: PendingUserPrompt[],
+  messages: UIMessage[],
+): PendingUserPrompt[] {
+  const awaitingToolCallIds = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== "assistant") {
+      continue;
+    }
+    for (const part of message.parts) {
+      if (
+        isToolUIPart(part) &&
+        getToolName(part) === "request_user_input" &&
+        part.state === "input-available"
+      ) {
+        awaitingToolCallIds.add(part.toolCallId);
+      }
+    }
+  }
+
+  const restoredToolCallIds = new Set(
+    restored.map((prompt) => prompt.toolCallId),
+  );
+  const kept = current.filter(
+    (prompt) =>
+      awaitingToolCallIds.has(prompt.toolCallId) &&
+      !restoredToolCallIds.has(prompt.toolCallId),
+  );
+  return kept.length === 0 ? restored : [...restored, ...kept];
 }
 
 export function useCodingSessionChat({
@@ -1126,20 +1172,6 @@ export function useCodingSessionChat({
               toolCallId: toolCall.toolCallId,
               state: "output-error",
               errorText: getErrorMessage(toolError, "Invalid tool input payload."),
-            }),
-          );
-          return;
-        }
-
-        if (mode !== "plan") {
-          queueToolOutput(
-            addToolOutput({
-              tool: "request_user_input",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                answer: buildModeAutoPromptResponse,
-                source: "custom",
-              },
             }),
           );
           return;
@@ -1814,17 +1846,33 @@ export function useCodingSessionChat({
 
   /** Reload canonical server history after an out-of-band session action. */
   const refreshPersistedMessages = useCallback(async () => {
-    const messagePayload = await loadPersistedMessagesRef.current();
+    const [messagePayload, interactionPayload] = await Promise.all([
+      loadPersistedMessagesRef.current(),
+      // Questions are optional here: a failed lookup keeps the ones on screen.
+      loadPersistedInteractionsRef.current
+        ? loadPersistedInteractionsRef
+            .current()
+            .catch(() => ({ interactions: [] }))
+        : Promise.resolve({ interactions: [] }),
+    ]);
     sessionRevisionRef.current = messagePayload.session?.revision ?? 0;
     const validatedMessages = await validatePersistedMessages(
       messagePayload.messages,
     );
+    const restoredPrompts = interactionPayload.interactions
+      .map(restorePendingUserPrompt)
+      .filter((prompt): prompt is PendingUserPrompt => prompt !== null);
 
     setMessagesRef.current(
-      pruneIncompleteTrailingAssistantParts(validatedMessages),
+      restoredPrompts.length === 0
+        ? pruneIncompleteTrailingAssistantParts(validatedMessages)
+        : validatedMessages,
     );
     setPendingApprovals([]);
-    setPendingUserPrompts([]);
+    // A run that ends by asking the user re-syncs here; keep its question.
+    setPendingUserPrompts((current) =>
+      reconcilePendingUserPrompts(restoredPrompts, current, validatedMessages),
+    );
     setHistoryError(null);
     setToolExecutionError(null);
     activeRunIdRef.current = null;
@@ -1939,6 +1987,14 @@ export function useCodingSessionChat({
     }
 
     resumedSessionRef.current = sessionId;
+    // The loaded history's last answer finished in an earlier page view, and
+    // auto-continue already had its chance then. Re-deciding it here would
+    // silently start a new run on every refresh of a session whose todos are
+    // unfinished. A run still active on the server ends in a new message.
+    const loadedLastMessage = messagesRef.current.at(-1);
+    if (loadedLastMessage?.role === "assistant") {
+      lastDecidedAssistantIdRef.current = loadedLastMessage.id;
+    }
     let cancelled = false;
     setIsHistoryResumePending(true);
     void resumeStream().finally(() => {
@@ -1951,8 +2007,14 @@ export function useCodingSessionChat({
     };
   }, [historyError, isHistoryLoading, isSessionIdValid, resumeStream, sessionId]);
 
+  // Switching from Plan to Build while a question is open means "go ahead":
+  // answer it so the run continues. Questions asked in Build mode, or still
+  // open when a session loads, wait for the user.
+  const previousModeRef = useRef(mode);
   useEffect(() => {
-    if (mode === "plan" || pendingUserPrompts.length === 0) {
+    const switchedToBuild = previousModeRef.current === "plan" && mode !== "plan";
+    previousModeRef.current = mode;
+    if (!switchedToBuild || pendingUserPrompts.length === 0) {
       return;
     }
 

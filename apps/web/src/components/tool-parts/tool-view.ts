@@ -7,7 +7,18 @@ import { z } from "zod";
  */
 export type ToolView =
   | { kind: "diff"; path: string; diff: string; added: number; removed: number; created: boolean }
-  | { kind: "command"; command: string; exitCode: number; stdout: string; stderr: string; truncated: boolean }
+  | {
+      kind: "command";
+      command: string;
+      /** Null while a background job runs. */
+      exitCode: number | null;
+      stdout: string;
+      stderr: string;
+      truncated: boolean;
+      /** Set for background jobs (bash runInBackground, bash_output, bash_stop). */
+      status?: "running" | "exited" | "stopped";
+      note?: string;
+    }
   | { kind: "read"; path: string; startLine: number; endLine: number; totalLines: number }
   | { kind: "matches"; label: string; total: number; truncated: boolean; items: string[] }
   | { kind: "generic" };
@@ -22,7 +33,18 @@ const bashOutputSchema = z.object({
   command: z.string(),
   stdout: z.string(),
   stderr: z.string(),
-  exitCode: z.number().int(),
+  exitCode: z.number().int().nullable(),
+  truncated: z.boolean(),
+  backgroundJobId: z.string().optional(),
+});
+
+const backgroundJobReportSchema = z.object({
+  jobId: z.string(),
+  command: z.string(),
+  status: z.enum(["running", "exited", "stopped"]),
+  exitCode: z.number().int().nullable(),
+  stdout: z.string(),
+  stderr: z.string(),
   truncated: z.boolean(),
 });
 
@@ -38,6 +60,7 @@ const grepOutputSchema = z.object({
   matches: z.array(
     z.object({ path: z.string(), lineNumber: z.number().int(), line: z.string() }),
   ),
+  files: z.array(z.object({ path: z.string(), count: z.number().int() })).optional(),
   totalMatches: z.number().int(),
   truncated: z.boolean(),
 });
@@ -78,7 +101,19 @@ export function toolView(toolName: string, output: unknown): ToolView {
   }
   if (toolName === "bash") {
     const parsed = bashOutputSchema.safeParse(output);
-    if (parsed.success) return { kind: "command", ...parsed.data };
+    if (parsed.success) {
+      const { backgroundJobId, ...command } = parsed.data;
+      return backgroundJobId
+        ? { kind: "command", ...command, status: "running", note: `Started in the background as ${backgroundJobId}` }
+        : { kind: "command", ...command };
+    }
+  }
+  if (toolName === "bash_output" || toolName === "bash_stop") {
+    const parsed = backgroundJobReportSchema.safeParse(output);
+    if (parsed.success) {
+      const { jobId, ...report } = parsed.data;
+      return { kind: "command", ...report, note: report.status === "running" ? `${jobId} is still running, no new output` : undefined };
+    }
   }
   if (toolName === "read_file") {
     const parsed = readOutputSchema.safeParse(output);
@@ -86,6 +121,16 @@ export function toolView(toolName: string, output: unknown): ToolView {
   }
   if (toolName === "grep") {
     const parsed = grepOutputSchema.safeParse(output);
+    if (parsed.success && parsed.data.files) {
+      const files = parsed.data.files;
+      return {
+        kind: "matches",
+        label: files.length === 1 ? "file" : "files",
+        total: files.length,
+        truncated: parsed.data.truncated,
+        items: files.slice(0, maximumListedItems).map((file) => `${file.path}  (${file.count})`),
+      };
+    }
     if (parsed.success) {
       return {
         kind: "matches",
@@ -119,10 +164,18 @@ export function toolView(toolName: string, output: unknown): ToolView {
   return { kind: "generic" };
 }
 
+/** A command that ended badly; a job the agent stopped on purpose is not a failure. */
+export function commandFailed(view: ToolView): boolean {
+  return view.kind === "command" && view.status !== "stopped" && view.exitCode !== null && view.exitCode !== 0;
+}
+
 /** Short result shown next to the tool name, e.g. "+12 −3" or "exit 1". */
 export function toolViewBadge(view: ToolView): string | null {
   if (view.kind === "diff") return view.created ? `new · +${view.added}` : `+${view.added} −${view.removed}`;
-  if (view.kind === "command") return `exit ${view.exitCode}`;
+  if (view.kind === "command") {
+    if (view.status === "running" || view.status === "stopped") return view.status;
+    return view.exitCode === null ? null : `exit ${view.exitCode}`;
+  }
   if (view.kind === "read") return `lines ${view.startLine}–${view.endLine} of ${view.totalLines}`;
   if (view.kind === "matches") return `${view.total}${view.truncated ? "+" : ""} ${view.label}`;
   return null;

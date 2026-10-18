@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Session, Workspace } from "../lib/api";
+import type { RecentProject, Session, Workspace } from "../lib/api";
 import { displaySessionTitle, formatRelativeTime } from "../lib/api";
 import { shortcutLabel } from "../lib/client-platform";
 import { Icon } from "./icons";
@@ -20,6 +20,13 @@ function normalizeProjectPath(path: string | null | undefined): string {
   const slashed = path.replaceAll("\\", "/").replace(/\/+$/, "");
   // Windows paths are case-insensitive; keep POSIX paths exact.
   return /^[A-Za-z]:/.test(slashed) ? slashed.toLowerCase() : slashed;
+}
+
+/** The recent project a session ran in, when the server still lists it as openable. */
+export function recentProjectForSession(session: Session | null, projects: readonly RecentProject[]): RecentProject | null {
+  const key = normalizeProjectPath(session?.cwd);
+  if (!key) return null;
+  return projects.find((project) => project.available && normalizeProjectPath(project.pathLabel) === key) ?? null;
 }
 
 function projectName(path: string): string {
@@ -175,7 +182,7 @@ export function SessionRail({
         </header>
 
         <nav className="rail-nav" aria-label="Workspace">
-          <button className="rail-nav-item" type="button" onClick={onNewSession} disabled={!workspace}>
+          <button className="rail-nav-item" type="button" onClick={onNewSession}>
             <Icon name="plus" size={16} />
             <span>New session</span>
             <kbd>{shortcutLabel({ shift: true, key: "N" })}</kbd>

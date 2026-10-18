@@ -3,7 +3,7 @@ import { memo, useState } from "react";
 import { MessageMarkdown } from "./message-markdown";
 import { Icon, type IconName } from "./icons";
 import { ToolViewBody } from "./tool-parts/tool-view-body";
-import { toolView, toolViewBadge } from "./tool-parts/tool-view";
+import { commandFailed, toolView, toolViewBadge } from "./tool-parts/tool-view";
 
 interface ChatMessageProps {
   message: UIMessage;
@@ -70,7 +70,28 @@ function describeTool(toolName: string, input: unknown): ToolDescription {
       return { icon: "code", category: "edit", done: "Wrote", active: "Writing", target: pathTarget, fullTarget: path };
     case "bash": {
       const command = inputString(input, ["command"]);
-      return { icon: "terminal", category: "command", done: "Ran", active: "Running", target: command, fullTarget: command };
+      const background = Boolean(input && typeof input === "object" && Reflect.get(input, "runInBackground") === true);
+      return background
+        ? { icon: "terminal", category: "command", done: "Started", active: "Starting", target: command, fullTarget: command }
+        : { icon: "terminal", category: "command", done: "Ran", active: "Running", target: command, fullTarget: command };
+    }
+    case "bash_output": {
+      const jobId = inputString(input, ["jobId"]);
+      return { icon: "terminal", category: "command", done: "Checked", active: "Checking", target: jobId, fullTarget: jobId };
+    }
+    case "bash_stop": {
+      const jobId = inputString(input, ["jobId"]);
+      return { icon: "terminal", category: "command", done: "Stopped", active: "Stopping", target: jobId, fullTarget: jobId };
+    }
+    case "call_mcp_tool": {
+      const server = inputString(input, ["server"]);
+      const mcpTool = inputString(input, ["toolName"]);
+      const target = server && mcpTool ? `${server}/${mcpTool}` : (mcpTool ?? server);
+      return { icon: "tool", category: "other", done: "Called", active: "Calling", target, fullTarget: target };
+    }
+    case "list_mcp_tools": {
+      const server = inputString(input, ["server"]);
+      return { icon: "tool", category: "other", done: "Listed MCP tools", active: "Listing MCP tools", target: server, fullTarget: server };
     }
     case "grep": {
       const query = inputString(input, ["pattern", "query"]);
@@ -191,7 +212,7 @@ const ToolLine = memo(function ToolLine({ part }: { part: ToolUIPart }) {
         </span>
         {note ? <span className="activity-note">{note}</span> : null}
         {badge ? (
-          <span className={view.kind === "command" && view.exitCode !== 0 ? "tool-badge failed" : "tool-badge"}>
+          <span className={commandFailed(view) ? "tool-badge failed" : "tool-badge"}>
             {badge}
           </span>
         ) : null}

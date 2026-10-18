@@ -11,10 +11,17 @@ import {
   agentProviderInputSchema,
 } from "./agent/schema";
 import {
+  backgroundJobReportSchema,
   bashDescription,
   bashInputSchema,
   bashOutputSchema,
+  bashOutputToolDescription,
+  bashOutputToolInputSchema,
+  bashOutputToolProviderInputSchema,
   bashProviderInputSchema,
+  bashStopToolDescription,
+  bashStopToolInputSchema,
+  bashStopToolProviderInputSchema,
 } from "./bash/schema";
 import {
   editFileDescription,
@@ -63,6 +70,10 @@ import {
   callMcpToolInputSchema,
   callMcpToolOutputSchema,
   callMcpToolProviderInputSchema,
+  listMcpToolsDescription,
+  listMcpToolsInputSchema,
+  listMcpToolsOutputSchema,
+  listMcpToolsProviderInputSchema,
   listMcpResourcesDescription,
   listMcpResourcesInputSchema,
   listMcpResourcesOutputSchema,
@@ -146,6 +157,12 @@ export interface CodingToolRegistryEntry<
   availability: CodingToolAvailability;
   activation: CodingToolActivation;
   outputPolicy: CodingToolOutputPolicy;
+  /**
+   * Whether the provider schema is sent in strict mode (default true). Strict
+   * schemas share ANTHROPIC_TOOL_OPTIONAL_PARAMETER_BUDGET; a tool whose
+   * options would not fit, or that strict grammars cannot express, opts out.
+   */
+  strict?: boolean;
 }
 
 type CodingToolRegistryShape = {
@@ -153,7 +170,6 @@ type CodingToolRegistryShape = {
 };
 
 const buildOnly = ["build"] as const;
-const planOnly = ["plan"] as const;
 const bothModes = ["build", "plan"] as const;
 
 /**
@@ -226,6 +242,7 @@ export const codingToolRegistry = {
     availability: "always",
     activation: "core",
     outputPolicy: "artifact-if-large",
+    strict: false,
   },
   git_status: {
     description: gitStatusDescription,
@@ -305,6 +322,19 @@ export const codingToolRegistry = {
     activation: "core",
     outputPolicy: "artifact-if-large",
   },
+  list_mcp_tools: {
+    description: listMcpToolsDescription,
+    inputSchema: listMcpToolsInputSchema,
+    providerInputSchema: listMcpToolsProviderInputSchema,
+    outputSchema: listMcpToolsOutputSchema,
+    modes: bothModes,
+    permissionSubject: "list_mcp_tools",
+    permissionMode: "read-only",
+    execution: "server",
+    availability: "mcp",
+    activation: "specialized",
+    outputPolicy: "artifact-if-large",
+  },
   list_mcp_resources: {
     description: listMcpResourcesDescription,
     inputSchema: listMcpResourcesInputSchema,
@@ -343,19 +373,21 @@ export const codingToolRegistry = {
     availability: "mcp",
     activation: "specialized",
     outputPolicy: "artifact-if-large",
+    strict: false,
   },
   request_user_input: {
     description: requestUserInputDescription,
     inputSchema: requestUserInputToolInputSchema,
     providerInputSchema: requestUserInputToolProviderInputSchema,
     outputSchema: requestUserInputToolOutputSchema,
-    modes: planOnly,
+    modes: bothModes,
     permissionSubject: "request_user_input",
     permissionMode: "read-only",
     execution: "client",
     availability: "always",
     activation: "core",
     outputPolicy: "inline",
+    strict: false,
   },
   todo_write: {
     description: todoWriteDescription,
@@ -408,6 +440,33 @@ export const codingToolRegistry = {
     availability: "always",
     activation: "core",
     outputPolicy: "artifact-if-large",
+    strict: false,
+  },
+  bash_output: {
+    description: bashOutputToolDescription,
+    inputSchema: bashOutputToolInputSchema,
+    providerInputSchema: bashOutputToolProviderInputSchema,
+    outputSchema: backgroundJobReportSchema,
+    modes: buildOnly,
+    permissionSubject: "bash_output",
+    permissionMode: "read-only",
+    execution: "server",
+    availability: "always",
+    activation: "core",
+    outputPolicy: "artifact-if-large",
+  },
+  bash_stop: {
+    description: bashStopToolDescription,
+    inputSchema: bashStopToolInputSchema,
+    providerInputSchema: bashStopToolProviderInputSchema,
+    outputSchema: backgroundJobReportSchema,
+    modes: buildOnly,
+    permissionSubject: "bash_stop",
+    permissionMode: "workspace-write",
+    execution: "server",
+    availability: "always",
+    activation: "core",
+    outputPolicy: "artifact-if-large",
   },
   web_fetch: {
     description: webFetchDescription,
@@ -439,7 +498,10 @@ export const codingToolRegistry = {
 
 export type CodingToolName = keyof typeof codingToolRegistry;
 
-function selectRegistryField<K extends keyof CodingToolRegistryEntry>(field: K) {
+/** Fields every entry declares (optional ones such as `strict` have accessors). */
+type RequiredRegistryField = Exclude<keyof CodingToolRegistryEntry, "strict">;
+
+function selectRegistryField<K extends RequiredRegistryField>(field: K) {
   return Object.fromEntries(
     Object.entries(codingToolRegistry).map(([name, entry]) => [
       name,
@@ -459,6 +521,12 @@ export const codingToolOutputSchemas = selectRegistryField("outputSchema");
 export const codingToolPermissionRequirements = selectRegistryField(
   "permissionMode",
 );
+
+/** Whether a tool's provider schema is sent in strict mode. */
+export function isStrictCodingTool(toolName: CodingToolName): boolean {
+  const entry: CodingToolRegistryEntry = codingToolRegistry[toolName];
+  return entry.strict ?? true;
+}
 
 export function getCodingToolRegistryEntry(toolName: CodingToolName) {
   return codingToolRegistry[toolName];

@@ -7,6 +7,7 @@ import { lightcodeConfigResult } from "./runtime-config";
 
 export const mcpServerManager = new McpServerManager(
   lightcodeConfigResult.config.mcp,
+  { cwd: process.cwd() },
 );
 
 export function getExtensionRuntimeStatus() {

@@ -24,6 +24,8 @@ import {
 import type { AgentToolInput, AgentToolOutput } from "./agent/schema";
 import { buildCodingAgentSystemPrompt } from "./coding-agent-prompt";
 import { repairCodingAgentToolCall } from "./coding-agent-tool-repair";
+import { markToolExecutionError } from "./tool-error-text";
+import { isStrictCodingTool } from "./tool-registry";
 import {
   defaultCodingAgentMode,
   getCodingAgentModeDefinition,
@@ -215,6 +217,7 @@ export function createCodingAgentTools(
                 },
               });
             }
+            markToolExecutionError(error);
             throw error;
           }
         },
@@ -228,7 +231,7 @@ export function createCodingAgentTools(
       tools[name] = tool({
         description: codingToolDescriptions[name],
         inputSchema: codingToolProviderInputSchemas[name] as z.ZodType<unknown>,
-        strict: true,
+        strict: isStrictCodingTool(name),
       });
       continue;
     }
@@ -240,7 +243,7 @@ export function createCodingAgentTools(
     tools[name] = tool({
       description: codingToolDescriptions[name],
       inputSchema: codingToolProviderInputSchemas[name] as z.ZodType<unknown>,
-      strict: true,
+      strict: isStrictCodingTool(name),
       needsApproval: (
         input: unknown,
         {
@@ -319,6 +322,7 @@ export function createCodingAgentTools(
               },
             });
           }
+          markToolExecutionError(error);
           throw error;
         }
       },
@@ -369,7 +373,12 @@ export function resolveCodingAgentCallSettings({
 }) {
   const mode = options.mode ?? defaultCodingAgentMode;
   const modeDefinition = getCodingAgentModeDefinition(mode);
-  const intentTools = selectCodingAgentIntentTools({ mode, prompt, messages });
+  const intentTools = selectCodingAgentIntentTools({
+    mode,
+    prompt,
+    messages,
+    mcpServersConfigured: (options.mcpServers?.length ?? 0) > 0,
+  });
   const policyTools = getActiveCodingToolsForPolicy({
     modeTools: intentTools.filter((toolName) =>
       modeDefinition.activeTools.includes(toolName),

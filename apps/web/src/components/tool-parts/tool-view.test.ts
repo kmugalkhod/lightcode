@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { countDiffLines, toolView, toolViewBadge } from "./tool-view";
+import { commandFailed, countDiffLines, toolView, toolViewBadge } from "./tool-view";
 
 const diff = [
   "--- a/src/app.ts",
@@ -35,6 +35,31 @@ describe("tool views", () => {
     });
     expect(view).toMatchObject({ kind: "command", command: "bun test", exitCode: 1 });
     expect(toolViewBadge(view)).toBe("exit 1");
+  });
+
+  test("background jobs show their state instead of a failed exit", () => {
+    const started = toolView("bash", {
+      command: "bun run dev",
+      cwd: "/repo",
+      stdout: "",
+      stderr: "",
+      exitCode: null,
+      truncated: false,
+      backgroundJobId: "bash-1",
+      message: "Started in the background as bash-1.",
+    });
+    expect(started).toMatchObject({ kind: "command", status: "running", note: "Started in the background as bash-1" });
+    expect(toolViewBadge(started)).toBe("running");
+    expect(commandFailed(started)).toBe(false);
+
+    const report = { jobId: "bash-1", command: "bun run dev", stdout: "ready", stderr: "", truncated: false };
+    const stopped = toolView("bash_stop", { ...report, status: "stopped", exitCode: 1 });
+    expect(toolViewBadge(stopped)).toBe("stopped");
+    expect(commandFailed(stopped)).toBe(false);
+
+    const crashed = toolView("bash_output", { ...report, status: "exited", exitCode: 2 });
+    expect(toolViewBadge(crashed)).toBe("exit 2");
+    expect(commandFailed(crashed)).toBe(true);
   });
 
   test("search tools list paths with a count", () => {

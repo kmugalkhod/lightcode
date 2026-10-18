@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { Session, Workspace } from "../lib/api";
-import { groupSessionsByProject, SessionRail } from "./session-rail";
+import type { RecentProject, Session, Workspace } from "../lib/api";
+import { groupSessionsByProject, recentProjectForSession, SessionRail } from "./session-rail";
 
 function session(id: string, cwd: string | null, updatedAt: string, title = id): Session {
   return {
@@ -72,4 +72,32 @@ test("long projects show the newest sessions and fold the rest behind Show more"
   expect(html).toContain("Session 0");
   expect(html).not.toContain("Session 2<");
   expect(html).toContain("Show 2 more");
+});
+
+test("New session stays clickable before a project is open", () => {
+  const html = renderToStaticMarkup(
+    <SessionRail sessions={sessions} activeSessionId="b" workspace={null} isLoading={false}
+      isPickingProject={false} isRunning={false} error={null} mobileOpen={false} backgroundInert={false}
+      onCloseMobile={() => {}} onNewSession={() => {}} onOpenProject={() => {}}
+      onSelectSession={() => {}} onRetry={() => {}} />,
+  );
+  const newSessionButton = html.match(/<button class="rail-nav-item"[^>]*>/)?.[0];
+  expect(newSessionButton).toBeDefined();
+  expect(newSessionButton).not.toContain("disabled");
+});
+
+test("a session's folder resolves to its openable recent project", () => {
+  const recent = (pathLabel: string, available = true): RecentProject => ({
+    key: "k".repeat(22),
+    name: pathLabel.split(/[\/]/).at(-1) ?? pathLabel,
+    pathLabel,
+    lastUsedAt: "2026-10-16T00:00:00.000Z",
+    available,
+  });
+  const todo = recent(String.raw`D:\Lightcode-TodoApp`);
+  const projects = [recent(String.raw`D:\Self-Project\notely`), todo];
+  expect(recentProjectForSession(session("t", "d:/lightcode-todoapp/", "2026-10-16T00:00:00.000Z"), projects)).toBe(todo);
+  expect(recentProjectForSession(session("t", String.raw`D:\Lightcode-TodoApp`, "2026-10-16T00:00:00.000Z"), [recent(String.raw`D:\Lightcode-TodoApp`, false)])).toBeNull();
+  expect(recentProjectForSession(session("d", null, "2026-10-16T00:00:00.000Z"), projects)).toBeNull();
+  expect(recentProjectForSession(null, projects)).toBeNull();
 });

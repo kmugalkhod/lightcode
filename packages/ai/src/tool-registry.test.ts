@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import {
   codingToolDescriptions,
   codingToolInputSchemas,
@@ -15,6 +16,7 @@ import {
 import {
   codingToolRegistry,
   getRegistryToolsForMode,
+  isStrictCodingTool,
 } from "./tool-registry";
 
 const toolNames = Object.keys(codingToolRegistry) as CodingAgentToolName[];
@@ -47,6 +49,27 @@ describe("codingToolRegistry consistency", () => {
     }
   });
 
+  test("no provider tool has a parameter name that prefixes another", () => {
+    // Models confuse prefix pairs: with edit_file's `replace` + `replaceAll`,
+    // DeepSeek sent `{path, replaceAll, search}` in 7 of 26 edits — the flag
+    // where the replacement text belonged.
+    const collisions: string[] = [];
+    for (const toolName of Object.keys(codingToolRegistry) as Array<keyof typeof codingToolRegistry>) {
+      const schema = codingToolRegistry[toolName].providerInputSchema;
+      if (!(schema instanceof z.ZodObject)) continue;
+      const names = Object.keys(schema.shape).map((name) => name.toLowerCase());
+      for (const name of names) {
+        for (const other of names) {
+          if (name !== other && other.startsWith(name)) {
+            collisions.push(`${toolName}: ${name} / ${other}`);
+          }
+        }
+      }
+    }
+
+    expect(collisions).toEqual([]);
+  });
+
   test("marks the compact base as core and optional capability families as specialized", () => {
     expect(
       getRegistryToolsForMode("build").filter(
@@ -64,10 +87,13 @@ describe("codingToolRegistry consistency", () => {
       "git_show",
       "tool_search",
       "skill",
+      "request_user_input",
       "todo_write",
       "write_file",
       "edit_file",
       "bash",
+      "bash_output",
+      "bash_stop",
     ]);
     expect(
       getRegistryToolsForMode("plan").filter(
@@ -97,5 +123,20 @@ describe("codingToolRegistry consistency", () => {
     ] as const) {
       expect(codingToolRegistry[toolName].activation).toBe("specialized");
     }
+  });
+
+  test("the model can set a bash timeout, run in the background, and offer answer choices", () => {
+    // These options were once cut from the provider schemas to fit the strict
+    // budget, leaving every command capped at 30s and every question free-text.
+    const providerFields = (toolName: CodingAgentToolName) => {
+      const schema = codingToolRegistry[toolName].providerInputSchema;
+      return schema instanceof z.ZodObject ? Object.keys(schema.shape) : [];
+    };
+    expect(providerFields("bash")).toEqual(["command", "timeoutMs", "runInBackground"]);
+    expect(providerFields("bash_output")).toEqual(["jobId", "waitMs"]);
+    expect(providerFields("request_user_input")).toEqual(["question", "header", "options"]);
+    expect(isStrictCodingTool("bash")).toBe(false);
+    expect(isStrictCodingTool("request_user_input")).toBe(false);
+    expect(isStrictCodingTool("read_file")).toBe(true);
   });
 });
