@@ -64,10 +64,12 @@ export function startBackgroundJob({
   command,
   cwd,
   sessionKey,
+  env,
 }: {
   command: string;
   cwd: string;
   sessionKey: string;
+  env?: NodeJS.ProcessEnv;
 }): { jobId: string } {
   const running = sessionJobs(sessionKey).filter((job) => job.status === "running");
   if (running.length >= MAX_RUNNING_BACKGROUND_JOBS) {
@@ -80,7 +82,7 @@ export function startBackgroundJob({
   installExitHandler();
   forgetOldFinishedJobs();
 
-  const child = spawnShellCommand(command, cwd);
+  const child = spawnShellCommand(command, cwd, env);
   const job: BackgroundJob = {
     id: `bash-${nextJobNumber++}`,
     sessionKey,

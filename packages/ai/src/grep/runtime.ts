@@ -9,6 +9,7 @@ import {
   toWorkspaceRelativePath,
   type WorkspaceContext,
 } from "../common/resolve-within-workspace";
+import { resolveRipgrep } from "./ripgrep";
 import { grepInputSchema, grepOutputSchema } from "./schema";
 
 const execFileAsync = promisify(execFile);
@@ -121,10 +122,12 @@ function ripgrepArgs(parsedInput: ParsedGrepInput): string[] {
   return args;
 }
 
-/** Null when ripgrep is not installed; the caller then uses the fallback. */
+/** Null when no ripgrep is available; the caller then uses the fallback. */
 async function runRipgrep(args: string[], cwd: string): Promise<string | null> {
+  const ripgrep = await resolveRipgrep();
+  if (!ripgrep) return null;
   try {
-    const result = await execFileAsync("rg", args, { cwd, maxBuffer: rgMaxBuffer, windowsHide: true });
+    const result = await execFileAsync(ripgrep.path, args, { cwd, maxBuffer: rgMaxBuffer, windowsHide: true });
     return result.stdout;
   } catch (error) {
     const errorRecord = toRecord(error);

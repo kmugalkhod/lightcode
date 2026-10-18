@@ -18,9 +18,14 @@ const pipeDrainGraceMs = 1_000;
  * EOF instead of hanging until its timeout. On POSIX the shell leads its own
  * process group so a stop reaches everything it started.
  */
-export function spawnShellCommand(command: string, cwd: string): ChildProcess {
+export function spawnShellCommand(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ChildProcess {
   const child = spawn(command, {
     cwd,
+    env,
     shell: true,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],

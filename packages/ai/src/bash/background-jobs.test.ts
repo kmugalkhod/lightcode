@@ -103,6 +103,14 @@ describe("bash timeouts", () => {
     expect(Date.now() - started).toBeLessThan(3_500);
   }, 15_000);
 
+  test("rg works in commands without the user installing ripgrep", async () => {
+    const cwd = await makeTempWorkspace();
+    const output = await bash(cwd, { command: "rg --version", timeoutMs: 10_000 });
+
+    expect(output.exitCode).toBe(0);
+    expect(output.stdout).toContain("ripgrep");
+  }, 15_000);
+
   test("gives commands an empty stdin instead of leaving them waiting", async () => {
     const cwd = await makeTempWorkspace();
     await writeFile(

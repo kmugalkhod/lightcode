@@ -15,6 +15,7 @@
   "dependencies": {
     "@ai-sdk/react": "3.0.184",
     "@lightcode/shared": "workspace:*",
+    "@vscode/ripgrep": "1.18.0",
     "ai": "6.0.182",
     "diff": "^9.0.0",
     "react": "19.2.6",

@@ -33,7 +33,21 @@ function grep(input: Parameters<typeof executeGrep>[0]) {
   return executeGrep(input, createWorkspaceContext(root));
 }
 
-describe("grep", () => {
+// Every behaviour must hold for both engines: the bundled ripgrep and the
+// built-in search used when ripgrep is unavailable.
+for (const engine of ["ripgrep", "built-in"] as const) {
+describe(`grep (${engine})`, () => {
+  let previous: string | undefined;
+  beforeAll(() => {
+    previous = process.env.LIGHTCODE_RIPGREP;
+    if (engine === "built-in") process.env.LIGHTCODE_RIPGREP = "off";
+    else delete process.env.LIGHTCODE_RIPGREP;
+  });
+  afterAll(() => {
+    if (previous === undefined) delete process.env.LIGHTCODE_RIPGREP;
+    else process.env.LIGHTCODE_RIPGREP = previous;
+  });
+
   test("adds lines before and after each match when context is asked for", async () => {
     const result = await grep({ query: "export function useWidget", path: "src", context: 2 });
     expect(result.matches).toHaveLength(1);
@@ -91,7 +105,10 @@ describe("grep", () => {
     expect(result.matches).toHaveLength(1);
     await expect(grep({ query: "use(", path: "src", isRegex: true })).rejects.toThrow();
   });
+});
+}
 
+describe("grep helpers", () => {
   test("glob filter semantics match ripgrep's", () => {
     expect(createGlobFilter("*.ts")("deep/nested/file.ts")).toBe(true);
     expect(createGlobFilter("*.ts")("deep/nested/file.tsx")).toBe(false);

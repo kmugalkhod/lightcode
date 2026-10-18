@@ -5,6 +5,7 @@ import {
   type WorkspaceContext,
 } from "../common/resolve-within-workspace";
 import { truncateText } from "../common/output-utils";
+import { withBundledRipgrepOnPath } from "../grep/ripgrep";
 import {
   readBackgroundJob,
   startBackgroundJob,
@@ -52,12 +53,15 @@ export async function executeBash(
 ): Promise<BashOutput> {
   const parsedInput = bashInputSchema.parse(input);
   const cwd = workspaceContext.root;
+  // Models reach for `rg` in shell commands; the bundled copy makes it work.
+  const env = await withBundledRipgrepOnPath(process.env);
 
   if (parsedInput.runInBackground) {
     const { jobId } = startBackgroundJob({
       command: parsedInput.command,
       cwd,
       sessionKey: sessionId ?? "",
+      env,
     });
     return bashOutputSchema.parse({
       command: parsedInput.command,
@@ -72,7 +76,7 @@ export async function executeBash(
   }
 
   abortSignal?.throwIfAborted();
-  const child = spawnShellCommand(parsedInput.command, cwd);
+  const child = spawnShellCommand(parsedInput.command, cwd, env);
   const stdout = new HeadTailOutput(capturedOutputHalfLimit);
   const stderr = new HeadTailOutput(capturedOutputHalfLimit);
   child.stdout?.on("data", (chunk: string) => stdout.append(chunk));
