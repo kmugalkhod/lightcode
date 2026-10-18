@@ -2,6 +2,7 @@ import {
   createLogger,
   enableFileLogSink,
   getErrorMessage,
+  SERVER_PORT_IN_USE_EXIT_CODE,
 } from "@lightcode/shared";
 import type { app as appInstance } from "./app";
 import {
@@ -197,8 +198,13 @@ async function startServer() {
         "",
       ].join("\n"),
     );
-    process.exit(1);
+    process.exit(SERVER_PORT_IN_USE_EXIT_CODE);
   }
+
+  // Windows: commands the agent starts must not inherit the listening socket,
+  // or one that outlives the server keeps this port taken after it exits.
+  const { stopSocketInheritance } = await import("@lightcode/ai/runtime");
+  await stopSocketInheritance();
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {

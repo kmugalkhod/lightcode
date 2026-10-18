@@ -9,6 +9,7 @@ export * from "./checkpoints/runtime";
 export * from "./edit-file/runtime";
 export * from "./grep/runtime";
 export * from "./grep/ripgrep";
+export * from "./common/socket-inheritance";
 export * from "./glob-search/runtime";
 export * from "./git/runtime";
 export * from "./list-files/runtime";

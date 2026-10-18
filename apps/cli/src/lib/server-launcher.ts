@@ -1,15 +1,20 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { SERVER_PORT_IN_USE_EXIT_CODE } from "@lightcode/shared";
 import { networkFetch } from "@lightcode/shared/network";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
+  statSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { homedir, platform } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { apiBaseUrl } from "./api-base-url";
+import { apiBaseUrl, apiUrlPinned, setApiBaseUrl } from "./api-base-url";
 
 export interface ServerLaunchResult {
   url: string;
@@ -76,7 +81,8 @@ export async function restartOwnedServer(): Promise<boolean> {
   }
   currentOwnedProcess = null;
 
-  const result = await ensureServerRunning();
+  // The UI already talks to this port, so the restarted server must keep it.
+  const result = await ensureServerRunning({ allowPortFallback: false });
   return result.ownedProcess !== null;
 }
 
@@ -84,6 +90,41 @@ const healthCheckTimeoutMs = 1_500;
 const startupPollIntervalMs = 250;
 const startupPollAttempts = 40;
 const webPortProbeCount = 12;
+/** Ports after the default one the terminal server may move to. */
+const terminalPortProbeCount = 12;
+/** The startup log starts over once it grows past this. */
+const maxServerLogBytes = 5 * 1024 * 1024;
+
+/**
+ * Opens a server's startup log for appending, headed by this start, so the
+ * log always ends with the latest attempt. (Passing a Bun.file wrote from the
+ * top of the old log, leaving stale lines after the new ones.)
+ */
+function openServerLog(logPath: string, port: number): number {
+  let size = 0;
+  try {
+    size = statSync(logPath).size;
+  } catch {
+    // No log yet.
+  }
+  const fd = openSync(logPath, size > maxServerLogBytes ? "w" : "a");
+  writeSync(fd, `\n=== ${new Date().toISOString()} starting the Lightcode server on port ${port} ===\n`);
+  return fd;
+}
+
+function spawnServer(serverEntry: string, logPath: string, port: number, env: Record<string, string>) {
+  const logFd = openServerLog(logPath, port);
+  try {
+    return Bun.spawn([process.execPath, serverEntry], {
+      stdout: logFd,
+      stderr: logFd,
+      env: { ...process.env, ...env, PORT: String(port) },
+    });
+  } finally {
+    // The child holds its own copy.
+    closeSync(logFd);
+  }
+}
 
 function getLightcodeDataDir(): string {
   const configuredHome = process.env.LIGHTCODE_HOME?.trim();
@@ -288,7 +329,7 @@ export async function startAuthenticatedWebServer(): Promise<WebServerLaunchResu
 
   const logDirectory = path.join(getLightcodeDataDir(), "logs");
   mkdirSync(logDirectory, { recursive: true });
-  const logFile = Bun.file(path.join(logDirectory, "web-server.log"));
+  const logPath = path.join(logDirectory, "web-server.log");
   const startPort = parseWebStartPort();
 
   for (let offset = 0; offset < webPortProbeCount; offset += 1) {
@@ -312,25 +353,25 @@ export async function startAuthenticatedWebServer(): Promise<WebServerLaunchResu
     }
 
     const { authFile, token } = createWebAuthHandoff(port);
-    const ownedProcess = Bun.spawn([process.execPath, serverEntry], {
-      stdout: logFile,
-      stderr: logFile,
-      env: {
-        ...process.env,
-        PORT: String(port),
-        LIGHTCODE_HOST: "127.0.0.1",
-        LIGHTCODE_PARENT_PID: String(process.pid),
-        LIGHTCODE_WEB_AUTH_FILE: authFile,
-        // Offered to the browser as a one-click project; the server validates
-        // it and grants it only on an explicit authenticated request.
-        LIGHTCODE_WEB_LAUNCH_CWD: process.cwd(),
-      },
+    const ownedProcess = spawnServer(serverEntry, logPath, port, {
+      LIGHTCODE_HOST: "127.0.0.1",
+      LIGHTCODE_PARENT_PID: String(process.pid),
+      LIGHTCODE_WEB_AUTH_FILE: authFile,
+      // Offered to the browser as a one-click project; the server validates
+      // it and grants it only on an explicit authenticated request.
+      LIGHTCODE_WEB_LAUNCH_CWD: process.cwd(),
     });
 
     for (let attempt = 0; attempt < startupPollAttempts; attempt += 1) {
       if (await checkAuthenticatedWebServer(url, token)) {
         currentOwnedProcess = ownedProcess;
         return { url, ownedProcess, token };
+      }
+
+      if (ownedProcess.exitCode === SERVER_PORT_IN_USE_EXIT_CODE) {
+        // Something holds the port without answering (e.g. a process that
+        // kept an old server's socket); the next port will do.
+        break;
       }
 
       if (ownedProcess.exitCode !== null) {
@@ -372,79 +413,109 @@ export async function startAuthenticatedWebServer(): Promise<WebServerLaunchResu
 
 /**
  * Makes sure a Lightcode server is reachable before the TUI starts: reuses a
- * healthy server at the configured URL, otherwise spawns one as a child
- * process with logs under the Lightcode data directory.
+ * healthy server, otherwise spawns one as a child process with logs under the
+ * Lightcode data directory. When the default port is taken (another app, or a
+ * process still holding an old server's socket), the next free port is used;
+ * an address pinned with LIGHTCODE_API_URL is never moved.
  */
-export async function ensureServerRunning(): Promise<ServerLaunchResult> {
-  const port = new URL(apiBaseUrl).port || "4983";
-  const initialHealth = await checkServer(apiBaseUrl);
+export async function ensureServerRunning({
+  allowPortFallback = true,
+}: { allowPortFallback?: boolean } = {}): Promise<ServerLaunchResult> {
+  const startUrl = new URL(apiBaseUrl);
+  const startPort = Number(startUrl.port || "4983");
+  const portCount = allowPortFallback && !apiUrlPinned ? terminalPortProbeCount : 1;
+  const logDirectory = path.join(getLightcodeDataDir(), "logs");
+  const logPath = path.join(logDirectory, "server.log");
 
-  if (initialHealth === "healthy") {
-    return { url: apiBaseUrl, ownedProcess: null };
-  }
+  for (let offset = 0; offset < portCount; offset += 1) {
+    const port = startPort + offset;
+    if (port > 65_535) {
+      break;
+    }
+    const url = `${startUrl.protocol}//${startUrl.hostname}:${port}`;
+    const health = await checkServer(url);
 
-  if (initialHealth === "foreign") {
-    if ((await checkWebPort(apiBaseUrl)) === "healthy") {
+    if (health === "healthy") {
+      setApiBaseUrl(url);
+      return { url, ownedProcess: null };
+    }
+
+    if (health === "foreign") {
+      if ((await checkWebPort(url)) === "healthy") {
+        return {
+          url,
+          ownedProcess: null,
+          error: existingLightcodeInterfaceError("terminal", port),
+        };
+      }
+      if (offset + 1 < portCount) {
+        continue;
+      }
       return {
-        url: apiBaseUrl,
+        url,
         ownedProcess: null,
-        error: existingLightcodeInterfaceError("terminal", port),
+        error:
+          `Port ${port} is in use by another application (not Lightcode). ` +
+          "Free the port, or point Lightcode elsewhere with " +
+          "LIGHTCODE_API_URL (CLI) and PORT (server).",
       };
     }
 
-    return {
-      url: apiBaseUrl,
-      ownedProcess: null,
-      error:
-        `Port ${port} is in use by another application (not Lightcode). ` +
-        "Free the port, or point Lightcode elsewhere with " +
-        "LIGHTCODE_API_URL (CLI) and PORT (server).",
-    };
-  }
+    const serverEntry = resolveServerEntry();
+    if (!serverEntry) {
+      return { url: apiBaseUrl, ownedProcess: null };
+    }
 
-  const serverEntry = resolveServerEntry();
-  if (!serverEntry) {
-    return { url: apiBaseUrl, ownedProcess: null };
-  }
-
-  const logDirectory = path.join(getLightcodeDataDir(), "logs");
-  mkdirSync(logDirectory, { recursive: true });
-  const logFile = Bun.file(path.join(logDirectory, "server.log"));
-
-  const ownedProcess = Bun.spawn([process.execPath, serverEntry], {
-    stdout: logFile,
-    stderr: logFile,
-    env: {
-      ...process.env,
-      PORT: port,
+    mkdirSync(logDirectory, { recursive: true });
+    const ownedProcess = spawnServer(serverEntry, logPath, port, {
       // Let the server self-exit if this CLI dies abruptly (SIGKILL, terminal
       // close) — cases the process.on("exit") cleanup cannot cover. Without
       // this the server orphans on macOS and a later run reuses a stale one.
       LIGHTCODE_PARENT_PID: String(process.pid),
-    },
-  });
+    });
 
-  for (let attempt = 0; attempt < startupPollAttempts; attempt += 1) {
-    if ((await checkServer(apiBaseUrl)) === "healthy") {
+    let portTaken = false;
+    for (let attempt = 0; attempt < startupPollAttempts; attempt += 1) {
+      if ((await checkServer(url)) === "healthy") {
+        currentOwnedProcess = ownedProcess;
+        setApiBaseUrl(url);
+        return { url, ownedProcess };
+      }
+
+      if (ownedProcess.exitCode === SERVER_PORT_IN_USE_EXIT_CODE && offset + 1 < portCount) {
+        // Held without answering — e.g. by a process that kept an old
+        // server's socket. Try the next port.
+        portTaken = true;
+        break;
+      }
+
+      if (ownedProcess.exitCode !== null) {
+        // Server died during startup (config error, port conflict, ...).
+        return {
+          url,
+          ownedProcess: null,
+          error:
+            "The Lightcode server exited during startup. Check the end of the log at " +
+            `${logPath} — a port conflict or invalid settings.json are the usual causes.`,
+        };
+      }
+
+      await Bun.sleep(startupPollIntervalMs);
+    }
+
+    if (!portTaken) {
+      // Still starting after the wait; keep it and let the UI retry.
       currentOwnedProcess = ownedProcess;
-      return { url: apiBaseUrl, ownedProcess };
+      setApiBaseUrl(url);
+      return { url, ownedProcess };
     }
-
-    if (ownedProcess.exitCode !== null) {
-      // Server died during startup (config error, port conflict, ...).
-      return {
-        url: apiBaseUrl,
-        ownedProcess: null,
-        error:
-          "The Lightcode server exited during startup. Check the log at " +
-          `${path.join(logDirectory, "server.log")} — a port conflict or ` +
-          "invalid settings.json are the usual causes.",
-      };
-    }
-
-    await Bun.sleep(startupPollIntervalMs);
   }
 
-  currentOwnedProcess = ownedProcess;
-  return { url: apiBaseUrl, ownedProcess };
+  return {
+    url: apiBaseUrl,
+    ownedProcess: null,
+    error:
+      `No free port for the Lightcode server in ${startPort}-${Math.min(65_535, startPort + portCount - 1)}. ` +
+      "Close other Lightcode processes, or set LIGHTCODE_API_URL (CLI) and PORT (server).",
+  };
 }

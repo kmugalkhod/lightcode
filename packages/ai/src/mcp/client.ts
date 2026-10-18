@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { lightcodeVersion } from "@lightcode/shared";
 import { z } from "zod";
 import { killProcessTree } from "../bash/process";
+import { stopSocketInheritance } from "../common/socket-inheritance";
 import type {
   McpRemoteServerConfig,
   McpServerConfig,
@@ -82,8 +83,10 @@ class StdioTransport implements McpTransport {
     return this.stderrTail.trim();
   }
 
-  start({ onMessage, onClose }: TransportHandlers): Promise<void> {
+  async start({ onMessage, onClose }: TransportHandlers): Promise<void> {
     const command = expandEnvVars(this.config.command);
+    // The server runs as long as Lightcode does; it must not hold Lightcode's sockets.
+    await stopSocketInheritance();
     return new Promise((resolve, reject) => {
       let started = false;
       const child = spawn(command, this.config.args.map((arg) => expandEnvVars(arg)), {

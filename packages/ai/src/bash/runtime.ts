@@ -6,6 +6,7 @@ import {
 } from "../common/resolve-within-workspace";
 import { truncateText } from "../common/output-utils";
 import { withBundledRipgrepOnPath } from "../grep/ripgrep";
+import { stopSocketInheritance } from "../common/socket-inheritance";
 import {
   readBackgroundJob,
   startBackgroundJob,
@@ -55,6 +56,9 @@ export async function executeBash(
   const cwd = workspaceContext.root;
   // Models reach for `rg` in shell commands; the bundled copy makes it work.
   const env = await withBundledRipgrepOnPath(process.env);
+  // A command may leave a process running (`start /B`, an editor); it must not
+  // take the server's sockets with it.
+  await stopSocketInheritance();
 
   if (parsedInput.runInBackground) {
     const { jobId } = startBackgroundJob({
