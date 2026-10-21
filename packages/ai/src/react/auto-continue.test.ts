@@ -3,6 +3,7 @@ import type { UIMessage } from "ai";
 import type { TodoItem } from "../todo-write/schema";
 import {
   continueAfterLengthPrompt,
+  continueAfterStepLimitPrompt,
   decideAutoContinue,
   hasUnfinishedTodos,
   isDoomLoop,
@@ -65,6 +66,15 @@ describe("decideAutoContinue", () => {
     ]);
     expect(decision.kind).toBe("continue-length");
     expect(decision.prompt).toBe(continueAfterLengthPrompt);
+  });
+
+  test("continues when the server's step cap ended the response mid-task", () => {
+    const decision = decide([
+      userMessage,
+      assistantMessage({ finishReason: "tool-calls", text: "" }),
+    ]);
+    expect(decision.kind).toBe("continue-steps");
+    expect(decision.prompt).toBe(continueAfterStepLimitPrompt);
   });
 
   test("nudges when tool intent was detected but unparsed", () => {

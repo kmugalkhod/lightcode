@@ -26,6 +26,7 @@ import {
   bashStopToolInputSchema,
   type BackgroundJobReport,
 } from "./schema";
+import { resolveCommandShell } from "./shell";
 
 type BashInput = z.input<typeof bashInputSchema>;
 type BashOutput = z.infer<typeof bashOutputSchema>;
@@ -54,6 +55,19 @@ export async function executeBash(
 ): Promise<BashOutput> {
   const parsedInput = bashInputSchema.parse(input);
   const cwd = workspaceContext.root;
+  // cmd.exe would run the first line, skip the rest, and report success.
+  if (resolveCommandShell().kind === "cmd" && /[\r\n]/.test(parsedInput.command.trim())) {
+    return bashOutputSchema.parse({
+      command: parsedInput.command,
+      cwd,
+      stdout: "",
+      stderr:
+        "Not run: commands here go to cmd.exe, which runs only the first line of a multi-line command. " +
+        "Write the script to a file and run that, or join the commands with && on one line.",
+      exitCode: 1,
+      truncated: false,
+    });
+  }
   // Models reach for `rg` in shell commands; the bundled copy makes it work.
   const env = await withBundledRipgrepOnPath(process.env);
   // A command may leave a process running (`start /B`, an editor); it must not

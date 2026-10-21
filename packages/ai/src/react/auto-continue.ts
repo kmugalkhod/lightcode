@@ -9,7 +9,11 @@ import type { TodoItem } from "../todo-write/schema";
  * user input, or when a loop guard trips.
  */
 
-export type AutoContinueKind = "continue-length" | "nudge-stop" | "none";
+export type AutoContinueKind =
+  | "continue-length"
+  | "continue-steps"
+  | "nudge-stop"
+  | "none";
 
 export interface AutoContinueDecision {
   kind: AutoContinueKind;
@@ -30,6 +34,9 @@ export const defaultAutoContinueLimits: AutoContinueLimits = {
 
 export const continueAfterLengthPrompt =
   "Your previous response was cut off by the output token limit. Continue exactly where you left off. Do not repeat completed work.";
+
+export const continueAfterStepLimitPrompt =
+  "You reached the step limit for one response. Continue the task where you left off. Do not repeat completed work.";
 
 export const nudgeAfterPrematureStopPrompt =
   "You stopped before completing the task. Review your todo list and continue working until every item is complete. Call tools through the function-calling interface, never as XML or plain text.";
@@ -143,15 +150,19 @@ export function decideAutoContinue({
   const finishReason = metadata?.finishReason;
   const toolIntent = (metadata as { toolIntent?: string } | null)?.toolIntent;
 
+  // A response that ends on "tool-calls" with every result in hand was cut
+  // by the server's step cap mid-task, not finished by the model.
   const wantsContinuation =
     finishReason === "length"
       ? ("continue-length" as const)
-      : finishReason === "stop" &&
-          (toolIntent === "unparsed" ||
-            hasUnfinishedTodos(todos) ||
-            showsIntentToContinue(collectMessageText(lastAssistant)))
-        ? ("nudge-stop" as const)
-        : null;
+      : finishReason === "tool-calls"
+        ? ("continue-steps" as const)
+        : finishReason === "stop" &&
+            (toolIntent === "unparsed" ||
+              hasUnfinishedTodos(todos) ||
+              showsIntentToContinue(collectMessageText(lastAssistant)))
+          ? ("nudge-stop" as const)
+          : null;
 
   if (!wantsContinuation) {
     return { kind: "none" };
@@ -165,7 +176,10 @@ export function decideAutoContinue({
     return { kind: "none", guardTripped: "doom-loop" };
   }
 
-  return wantsContinuation === "continue-length"
-    ? { kind: "continue-length", prompt: continueAfterLengthPrompt }
-    : { kind: "nudge-stop", prompt: nudgeAfterPrematureStopPrompt };
+  const prompts = {
+    "continue-length": continueAfterLengthPrompt,
+    "continue-steps": continueAfterStepLimitPrompt,
+    "nudge-stop": nudgeAfterPrematureStopPrompt,
+  };
+  return { kind: wantsContinuation, prompt: prompts[wantsContinuation] };
 }

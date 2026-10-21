@@ -1,5 +1,6 @@
 import {
   createWorkspaceContext,
+  describeCommandShellForModel,
   executeGitStatus,
   listEnabledMcpServerNames,
   listSkills,
@@ -950,6 +951,9 @@ export async function buildWorkspaceContext({
   ]);
   const skills = buildAvailableSkills(cwd);
   const mcpServers = buildAvailableMcpServers(cwd);
+  // Outside the persisted snapshot, so sessions started before this line
+  // existed get it too.
+  const shell = describeCommandShellForModel();
 
   const parts = [
     baseline.block,
@@ -957,6 +961,7 @@ export async function buildWorkspaceContext({
     "",
     "<environment>",
     snapshot.body,
+    shell ? `\n${shell}` : "",
     skills ? `\n${skills}` : "",
     mcpServers ? `\n${mcpServers}` : "",
     "</environment>",

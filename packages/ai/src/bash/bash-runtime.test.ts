@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -7,6 +7,7 @@ import {
   executeCodingTool,
   isPermissionDeniedError,
 } from "../runtime-registry";
+import { resolveCommandShell } from "./shell";
 
 const tempRoots: string[] = [];
 
@@ -114,6 +115,37 @@ describe("bash runtime safety", () => {
     expect(output.exitCode).toBe(7);
     expect(output.stderr).toContain("boom");
   });
+
+  // Commands models write, which cmd.exe broke: `\"` inside double quotes
+  // with `<`/`>` between them ("The system cannot find the file specified"),
+  // and a multi-line script that cmd ran as an empty first line, exit 0.
+  test.skipIf(resolveCommandShell().kind !== "git-bash")(
+    "runs POSIX shell commands on Windows through Git Bash",
+    async () => {
+      const cwd = await makeTempWorkspace();
+      await writeFile(path.join(cwd, "app.js"), "<span>x</span>\n");
+      const run = (command: string) =>
+        executeCodingTool(
+          "bash",
+          { command, timeoutMs: 15000, maxOutputChars: 2000 },
+          { cwd, mode: "build", permissionMode: "danger-full-access" },
+        );
+
+      const quoted = await run(
+        `bun -e "const s=require('fs').readFileSync('app.js','utf8');console.log(JSON.stringify({span:s.includes(\\"</span>\\")}))"`,
+      );
+      expect(quoted.stderr).toBe("");
+      expect(quoted.stdout.trim()).toBe('{"span":true}');
+
+      const multiLine = await run(`bun -e "\nconst a = 1;\nconsole.log('lines', a + 1);\n"`);
+      expect(multiLine.stdout.trim()).toBe("lines 2");
+
+      const posix = await run(`echo "$((2 * 3))" > out.txt && cat out.txt | wc -l && head -1 out.txt 2>/dev/null`);
+      expect(posix.exitCode).toBe(0);
+      expect(posix.stdout.split(/\s+/).filter(Boolean)).toEqual(["1", "6"]);
+    },
+    30_000,
+  );
 
   test("denies dangerous shell commands before execution", async () => {
     const cwd = await makeTempWorkspace();

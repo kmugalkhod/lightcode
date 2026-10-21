@@ -125,5 +125,50 @@ export function resolveDanglingToolParts(
 export function normalizeProviderMessages(
   messages: readonly UIMessage[],
 ): UIMessage[] {
-  return resolveDanglingToolParts(messages);
+  return renameLegacyToolInputs(resolveDanglingToolParts(messages));
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** edit_file's `replaceAll` is now `allMatches`; null when there is nothing to rename. */
+function renameEditFileInput(input: unknown): Record<string, unknown> | null {
+  if (!isPlainObject(input) || !("replaceAll" in input)) return null;
+  const { replaceAll, ...rest } = input;
+  const flag =
+    replaceAll === true || replaceAll === "true"
+      ? true
+      : replaceAll === false || replaceAll === "false"
+        ? false
+        : replaceAll;
+  return { ...rest, allMatches: rest.allMatches ?? flag };
+}
+
+/**
+ * Rewrites edit_file calls recorded under the flag's former name. Replayed
+ * as-is, a session's earlier `replaceAll` calls teach the model the old
+ * spelling, and with it the `{path, replaceAll, search}` calls (no
+ * `replace`) that the rename stopped (see edit-file/schema.ts).
+ * Count-preserving, like resolveDanglingToolParts.
+ */
+export function renameLegacyToolInputs(messages: readonly UIMessage[]): UIMessage[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant") return message as UIMessage;
+    let changed = false;
+    const parts = message.parts.map((part) => {
+      if (part.type !== "tool-edit_file") return part;
+      const toolPart = part as typeof part & { input?: unknown; rawInput?: unknown };
+      const input = renameEditFileInput(toolPart.input);
+      const rawInput = renameEditFileInput(toolPart.rawInput);
+      if (!input && !rawInput) return part;
+      changed = true;
+      return {
+        ...part,
+        ...(input ? { input } : {}),
+        ...(rawInput ? { rawInput } : {}),
+      } as typeof part;
+    });
+    return changed ? ({ ...message, parts } as UIMessage) : (message as UIMessage);
+  });
 }

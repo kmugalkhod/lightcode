@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { resolveCommandShell, type CommandShell } from "./shell";
 
 const isWindows = process.platform === "win32";
 /** POSIX grace period between SIGTERM and SIGKILL when stopping a tree. */
@@ -13,24 +14,29 @@ const windowsTreeKillFallbackMs = 2_000;
 const pipeDrainGraceMs = 1_000;
 
 /**
- * Starts `command` in the same shell `child_process.exec` uses (cmd.exe on
- * Windows, /bin/sh elsewhere). Stdin is closed so a command that prompts reads
- * EOF instead of hanging until its timeout. On POSIX the shell leads its own
- * process group so a stop reaches everything it started.
+ * Starts `command` in the command shell (see shell.ts): /bin/sh, Git Bash on
+ * Windows, or cmd.exe there when Git Bash is missing. Stdin is closed so a
+ * command that prompts reads EOF instead of hanging until its timeout. On
+ * POSIX the shell leads its own process group so a stop reaches everything it
+ * started.
  */
 export function spawnShellCommand(
   command: string,
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
+  shell: CommandShell = resolveCommandShell(),
 ): ChildProcess {
-  const child = spawn(command, {
+  const options = {
     cwd,
     env,
-    shell: true,
     windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
     detached: !isWindows,
-  });
+  };
+  const child =
+    shell.kind === "git-bash"
+      ? spawn(shell.path, ["-c", command], options)
+      : spawn(command, { ...options, shell: true });
   child.stdout?.setEncoding("utf8");
   child.stderr?.setEncoding("utf8");
   return child;

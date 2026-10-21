@@ -43,6 +43,32 @@ describe("normalizeProviderMessages", () => {
     expect(String(Reflect.get(toolPart, "errorText"))).toContain("interrupted");
   });
 
+  test("replays edit_file calls under the flag's current name", () => {
+    const edit = (input: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      ({
+        id: "a1",
+        role: "assistant",
+        parts: [
+          { type: "tool-edit_file", toolCallId: "call-1", state: "output-available", input, output: {}, ...extra },
+        ],
+      }) as unknown as UIMessage;
+    const inputOf = (message: UIMessage) => Reflect.get(message.parts[0], "input");
+
+    const [renamed] = normalizeProviderMessages([
+      edit({ path: "a.js", search: "x", replace: "y", replaceAll: true }),
+    ]);
+    expect(inputOf(renamed)).toEqual({ path: "a.js", search: "x", replace: "y", allMatches: true });
+
+    // A failed call that sent the flag as a string, and no replacement text.
+    const [failed] = normalizeProviderMessages([
+      edit({ path: "a.js", search: "x", replaceAll: "false" }, { state: "output-error", errorText: "missing replace" }),
+    ]);
+    expect(inputOf(failed)).toEqual({ path: "a.js", search: "x", allMatches: false });
+
+    const current = edit({ path: "a.js", search: "x", replace: "y", allMatches: false });
+    expect(normalizeProviderMessages([current])[0]).toBe(current);
+  });
+
   test("leaves resolved tool calls untouched and is count-preserving", () => {
     const input = [
       user(),

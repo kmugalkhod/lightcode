@@ -21,7 +21,7 @@ import {
   type DiagnosticsToolSummary,
   type ResolvedWebSearchCapability,
 } from "@lightcode/ai";
-import { describeSearchEngine } from "@lightcode/ai/runtime";
+import { describeCommandShell, describeSearchEngine } from "@lightcode/ai/runtime";
 import {
   getErrorMessage,
   getLogDirectory,
@@ -242,6 +242,7 @@ async function buildDoctorPayload() {
   const extensions = getExtensionDiagnostics();
   const sandbox = getSandboxRuntimeStatus(lightcodeConfigResult.config.sandbox);
   const search = await describeSearchEngine();
+  const shell = describeCommandShell();
   const checks: DiagnosticCheck[] = [
     {
       id: "server",
@@ -298,6 +299,13 @@ async function buildDoctorPayload() {
       status: search.ripgrep ? "ok" : "warn",
       summary: search.summary,
       details: search.detail ? [search.detail] : [],
+    },
+    {
+      id: "shell",
+      label: "Shell",
+      status: shell.ok ? "ok" : "warn",
+      summary: shell.summary,
+      details: shell.detail ? [shell.detail] : [],
     },
     {
       id: "sandbox",

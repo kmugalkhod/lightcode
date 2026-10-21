@@ -5,6 +5,12 @@ export * from "./common/resolve-within-workspace";
 
 export * from "./agent/toolset";
 export * from "./bash/runtime";
+export {
+  describeCommandShell,
+  describeCommandShellForModel,
+  resolveCommandShell,
+  type CommandShell,
+} from "./bash/shell";
 export * from "./checkpoints/runtime";
 export * from "./edit-file/runtime";
 export * from "./grep/runtime";

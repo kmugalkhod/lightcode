@@ -1109,9 +1109,11 @@ export function ChatScreen() {
             <text fg={cliTheme.semantic.info}>
               {autoContinueState.kind === "continue-length"
                 ? `Output limit hit — continuing automatically (${autoContinueState.attempt})...`
-                : autoContinueState.kind === "retry-error"
-                  ? retryNoticeText
-                  : `Agent stopped early — continuing automatically (${autoContinueState.attempt})...`}
+                : autoContinueState.kind === "continue-steps"
+                  ? `Step limit reached — continuing automatically (${autoContinueState.attempt})...`
+                  : autoContinueState.kind === "retry-error"
+                    ? retryNoticeText
+                    : `Agent stopped early — continuing automatically (${autoContinueState.attempt})...`}
             </text>
           </box>
         ) : null}
