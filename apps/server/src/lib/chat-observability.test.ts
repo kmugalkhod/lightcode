@@ -74,6 +74,42 @@ describe("classifyChatError", () => {
     expect(classified.retryable).toBe(false);
   });
 
+  test("reads the status and message from a mid-stream provider error object", () => {
+    // What @openrouter/ai-sdk-provider enqueues for an SSE error chunk.
+    const classified = classifyChatError({
+      code: 402,
+      message:
+        "This request would exceed your available credits given your current in-flight requests. Retry after in-flight requests settle, or add credits.",
+      metadata: { error_type: "payment_required" },
+    });
+
+    expect(classified.kind).toBe("billing");
+    expect(classified.statusCode).toBe(402);
+    expect(classified.message).toContain("in-flight requests");
+    // The reservations clear once the other requests settle.
+    expect(classified.retryable).toBe(true);
+  });
+
+  test("an out-of-credits 402 stays terminal", () => {
+    const classified = classifyChatError({
+      code: 402,
+      message: "Insufficient credits. Add more using https://openrouter.ai/credits",
+    });
+
+    expect(classified.kind).toBe("billing");
+    expect(classified.retryable).toBe(false);
+  });
+
+  test("provider error objects with a string code use the message heuristics", () => {
+    const classified = classifyChatError({
+      code: "context_length_exceeded",
+      message: "This model's maximum context length is 131072 tokens",
+    });
+
+    expect(classified.kind).toBe("context_overflow");
+    expect(classified.statusCode).toBeUndefined();
+  });
+
   test("plain network errors fall back to heuristics and stay retryable", () => {
     const classified = classifyChatError(new Error("socket hang up (ECONNRESET)"));
 

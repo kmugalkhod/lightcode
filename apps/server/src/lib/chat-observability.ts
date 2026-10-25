@@ -125,6 +125,8 @@ function isAbortError(error: unknown) {
   );
 }
 
+const inFlightCreditPattern = /in-flight requests/i;
+
 function classifyByStatusCode(
   statusCode: number,
   message: string,
@@ -134,7 +136,9 @@ function classifyByStatusCode(
   }
 
   if (statusCode === 402) {
-    return { kind: "billing", retryable: false };
+    // OpenRouter reserves credit for every in-flight request and refuses one
+    // the remaining balance can't cover until the others settle.
+    return { kind: "billing", retryable: inFlightCreditPattern.test(message) };
   }
 
   if (statusCode === 429) {
@@ -163,6 +167,41 @@ function classifyByStatusCode(
   return { kind: "unknown", retryable: false };
 }
 
+function classifyStatusError(
+  statusCode: number,
+  message: string,
+): ChatStreamErrorInfo {
+  const { kind, retryable } = classifyByStatusCode(statusCode, message);
+
+  return {
+    kind,
+    statusCode,
+    retryable,
+    message,
+    contextLimitTokens:
+      kind === "context_overflow" ? extractContextLimitTokens(message) : undefined,
+  };
+}
+
+/**
+ * The HTTP status a provider put in a mid-stream error object, e.g.
+ * OpenRouter's `{ code: 402, message: "...", metadata: {...} }`.
+ */
+function providerErrorStatusCode(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || error instanceof Error) {
+    return undefined;
+  }
+
+  const code = Reflect.get(error, "code");
+  const status = typeof code === "string" ? Number(code) : code;
+  return typeof status === "number" &&
+    Number.isInteger(status) &&
+    status >= 400 &&
+    status < 600
+    ? status
+    : undefined;
+}
+
 /**
  * Structured error classification. Prefers AI SDK `APICallError` metadata
  * (status code + response body) over string matching; the string heuristics
@@ -183,21 +222,7 @@ export function classifyChatError(error: unknown): ChatStreamErrorInfo {
     const message = responseBody.length > 0 ? responseBody : error.message;
 
     if (typeof error.statusCode === "number") {
-      const { kind, retryable } = classifyByStatusCode(
-        error.statusCode,
-        message,
-      );
-
-      return {
-        kind,
-        statusCode: error.statusCode,
-        retryable,
-        message,
-        contextLimitTokens:
-          kind === "context_overflow"
-            ? extractContextLimitTokens(message)
-            : undefined,
-      };
+      return classifyStatusError(error.statusCode, message);
     }
 
     return {
@@ -208,6 +233,11 @@ export function classifyChatError(error: unknown): ChatStreamErrorInfo {
   }
 
   const message = getErrorMessage(error);
+
+  const providerStatus = providerErrorStatusCode(error);
+  if (providerStatus !== undefined) {
+    return classifyStatusError(providerStatus, message);
+  }
 
   if (isAbortError(error)) {
     return { kind: "aborted", retryable: false, message };

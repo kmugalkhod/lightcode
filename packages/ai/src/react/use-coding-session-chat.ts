@@ -1221,6 +1221,24 @@ export function useCodingSessionChat({
     }
   }, [clearError, resumeStream, syncCanonicalHistory]);
 
+  // A classified provider error (the LIGHTCODE_ERROR envelope) ends the server
+  // run, so there is no run left to follow: retrying sends the latest turn
+  // message again, which starts a new run from the canonical history. Any
+  // other failure may be a dropped stream whose run is still going.
+  const retryAfterError = useCallback(
+    async (errorMessage: string) => {
+      if (!parseChatStreamError(errorMessage)) {
+        await resumeAuthoritativeRun();
+        return;
+      }
+      clearError();
+      setToolExecutionError(null);
+      await syncCanonicalHistory();
+      await sendMessage();
+    },
+    [clearError, resumeAuthoritativeRun, sendMessage, syncCanonicalHistory],
+  );
+
   // Approvals are derived from the stream: server-executed tools pause with an
   // `approval-requested` part and resume when the client posts the response.
   // Deriving from message parts (instead of accumulating in onToolCall) makes
@@ -1523,12 +1541,12 @@ export function useCodingSessionChat({
       return;
     }
 
-    await resumeAuthoritativeRun();
+    await retryAfterError(error.message);
   }, [
     error?.message,
     pendingApprovals.length,
     pendingUserPrompts.length,
-    resumeAuthoritativeRun,
+    retryAfterError,
   ]);
 
   // The error episode is over only when a response actually completes.
@@ -1694,6 +1712,7 @@ export function useCodingSessionChat({
     if (!error?.message || !isRecoverableChatErrorMessage(error.message)) {
       return;
     }
+    const failedMessage = error.message;
 
     if (
       taskStuckRef.current ||
@@ -1752,7 +1771,7 @@ export function useCodingSessionChat({
       }
       errorRetriesRef.current = attempt;
       setAutoContinueState({ attempt, kind: "retry-error", retryReason });
-      void resumeAuthoritativeRun();
+      void retryAfterError(failedMessage);
     }, delay);
 
     return () => {
@@ -1766,7 +1785,7 @@ export function useCodingSessionChat({
     pendingApprovals.length,
     pendingUserPrompts.length,
     registerRetryProgress,
-    resumeAuthoritativeRun,
+    retryAfterError,
   ]);
 
   const submitInput = useCallback(

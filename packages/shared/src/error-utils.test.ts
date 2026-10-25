@@ -10,6 +10,12 @@ describe("getErrorMessage", () => {
     expect(getErrorMessage("plain failure")).toBe("plain failure");
   });
 
+  test("reads the message from plain provider error objects", () => {
+    expect(getErrorMessage({ code: 402, message: "Insufficient credits" })).toBe(
+      "Insufficient credits",
+    );
+  });
+
   test("falls back for empty and non-error values", () => {
     expect(getErrorMessage(new Error(""))).toBe("Unknown error");
     expect(getErrorMessage("   ")).toBe("Unknown error");

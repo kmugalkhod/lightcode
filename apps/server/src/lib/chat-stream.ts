@@ -12,6 +12,7 @@ import {
   listEnabledMcpServerNames,
   listSkills,
   normalizeProviderMessages,
+  parseChatStreamError,
   ProviderTurnAssembler,
   resolveCodingAgentCallSettings,
   resolveContextWindowTokens,
@@ -98,6 +99,15 @@ const recoverableDisconnectMessage =
 const providerBillingOrQuotaMessage =
   "The configured model provider rejected this request due to billing or quota limits. " +
   "Update provider credits/quota and retry.";
+
+/**
+ * True for the AI SDK replaying an error chunk this stream already emitted
+ * (handleUIMessageStreamFinish passes `new Error(errorText)` back to
+ * onError). It was classified, counted and logged the first time.
+ */
+function isReplayedStreamError(error: unknown) {
+  return parseChatStreamError(getErrorMessage(error)) !== null;
+}
 
 const fastChatSystemPrompt =
   "You are Lightcode's coding assistant, running inside the user's project. " +
@@ -1048,6 +1058,10 @@ export async function streamSessionChat(
         sendReasoning: false,
         messageMetadata: buildUsageMessageMetadata,
         onError: (error) => {
+          if (isReplayedStreamError(error)) {
+            return getErrorMessage(error);
+          }
+
           const classified = classifyChatError(error);
 
           if (classified.kind === "context_overflow") {
@@ -1082,6 +1096,10 @@ export async function streamSessionChat(
       const toolErrorText = formatToolErrorText(error);
       if (toolErrorText !== null) {
         return toolErrorText;
+      }
+
+      if (isReplayedStreamError(error)) {
+        return getErrorMessage(error);
       }
 
       const classified = classifyChatError(error);
